@@ -1,0 +1,47 @@
+{
+  "id": "quantized_matmul__w8a16_linear",
+  "category": "quantized_matmul",
+  "op_name": "W8A16 quantized linear (dequant-fused GEMM)",
+  "description": "Apply a linear layer whose weights are stored as int8 with a per-output-channel fp16 scale, to a fp16 activation, dequantizing and matmul-ing in a single fused step.",
+  "dtype": "float16",
+  "pytorch_reference": "import torch\nimport torch.nn as nn\nimport torch.nn.functional as F\n\nclass Model(nn.Module):\n    \"\"\"\n    Weight-only quantized linear layer (W8A16): int8 weights with a\n    per-output-channel fp16 scale, dequantized and multiplied against a\n    fp16 activation. Mirrors the weight-only quantization scheme commonly\n    used to shrink serving memory/bandwidth for large linear layers.\n    \"\"\"\n    def __init__(self, in_features, out_features):\n        super().__init__()\n        self.in_features = in_features\n        self.out_features = out_features\n        weight_fp = torch.randn(out_features, in_features)\n        scale = weight_fp.abs().amax(dim=1, keepdim=True) / 127.0\n        self.register_buffer(\n            \"weight_int8\",\n            torch.round(weight_fp / scale).clamp(-127, 127).to(torch.int8),\n        )\n        self.register_buffer(\"scale\", scale.to(torch.float16))\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        weight = self.weight_int8.to(torch.float16) * self.scale\n        return F.linear(x, weight)\n\nbatch_size = 32\nin_features = 4096\nout_features = 4096\n\ndef get_inputs():\n    return [torch.randn(batch_size, in_features, dtype=torch.float16)]\n\ndef get_init_inputs():\n    return [in_features, out_features]\n",
+  "triton_kernel": "import torch\nimport triton\nimport triton.language as tl\n\n\n@triton.jit\ndef _w8a16_matmul_kernel(\n    x_ptr, w_ptr, scale_ptr, out_ptr,\n    M, N, K,\n    stride_xm, stride_xk,\n    stride_wn, stride_wk,\n    stride_om, stride_on,\n    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,\n):\n    pid_m = tl.program_id(0)\n    pid_n = tl.program_id(1)\n\n    rm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)\n    rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)\n    rk = tl.arange(0, BLOCK_K)\n\n    x_ptrs = x_ptr + rm[:, None] * stride_xm + rk[None, :] * stride_xk\n    w_ptrs = w_ptr + rn[:, None] * stride_wn + rk[None, :] * stride_wk\n\n    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)\n    for k in range(0, K, BLOCK_K):\n        x_mask = (rm[:, None] < M) & (rk[None, :] + k < K)\n        w_mask = (rn[:, None] < N) & (rk[None, :] + k < K)\n        x = tl.load(x_ptrs, mask=x_mask, other=0.0)\n        w_int8 = tl.load(w_ptrs, mask=w_mask, other=0)\n        w = w_int8.to(tl.float32)\n        acc += tl.dot(x.to(tl.float32), tl.trans(w))\n        x_ptrs += BLOCK_K * stride_xk\n        w_ptrs += BLOCK_K * stride_wk\n\n    scale = tl.load(scale_ptr + rn, mask=rn < N, other=0.0).to(tl.float32)\n    acc = acc * scale[None, :]\n\n    out_ptrs = out_ptr + rm[:, None] * stride_om + rn[None, :] * stride_on\n    out_mask = (rm[:, None] < M) & (rn[None, :] < N)\n    tl.store(out_ptrs, acc.to(tl.float16), mask=out_mask)\n\n\nclass ModelNew(torch.nn.Module):\n    def __init__(self, in_features, out_features):\n        super().__init__()\n        weight_fp = torch.randn(out_features, in_features)\n        scale = weight_fp.abs().amax(dim=1, keepdim=True) / 127.0\n        self.register_buffer(\n            \"weight_int8\",\n            torch.round(weight_fp / scale).clamp(-127, 127).to(torch.int8),\n        )\n        self.register_buffer(\"scale\", scale.view(-1).to(torch.float16))\n        self.in_features = in_features\n        self.out_features = out_features\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        assert x.is_cuda\n        M, K = x.shape\n        N = self.out_features\n        out = torch.empty((M, N), device=x.device, dtype=torch.float16)\n        BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 32\n        grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))\n        _w8a16_matmul_kernel[grid](\n            x, self.weight_int8, self.scale, out,\n            M, N, K,\n            x.stride(0), x.stride(1),\n            self.weight_int8.stride(0), self.weight_int8.stride(1),\n            out.stride(0), out.stride(1),\n            BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,\n        )\n        return out\n",
+  "optimization_explanation": "Eager dequantizes the full int8 weight matrix to fp16 in one pass (materializing a full-size fp16 copy in global memory) and then runs a separate cuBLAS GEMM. The Triton kernel dequantizes each weight tile on the fly, inside the same accumulation loop as the matmul, so the dequantized weight never exists as a full matrix in memory -- only ever a BLOCK_N x BLOCK_K tile in registers. This keeps the memory traffic close to what reading the int8 weights alone would cost (roughly half of reading them as fp16), which is the entire point of weight-only quantization: the GEMM here is memory-bandwidth-bound on the weight matrix, so avoiding the materialized dequant pass is where the savings come from, not compute.",
+  "tolerance": {
+    "atol": 0.01,
+    "rtol": 0.01
+  },
+  "test_shapes": [
+    {
+      "name": "decode_batch1",
+      "get_init_inputs_override": [
+        4096,
+        4096
+      ],
+      "get_inputs_override_batch_size": 1,
+      "notes": "single-token decode step -- memory-bandwidth-bound regime where quantization savings matter most"
+    },
+    {
+      "name": "prefill_batch32",
+      "get_init_inputs_override": [
+        4096,
+        4096
+      ],
+      "get_inputs_override_batch_size": 32,
+      "notes": "batched prefill regime, more compute-bound; speedup from fused dequant should shrink here"
+    }
+  ],
+  "provenance": {
+    "source": "hand_written",
+    "kernelbench_ref": null,
+    "license": null,
+    "notes": "Op and both implementations are hand-written for this project; not adapted from a KernelBench problem file. Uses KernelBench's Model/ModelNew + get_inputs/get_init_inputs convention and its precision-dependent tolerance / ref_time/candidate_time speedup definition for compatibility. CAVEAT: Model.__init__ and ModelNew.__init__ each call torch.randn independently for the weight, so the verifier must set an identical torch.manual_seed immediately before constructing each one (not just before get_inputs()) or the two will compare against different random weights. Tracked as a required addition to the verify_kernel.py adapter, not yet implemented."
+  },
+  "verification": {
+    "verified": false,
+    "correct": null,
+    "speedup": null,
+    "device": null,
+    "verified_at": null
+  }
+}

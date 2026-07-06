@@ -8,7 +8,7 @@ Real Triton kernels (examples/kernels/) still need to be verified on a
 Linux + NVIDIA box (Kaggle/Colab); see examples/kernels/README.md.
 """
 
-from verification.verify_kernel import TensorSpec, verify_kernel
+from verification.verify_kernel import TensorSpec, verify_kernel, verify_model_kernel
 
 REFERENCE_ADD = """
 import torch
@@ -114,4 +114,166 @@ def test_identical_seed_yields_identical_inputs_across_processes():
         REFERENCE_ADD, CANDIDATE_CORRECT, INPUT_SPEC,
         device="cpu", seed=42, warmup=0, iters=1,
     )
+    assert result.correct is True
+
+
+# --- Model / ModelNew contract (the one dataset entries actually use) ------
+
+MODEL_REFERENCE_ADD = """
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return x + y
+
+def get_inputs():
+    return [torch.rand(8), torch.rand(8)]
+
+def get_init_inputs():
+    return [8]
+"""
+
+MODEL_CANDIDATE_CORRECT = """
+import torch
+
+class ModelNew(torch.nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return torch.add(x, y)
+"""
+
+MODEL_CANDIDATE_WRONG = """
+import torch
+
+class ModelNew(torch.nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return x - y
+"""
+
+MODEL_CANDIDATE_MISSING_CLASS = """
+import torch
+
+class NotModelNew(torch.nn.Module):
+    def forward(self, x, y):
+        return x + y
+"""
+
+MODEL_REFERENCE_RANDOM_WEIGHT = """
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.weight = nn.Parameter(torch.randn(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.weight
+
+def get_inputs():
+    return [torch.rand(16)]
+
+def get_init_inputs():
+    return [16]
+"""
+
+MODEL_CANDIDATE_RANDOM_WEIGHT_SAME_CALL_ORDER = """
+import torch
+
+class ModelNew(torch.nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.randn(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.weight
+"""
+
+MODEL_REFERENCE_TUPLE_OUTPUT = """
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor):
+        return x + y, x - y
+
+def get_inputs():
+    return [torch.rand(8), torch.rand(8)]
+
+def get_init_inputs():
+    return [8]
+"""
+
+MODEL_CANDIDATE_TUPLE_OUTPUT = """
+import torch
+
+class ModelNew(torch.nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor):
+        return torch.add(x, y), torch.sub(x, y)
+"""
+
+
+def test_model_contract_correct_candidate_passes():
+    result = verify_model_kernel(
+        MODEL_REFERENCE_ADD, MODEL_CANDIDATE_CORRECT,
+        device="cpu", warmup=1, iters=3,
+    )
+    assert result.status == "ok"
+    assert result.correct is True
+    assert result.passed is True
+
+
+def test_model_contract_incorrect_candidate_fails_correctness():
+    result = verify_model_kernel(
+        MODEL_REFERENCE_ADD, MODEL_CANDIDATE_WRONG,
+        device="cpu", warmup=1, iters=3,
+    )
+    assert result.status == "ok"
+    assert result.correct is False
+
+
+def test_model_contract_missing_modelnew_is_reported_as_error():
+    result = verify_model_kernel(
+        MODEL_REFERENCE_ADD, MODEL_CANDIDATE_MISSING_CLASS,
+        device="cpu", warmup=1, iters=3,
+    )
+    assert result.status == "error"
+    assert "ModelNew" in result.error
+
+
+def test_model_contract_seeds_random_init_identically():
+    # Model and ModelNew each independently call torch.randn in __init__;
+    # seeding immediately before each construction must make them match.
+    result = verify_model_kernel(
+        MODEL_REFERENCE_RANDOM_WEIGHT, MODEL_CANDIDATE_RANDOM_WEIGHT_SAME_CALL_ORDER,
+        device="cpu", seed=123, warmup=1, iters=3,
+    )
+    assert result.status == "ok"
+    assert result.correct is True
+
+
+def test_model_contract_handles_tuple_outputs():
+    result = verify_model_kernel(
+        MODEL_REFERENCE_TUPLE_OUTPUT, MODEL_CANDIDATE_TUPLE_OUTPUT,
+        device="cpu", warmup=1, iters=3,
+    )
+    assert result.status == "ok"
     assert result.correct is True

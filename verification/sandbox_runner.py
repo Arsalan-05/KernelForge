@@ -35,15 +35,30 @@ def _emit(result: dict) -> None:
     sys.stdout.flush()
 
 
-def _load_entry_point(source_path: Path, module_name: str, entry_point: str):
+def _load_module(source_path: Path, module_name: str):
     spec = importlib.util.spec_from_file_location(module_name, source_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def _load_entry_point(source_path: Path, module_name: str, entry_point: str):
+    module = _load_module(source_path, module_name)
     if not hasattr(module, entry_point):
         raise AttributeError(
             f"{source_path.name} does not define a callable named '{entry_point}'"
         )
     return getattr(module, entry_point)
+
+
+def _require_attr(module, name: str, filename: str):
+    if not hasattr(module, name):
+        raise AttributeError(f"{filename} does not define required attribute '{name}'")
+    return getattr(module, name)
+
+
+def _to_device(tensors, device: str):
+    return [t.to(device) if hasattr(t, "to") else t for t in tensors]
 
 
 def _build_inputs(input_spec: list, device: str, seed: int):
@@ -107,13 +122,8 @@ def _time_fn(fn, inputs, device: str, warmup: int, iters: int):
     return out, median
 
 
-def run(payload: dict) -> dict:
-    import torch
-
-    device = payload["device"]
-    if device == "cuda" and not torch.cuda.is_available():
-        return {"status": "error", "error": "device 'cuda' requested but no CUDA device is available"}
-
+def run_function_contract(payload: dict, device: str) -> dict:
+    """Reference/candidate are each a bare `solution(*tensors) -> tensor` function."""
     entry_point = payload["entry_point"]
     atol = payload["atol"]
     rtol = payload["rtol"]
@@ -140,6 +150,79 @@ def run(payload: dict) -> dict:
         "candidate_time_s": cand_time,
         "speedup": speedup,
     }
+
+
+def run_model_contract(payload: dict, device: str) -> dict:
+    """
+    Reference is a KernelBench-style module: `Model(nn.Module)` +
+    `get_inputs()` + `get_init_inputs()`. Candidate is a `ModelNew(nn.Module)`
+    with the same __init__/forward signature as `Model`.
+
+    `Model` and `ModelNew` are constructed independently, so any op with
+    random internal state (e.g. quantization weights) needs the RNG seeded
+    identically immediately before *each* construction -- not just before
+    get_inputs() -- or the two will silently compare against different
+    random weights instead of the same op.
+    """
+    import torch
+
+    atol = payload["atol"]
+    rtol = payload["rtol"]
+    warmup = payload["warmup"]
+    iters = payload["iters"]
+    seed = payload["seed"]
+
+    reference_module = _load_module(Path(payload["reference_path"]), "reference_module")
+    candidate_module = _load_module(Path(payload["candidate_path"]), "candidate_module")
+
+    ref_filename = Path(payload["reference_path"]).name
+    cand_filename = Path(payload["candidate_path"]).name
+    Model = _require_attr(reference_module, "Model", ref_filename)
+    get_inputs = _require_attr(reference_module, "get_inputs", ref_filename)
+    get_init_inputs = _require_attr(reference_module, "get_init_inputs", ref_filename)
+    ModelNew = _require_attr(candidate_module, "ModelNew", cand_filename)
+
+    torch.manual_seed(seed)
+    init_inputs = get_init_inputs()
+
+    torch.manual_seed(seed)
+    ref_model = Model(*init_inputs).to(device).eval()
+
+    torch.manual_seed(seed)
+    cand_model = ModelNew(*init_inputs).to(device).eval()
+
+    torch.manual_seed(seed)
+    base_inputs = _to_device(get_inputs(), device)
+    ref_inputs = [t.clone() if hasattr(t, "clone") else t for t in base_inputs]
+    cand_inputs = [t.clone() if hasattr(t, "clone") else t for t in base_inputs]
+
+    with torch.no_grad():
+        ref_out, ref_time = _time_fn(ref_model.forward, ref_inputs, device, warmup, iters)
+        cand_out, cand_time = _time_fn(cand_model.forward, cand_inputs, device, warmup, iters)
+
+    correct = _check_correct(cand_out, ref_out, atol, rtol)
+    speedup = (ref_time / cand_time) if cand_time > 0 else float("inf")
+
+    return {
+        "status": "ok",
+        "correct": correct,
+        "reference_time_s": ref_time,
+        "candidate_time_s": cand_time,
+        "speedup": speedup,
+    }
+
+
+def run(payload: dict) -> dict:
+    import torch
+
+    device = payload["device"]
+    if device == "cuda" and not torch.cuda.is_available():
+        return {"status": "error", "error": "device 'cuda' requested but no CUDA device is available"}
+
+    contract = payload.get("contract", "function")
+    if contract == "model":
+        return run_model_contract(payload, device)
+    return run_function_contract(payload, device)
 
 
 def main() -> None:

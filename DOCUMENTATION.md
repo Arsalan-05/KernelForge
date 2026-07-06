@@ -12,8 +12,8 @@ kickoff — this file tracks implementation, not the roadmap.
 | Phase | State |
 |---|---|
 | 0 — Foundations | Partial: 3 hand-written example kernels done (`examples/kernels/`) |
-| 1 — Dataset | Not started |
-| 2 — Verification harness | **Done**, locally testable |
+| 1 — Dataset | In progress: schema approved, 300 candidate entries generated across 5 categories, harness-verified pipeline built and run — **0/300 GPU-verified so far, blocked on lacking a local CUDA GPU, not on kernel correctness** (see below) |
+| 2 — Verification harness | **Done**, locally testable, now supports both the function contract and KernelBench's Model/ModelNew contract |
 | 3 — Model selection & baseline | Not started |
 | 4 — Fine-tuning | Not started |
 | 5 — Evaluation | Not started |
@@ -53,12 +53,12 @@ Consequences for how this repo is used:
 
 ## The verification harness
 
-### Contract
+### Two contracts
 
-A "reference" and a "candidate" are each a Python source file that defines
-a top-level callable (default name `solution`) with the same signature:
-takes N `torch.Tensor` positional arguments, returns a `torch.Tensor` or a
-tuple of them.
+**Function contract** (`verify_kernel`) — a "reference" and a "candidate"
+are each a Python source file that defines a top-level callable (default
+name `solution`) with the same signature: takes N `torch.Tensor` positional
+arguments, returns a `torch.Tensor` or a tuple of them.
 
 ```python
 # reference.py
@@ -79,28 +79,46 @@ def solution(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     ...  # launches the Triton kernel, returns a tensor
 ```
 
-This mirrors KernelBench's op-level structure (Phase 1's planned dataset
-source) and keeps the harness agnostic to *how* the candidate is
-implemented — it could be a hand-written Triton kernel today, or an
-LLM-generated one later, without changing the interface.
+This is what `examples/kernels/` (Phase 0) uses, and what
+`tests/test_verify_kernel.py`'s first six tests exercise.
+
+**Model contract** (`verify_model_kernel`) — what the dataset (Phase 1)
+actually stores, matching KernelBench's own convention: reference defines
+`Model(nn.Module)` + `get_inputs()` + `get_init_inputs()`; candidate defines
+`ModelNew(nn.Module)` with the same `__init__`/`forward` signature as
+`Model`. `get_init_inputs()` handles ops needing constructor-time state
+(quantization scales, norm gain, cache shapes) that the bare function
+contract can't express. See `data/SCHEMA.md` for the full rationale.
+
+Both contracts share the same subprocess isolation, timing, and
+correctness-comparison machinery — they differ only in how the reference/
+candidate callables get loaded and constructed.
 
 ### Files
 
-- **`verification/verify_kernel.py`** — the public API.
-  `verify_kernel(reference_code, candidate_code, input_spec, ...)` writes
-  both code strings to temp files, builds a JSON payload describing how to
-  reconstruct inputs, and spawns `sandbox_runner.py` as a subprocess with a
-  timeout. Parses the subprocess's single JSON line of output into a
-  `VerifyResult`. Also exposes a CLI:
+- **`verification/verify_kernel.py`** — the public API. Both
+  `verify_kernel(reference_code, candidate_code, input_spec, ...)` (function
+  contract) and `verify_model_kernel(reference_code, candidate_code, ...)`
+  (model contract) write code strings to temp files, build a JSON payload,
+  and spawn `sandbox_runner.py` as a subprocess with a timeout, parsing its
+  single JSON line of output into a `VerifyResult`. Also exposes a CLI for
+  the function contract:
   `python verification/verify_kernel.py <reference.py> <candidate.py> --shape ... --device cuda`.
 
 - **`verification/sandbox_runner.py`** — runs *inside* the subprocess.
-  Loads both modules via `importlib`, builds identical input tensors for
-  each (same shape/dtype/seed, so results are directly comparable — see
-  below), times both with warmup + N repeated iterations, checks numerical
-  equality, computes `speedup = reference_time / candidate_time`, and
-  always emits exactly one JSON object on stdout — including on internal
-  exceptions (caught and reported as `{"status": "error", "error": <traceback>}`).
+  Dispatches on `payload["contract"]` to `run_function_contract` or
+  `run_model_contract`. The model-contract path loads both modules, seeds
+  the RNG **immediately before each of `Model(*init)` and `ModelNew(*init)`
+  construction** (not just before `get_inputs()`) so ops with random
+  internal state (e.g. quantized weights) compare against identical random
+  state rather than two independent draws, then times and compares
+  `.forward` on both exactly as the function contract does. Both paths
+  build identical input tensors for reference and candidate (same
+  shape/dtype/seed, so results are directly comparable — see below), time
+  with warmup + N repeated iterations, check numerical equality, compute
+  `speedup = reference_time / candidate_time`, and always emit exactly one
+  JSON object on stdout — including on internal exceptions (caught and
+  reported as `{"status": "error", "error": <traceback>}`).
 
 ### Why a subprocess, not an in-process call
 
@@ -177,6 +195,11 @@ candidate actually is:
 | `test_candidate_missing_entry_point_is_reported_as_error` | missing `solution` function is a clear error, not an `AttributeError` traceback dump |
 | `test_candidate_that_hangs_times_out` | infinite loop / long sleep → `status="timeout"` at the configured limit, subprocess killed |
 | `test_identical_seed_yields_identical_inputs_across_processes` | same seed → same tensors for reference and candidate, so the correctness comparison is meaningful |
+| `test_model_contract_correct_candidate_passes` | model-contract happy path |
+| `test_model_contract_incorrect_candidate_fails_correctness` | model-contract wrong output → `correct=False` |
+| `test_model_contract_missing_modelnew_is_reported_as_error` | missing `ModelNew` class → clear error |
+| `test_model_contract_seeds_random_init_identically` | `Model`/`ModelNew` each calling `torch.randn` in `__init__` still compare correctly under identical pre-construction seeding |
+| `test_model_contract_handles_tuple_outputs` | multi-tensor `forward()` return (e.g. RoPE's Q+K, cache-write's K+V) compares correctly |
 
 ## Example kernels (`examples/kernels/`)
 
@@ -195,10 +218,97 @@ being able to explain *why* a kernel is faster, not just produce one):
 These are written for Kaggle/Colab (Linux + CUDA); on this dev machine they
 are only syntax-checked (`ast.parse`), never executed.
 
+## Phase 1 — dataset (in progress)
+
+Full field-by-field schema lives in `data/SCHEMA.md`; this section covers
+how the bulk dataset gets generated and where it currently stands.
+
+### Scope: 5 inference-serving categories
+
+`quantized_matmul`, `attention`, `kv_cache`, `norm`, `rope` — chosen over a
+generic elementwise/reduction/matmul grab-bag specifically because they're
+the ops that dominate LLM *serving* cost (as opposed to training), which is
+the framing that resonates with NVIDIA/Cerebras/Cohere. `norm_rope` from
+the original schema proposal was later split into `norm` and `rope` as
+separate categories/template libraries.
+
+### Template-based generation (`data/templates/`, `data/build_dataset.py`)
+
+Hand-writing 300+ genuinely distinct, correct Triton kernels isn't
+tractable (or a good use of effort — most of KernelBench's own "100
+problems per level" are shape variations of similar operation families,
+too). Instead: **3 hand-written templates per category x 20 shape
+variants = 60 entries/category, 300 total.**
+
+- `data/templates/common.py` — `make_entry(...)` assembles the
+  schema-conformant dict; `FP16_TOLERANCE` shared constant.
+- `data/templates/{quantized_matmul,attention,kv_cache,norm,rope}.py` — one
+  module per category, each with 3 template functions (e.g.
+  `quantized_matmul.py` has W8A16 per-tensor, W8A16 per-channel, and W8A8
+  linear layers) and a `generate()` that cross-produces every template
+  with every shape config in that module's grid.
+- `data/templates/__init__.py` — `GENERATORS: dict[str, Callable[[], list[dict]]]`,
+  one entry per category.
+- `data/build_dataset.py` — CLI orchestrator: for each category, calls its
+  generator, runs every entry through `verify_model_kernel()`, writes
+  passing entries to `data/verified/dataset.jsonl` and everything else
+  (with the failure reason attached under `verification.status`/`.error`)
+  to `data/raw/rejected.jsonl`, and writes a `data/raw/generation_report.json`
+  summary. Supports `--categories`, `--limit` (for smoke tests), `--device`,
+  `--warmup`, `--iters`, `--timeout`.
+
+All 300 generated entries are syntax-checked (`ast.parse`) as part of
+building them; templates were also manually reviewed for the RoPE/GQA/
+quantization math they implement, but **none have executed on a real GPU
+yet** (see below) — the math being *plausible* is not the same as it being
+*verified*, which is the whole reason this harness exists.
+
+### Current verification status: 0/300, blocked on local hardware
+
+Running `python data/build_dataset.py --device cuda` on this machine
+produces:
+
+| category | generated | verified | rejected |
+|---|---|---|---|
+| quantized_matmul | 60 | 0 | 60 |
+| attention | 60 | 0 | 60 |
+| kv_cache | 60 | 0 | 60 |
+| norm | 60 | 0 | 60 |
+| rope | 60 | 0 | 60 |
+| **TOTAL** | **300** | **0** | **300** |
+
+Every single rejection has the identical status/error:
+`status: "error"`, `"device 'cuda' requested but no CUDA device is
+available"`. This is `sandbox_runner.py`'s device guard firing before any
+`Model`/`ModelNew` code runs — it is **not** a correctness signal on any of
+the 300 kernels, it's this machine lacking a CUDA GPU (see Platform
+constraint, above). The uniform, single-error-message pattern across all
+300 is itself the evidence that this is an environment gate, not 300
+independent kernel bugs.
+
+**To get a real pass/fail verdict**, run the identical command on Kaggle or
+Colab:
+
+```bash
+pip install -r requirements.txt   # picks up triton on Linux automatically
+python data/build_dataset.py --device cuda
+```
+
+This will populate `data/verified/dataset.jsonl` with whatever fraction
+actually compiles, runs, and matches the reference within tolerance — the
+harness's entire job is to be the thing that tells you that number, rather
+than trusting that hand-written (or eventually LLM-generated) kernels are
+correct by inspection.
+
 ## Next steps
 
-1. Run the three example kernels on Kaggle/Colab against the harness to get
-   real correctness/speedup numbers (closes out Phase 0's deliverable).
-2. Start Phase 1: pull KernelBench's task structure, decide the exact
-   dataset schema, and begin generating + verifying (op → kernel) pairs
-   through this same harness.
+1. Run `python data/build_dataset.py --device cuda` on Kaggle/Colab to get
+   the real per-category pass/fail/speedup numbers.
+2. For any template with a low pass rate, fix the template (not each
+   individual failing shape variant) and regenerate — the shape-grid
+   design means one fix propagates to all 20 variants of that template.
+3. Once a solid verified set exists, decide whether 300 is enough or
+   whether to widen shape grids / add templates for under-represented
+   categories.
+4. Run the three Phase 0 example kernels (`examples/kernels/`) through the
+   harness too, closing out that deliverable.
