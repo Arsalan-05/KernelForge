@@ -1,0 +1,17 @@
+# Core (installable on CPU-only / non-Linux for scripting & harness development)
+torch>=2.2
+numpy
+
+# GPU-only, Linux + NVIDIA required — install on Kaggle/Colab, not locally on macOS/Windows
+triton>=2.2; sys_platform == "linux"
+
+# Dataset + fine-tuning (needed starting Phase 1/4, GPU environment)
+transformers>=4.40
+datasets
+peft
+bitsandbytes; sys_platform == "linux"
+unsloth; sys_platform == "linux"
+accelerate
+
+# Tooling
+pytest

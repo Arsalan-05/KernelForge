@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+training/checkpoints/*
+!training/checkpoints/.gitkeep
+evaluation/results/*
+!evaluation/results/.gitkeep
+data/raw/*
+!data/raw/.gitkeep
+data/verified/*
+!data/verified/.gitkeep
+*.egg-info/
+.DS_Store
