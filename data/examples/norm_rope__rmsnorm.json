@@ -1,0 +1,33 @@
+{
+  "id": "norm_rope__rmsnorm",
+  "category": "norm_rope",
+  "op_name": "RMSNorm",
+  "description": "Apply RMSNorm (root-mean-square layer normalization, no mean-centering or bias) with a learned per-channel gain to a (tokens, hidden_size) activation tensor.",
+  "dtype": "float16",
+  "pytorch_reference": "import torch\nimport torch.nn as nn\n\nclass Model(nn.Module):\n    \"\"\"\n    RMSNorm (LLaMA/Mistral-style): normalizes by root-mean-square instead\n    of mean+variance (no mean-centering, no bias), then scales by a\n    learned per-channel gain.\n    \"\"\"\n    def __init__(self, hidden_size, eps=1e-5):\n        super().__init__()\n        self.eps = eps\n        self.weight = nn.Parameter(torch.ones(hidden_size))\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        variance = x.pow(2).mean(-1, keepdim=True)\n        x = x * torch.rsqrt(variance + self.eps)\n        return x * self.weight\n\nbatch_size = 32\nseq_len = 2048\nhidden_size = 4096\n\ndef get_inputs():\n    return [torch.randn(batch_size * seq_len, hidden_size, dtype=torch.float16)]\n\ndef get_init_inputs():\n    return [hidden_size]\n",
+  "triton_kernel": "import torch\nimport triton\nimport triton.language as tl\n\n\n@triton.jit\ndef _rmsnorm_kernel(\n    x_ptr, weight_ptr, out_ptr,\n    row_stride, n_cols, eps,\n    BLOCK_SIZE: tl.constexpr,\n):\n    row_idx = tl.program_id(0)\n    col_offsets = tl.arange(0, BLOCK_SIZE)\n    mask = col_offsets < n_cols\n\n    row_ptr = x_ptr + row_idx * row_stride\n    x = tl.load(row_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)\n\n    mean_sq = tl.sum(x * x, axis=0) / n_cols\n    inv_rms = 1.0 / tl.sqrt(mean_sq + eps)\n\n    weight = tl.load(weight_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)\n    y = x * inv_rms * weight\n\n    out_row_ptr = out_ptr + row_idx * row_stride\n    tl.store(out_row_ptr + col_offsets, y.to(tl.float16), mask=mask)\n\n\nclass ModelNew(torch.nn.Module):\n    def __init__(self, hidden_size, eps=1e-5):\n        super().__init__()\n        self.eps = eps\n        self.weight = torch.nn.Parameter(torch.ones(hidden_size))\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        assert x.is_cuda and x.ndim == 2\n        n_rows, n_cols = x.shape\n        out = torch.empty_like(x)\n        BLOCK_SIZE = triton.next_power_of_2(n_cols)\n        _rmsnorm_kernel[(n_rows,)](\n            x, self.weight, out,\n            x.stride(0), n_cols, self.eps,\n            BLOCK_SIZE=BLOCK_SIZE,\n        )\n        return out\n",
+  "optimization_explanation": "Eager RMSNorm runs as several separate kernel launches (square, mean-reduce, rsqrt, multiply, multiply-by-weight), each reading and writing the full (tokens, hidden_size) tensor to global memory. The Triton version assigns one program per row/token: it loads the row once, computes the sum-of-squares reduction and rsqrt on-chip, and writes the normalized+scaled result once -- one read plus one write per row instead of roughly five. RMSNorm sits on the critical path of every transformer block (pre-attention and pre-MLP), so at serving scale this removes several redundant memory round-trips per token, per layer, per forward pass.",
+  "tolerance": {
+    "atol": 0.01,
+    "rtol": 0.01
+  },
+  "test_shapes": [
+    {
+      "name": "default",
+      "notes": "batch_size=32, seq_len=2048, hidden_size=4096 as in get_inputs()"
+    }
+  ],
+  "provenance": {
+    "source": "hand_written",
+    "kernelbench_ref": null,
+    "license": null,
+    "notes": "Hand-written for this project. Gain is initialized to all-ones in both Model and ModelNew (matching real RMSNorm's default init), so unlike the quantized_matmul example there is no random-init seeding concern here -- Model and ModelNew are identical at construction time by design."
+  },
+  "verification": {
+    "verified": false,
+    "correct": null,
+    "speedup": null,
+    "device": null,
+    "verified_at": null
+  }
+}

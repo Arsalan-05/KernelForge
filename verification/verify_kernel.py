@@ -9,11 +9,19 @@ to (1) filter LLM-generated training examples down to ones that actually
 work, and (2) evaluate the fine-tuned model against the base model, using
 the exact same pass/fail and speedup definitions in both places.
 
-Both the reference and candidate files must define a callable with the same
-name (default: "solution") that takes one or more tensors as positional
-arguments and returns a tensor or tuple of tensors. Execution happens in a
-subprocess (see sandbox_runner.py) so a candidate that hangs, segfaults, or
-wedges the GPU can't take down the caller.
+Two contracts are supported:
+
+- **function** (`verify_kernel`): reference and candidate each define a
+  callable with the same name (default: "solution") taking one or more
+  tensors and returning a tensor or tuple of tensors.
+- **model** (`verify_model_kernel`): reference defines a KernelBench-style
+  `Model(nn.Module)` + `get_inputs()` + `get_init_inputs()`; candidate
+  defines a `ModelNew(nn.Module)` with the same __init__/forward signature.
+  This is the contract the dataset schema (see data/SCHEMA.md) stores
+  examples in.
+
+Execution happens in a subprocess (see sandbox_runner.py) so a candidate
+that hangs, segfaults, or wedges the GPU can't take down the caller.
 """
 
 import json
@@ -51,47 +59,9 @@ class VerifyResult:
         return self.status == "ok" and bool(self.correct)
 
 
-def verify_kernel(
-    reference_code: str,
-    candidate_code: str,
-    input_spec: list[TensorSpec],
-    entry_point: str = "solution",
-    device: str = "cuda",
-    atol: float = 1e-2,
-    rtol: float = 1e-2,
-    warmup: int = 10,
-    iters: int = 50,
-    seed: int = 0,
-    timeout_s: float = 30.0,
-    memory_limit_bytes: Optional[int] = None,
-) -> VerifyResult:
-    """Run `candidate_code` against `reference_code` and report correctness + speedup.
-
-    `reference_code` / `candidate_code` are the full source text of Python
-    modules, each defining a top-level function named `entry_point`.
-    """
+def _run_sandbox(payload: dict, timeout_s: float) -> VerifyResult:
     with tempfile.TemporaryDirectory(prefix="kernelforge_verify_") as tmpdir:
-        tmp = Path(tmpdir)
-        reference_path = tmp / "reference_module.py"
-        candidate_path = tmp / "candidate_module.py"
-        payload_path = tmp / "payload.json"
-
-        reference_path.write_text(reference_code)
-        candidate_path.write_text(candidate_code)
-
-        payload = {
-            "reference_path": str(reference_path),
-            "candidate_path": str(candidate_path),
-            "entry_point": entry_point,
-            "device": device,
-            "input_spec": [s.to_dict() if isinstance(s, TensorSpec) else s for s in input_spec],
-            "atol": atol,
-            "rtol": rtol,
-            "warmup": warmup,
-            "iters": iters,
-            "seed": seed,
-            "memory_limit_bytes": memory_limit_bytes,
-        }
+        payload_path = Path(tmpdir) / "payload.json"
         payload_path.write_text(json.dumps(payload))
 
         try:
@@ -121,6 +91,92 @@ def verify_kernel(
             )
 
         return VerifyResult(**result)
+
+
+def verify_kernel(
+    reference_code: str,
+    candidate_code: str,
+    input_spec: list[TensorSpec],
+    entry_point: str = "solution",
+    device: str = "cuda",
+    atol: float = 1e-2,
+    rtol: float = 1e-2,
+    warmup: int = 10,
+    iters: int = 50,
+    seed: int = 0,
+    timeout_s: float = 30.0,
+    memory_limit_bytes: Optional[int] = None,
+) -> VerifyResult:
+    """Run `candidate_code` against `reference_code` and report correctness + speedup.
+
+    `reference_code` / `candidate_code` are the full source text of Python
+    modules, each defining a top-level function named `entry_point`.
+    """
+    with tempfile.TemporaryDirectory(prefix="kernelforge_verify_src_") as tmpdir:
+        tmp = Path(tmpdir)
+        reference_path = tmp / "reference_module.py"
+        candidate_path = tmp / "candidate_module.py"
+        reference_path.write_text(reference_code)
+        candidate_path.write_text(candidate_code)
+
+        payload = {
+            "contract": "function",
+            "reference_path": str(reference_path),
+            "candidate_path": str(candidate_path),
+            "entry_point": entry_point,
+            "device": device,
+            "input_spec": [s.to_dict() if isinstance(s, TensorSpec) else s for s in input_spec],
+            "atol": atol,
+            "rtol": rtol,
+            "warmup": warmup,
+            "iters": iters,
+            "seed": seed,
+            "memory_limit_bytes": memory_limit_bytes,
+        }
+        return _run_sandbox(payload, timeout_s)
+
+
+def verify_model_kernel(
+    reference_code: str,
+    candidate_code: str,
+    device: str = "cuda",
+    atol: float = 1e-2,
+    rtol: float = 1e-2,
+    warmup: int = 10,
+    iters: int = 50,
+    seed: int = 0,
+    timeout_s: float = 30.0,
+    memory_limit_bytes: Optional[int] = None,
+) -> VerifyResult:
+    """Run a KernelBench-style candidate against its reference and report correctness + speedup.
+
+    `reference_code` is the full source of a module defining `Model`,
+    `get_inputs()`, and `get_init_inputs()`. `candidate_code` is the full
+    source of a module defining `ModelNew` with the same __init__/forward
+    signature as `Model`. This is the contract dataset entries are stored
+    in (see data/SCHEMA.md) — `Model` supplies both the reference forward
+    pass and the shared get_inputs/get_init_inputs used to build `ModelNew`.
+    """
+    with tempfile.TemporaryDirectory(prefix="kernelforge_verify_src_") as tmpdir:
+        tmp = Path(tmpdir)
+        reference_path = tmp / "reference_module.py"
+        candidate_path = tmp / "candidate_module.py"
+        reference_path.write_text(reference_code)
+        candidate_path.write_text(candidate_code)
+
+        payload = {
+            "contract": "model",
+            "reference_path": str(reference_path),
+            "candidate_path": str(candidate_path),
+            "device": device,
+            "atol": atol,
+            "rtol": rtol,
+            "warmup": warmup,
+            "iters": iters,
+            "seed": seed,
+            "memory_limit_bytes": memory_limit_bytes,
+        }
+        return _run_sandbox(payload, timeout_s)
 
 
 def _cli() -> None:

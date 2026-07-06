@@ -1,0 +1,39 @@
+{
+  "id": "kv_cache__decode_attention_causal",
+  "category": "kv_cache",
+  "op_name": "Single-query decode-step attention over cached K/V",
+  "description": "Compute scaled dot-product attention for a single new query token against a cached K/V history of shape (batch, num_heads, seq_len, head_dim) -- the attention op executed once per generated token during autoregressive decoding.",
+  "dtype": "float16",
+  "pytorch_reference": "import torch\nimport torch.nn as nn\nimport torch.nn.functional as F\n\nclass Model(nn.Module):\n    \"\"\"\n    Single-query \"decode step\" attention: one new query token attends over\n    the full cached K/V history (the op executed once per generated token\n    during autoregressive decoding). No causal mask is needed beyond what\n    the cache already encodes -- the query is always the newest position.\n    \"\"\"\n    def __init__(self, num_heads, head_dim):\n        super().__init__()\n        self.num_heads = num_heads\n        self.head_dim = head_dim\n        self.scale = head_dim ** -0.5\n\n    def forward(self, q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor) -> torch.Tensor:\n        # q: (batch, num_heads, 1, head_dim)\n        # k_cache, v_cache: (batch, num_heads, seq_len, head_dim)\n        scores = torch.matmul(q, k_cache.transpose(-2, -1)) * self.scale\n        probs = F.softmax(scores, dim=-1)\n        return torch.matmul(probs, v_cache)\n\nbatch_size = 16\nnum_heads = 32\nhead_dim = 128\nseq_len = 2048  # cached context length at this decode step\n\ndef get_inputs():\n    q = torch.randn(batch_size, num_heads, 1, head_dim, dtype=torch.float16)\n    k_cache = torch.randn(batch_size, num_heads, seq_len, head_dim, dtype=torch.float16)\n    v_cache = torch.randn(batch_size, num_heads, seq_len, head_dim, dtype=torch.float16)\n    return [q, k_cache, v_cache]\n\ndef get_init_inputs():\n    return [num_heads, head_dim]\n",
+  "triton_kernel": "import torch\nimport triton\nimport triton.language as tl\n\n\n@triton.jit\ndef _decode_attention_kernel(\n    q_ptr, k_ptr, v_ptr, out_ptr,\n    stride_qb, stride_qh, stride_qd,\n    stride_kb, stride_kh, stride_kn, stride_kd,\n    stride_vb, stride_vh, stride_vn, stride_vd,\n    stride_ob, stride_oh, stride_od,\n    seq_len, head_dim, scale,\n    BLOCK_N: tl.constexpr, BLOCK_D: tl.constexpr,\n):\n    pid_b = tl.program_id(0)\n    pid_h = tl.program_id(1)\n\n    d_offsets = tl.arange(0, BLOCK_D)\n    d_mask = d_offsets < head_dim\n\n    q_ptrs = q_ptr + pid_b * stride_qb + pid_h * stride_qh + d_offsets * stride_qd\n    q = tl.load(q_ptrs, mask=d_mask, other=0.0).to(tl.float32)\n\n    n_offsets = tl.arange(0, BLOCK_N)\n    n_mask = n_offsets < seq_len\n\n    k_ptrs = (k_ptr + pid_b * stride_kb + pid_h * stride_kh\n              + n_offsets[:, None] * stride_kn + d_offsets[None, :] * stride_kd)\n    k = tl.load(k_ptrs, mask=n_mask[:, None] & d_mask[None, :], other=0.0).to(tl.float32)\n\n    scores = tl.sum(q[None, :] * k, axis=1) * scale\n    scores = tl.where(n_mask, scores, -float(\"inf\"))\n\n    m = tl.max(scores, axis=0)\n    p = tl.exp(scores - m)\n    denom = tl.sum(p, axis=0)\n\n    v_ptrs = (v_ptr + pid_b * stride_vb + pid_h * stride_vh\n              + n_offsets[:, None] * stride_vn + d_offsets[None, :] * stride_vd)\n    v = tl.load(v_ptrs, mask=n_mask[:, None] & d_mask[None, :], other=0.0).to(tl.float32)\n\n    out = tl.sum(p[:, None] * v, axis=0) / denom\n\n    out_ptrs = out_ptr + pid_b * stride_ob + pid_h * stride_oh + d_offsets * stride_od\n    tl.store(out_ptrs, out.to(tl.float16), mask=d_mask)\n\n\nclass ModelNew(torch.nn.Module):\n    def __init__(self, num_heads, head_dim):\n        super().__init__()\n        self.num_heads = num_heads\n        self.head_dim = head_dim\n        self.scale = head_dim ** -0.5\n\n    def forward(self, q, k_cache, v_cache):\n        assert q.is_cuda\n        batch, num_heads, _, head_dim = q.shape\n        seq_len = k_cache.shape[2]\n        out = torch.empty((batch, num_heads, 1, head_dim), device=q.device, dtype=torch.float16)\n\n        BLOCK_N = triton.next_power_of_2(seq_len)\n        BLOCK_D = triton.next_power_of_2(head_dim)\n        grid = (batch, num_heads)\n        _decode_attention_kernel[grid](\n            q.squeeze(2), k_cache, v_cache, out.squeeze(2),\n            q.stride(0), q.stride(1), q.stride(3),\n            k_cache.stride(0), k_cache.stride(1), k_cache.stride(2), k_cache.stride(3),\n            v_cache.stride(0), v_cache.stride(1), v_cache.stride(2), v_cache.stride(3),\n            out.stride(0), out.stride(1), out.stride(3),\n            seq_len, head_dim, self.scale,\n            BLOCK_N=BLOCK_N, BLOCK_D=BLOCK_D,\n        )\n        return out\n",
+  "optimization_explanation": "The eager path issues separate launches for the QK^T score matmul, softmax, and the probs@V matmul, materializing the full (num_heads, seq_len) score row to global memory in between steps. This fuses QK^T, softmax, and the weighted V-sum into one kernel launch per (batch, head), so attention scores never leave on-chip memory. Because this is exactly the op executed once per generated token per layer, avoiding the extra launches and score materialization compounds heavily across tokens and layers during generation -- this is the single highest-frequency op in the decode loop. CAVEAT: this simplified version loads the entire cached sequence into one block (BLOCK_N = next_power_of_2(seq_len)), which is fine up to a few thousand tokens of context but doesn't scale to very long contexts. A production version would tile over KV-cache blocks with a running (online) max/sum softmax -- 'flash decoding' -- the same chunking trick used in FlashAttention, applied to the single-query decode case.",
+  "tolerance": {
+    "atol": 0.01,
+    "rtol": 0.01
+  },
+  "test_shapes": [
+    {
+      "name": "short_context",
+      "seq_len_override": 256,
+      "notes": "early in generation, small cache"
+    },
+    {
+      "name": "long_context",
+      "seq_len_override": 8192,
+      "notes": "stresses the single-block assumption; may need BLOCK_N tiling to stay correct/fast at this size -- good stress test for the harness's timeout, not just correctness"
+    }
+  ],
+  "provenance": {
+    "source": "hand_written",
+    "kernelbench_ref": null,
+    "license": null,
+    "notes": "Hand-written for this project to target the decode-step attention pattern specifically (as opposed to KernelBench's generic full-sequence attention problems), since this is the op most directly tied to inference-serving throughput."
+  },
+  "verification": {
+    "verified": false,
+    "correct": null,
+    "speedup": null,
+    "device": null,
+    "verified_at": null
+  }
+}
