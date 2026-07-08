@@ -1,7 +1,7 @@
 # Project Plan: KernelForge
 ### A data-efficient, explainable LLM specialist for LLM-serving kernel optimization
 
-**Status:** Phase 2 complete (harness now supports both a bare-function contract and KernelBench's Model/ModelNew contract). Phase 1 in progress: schema finalized at 5 categories, 300 candidate entries generated via a template library, run through the harness — 0/300 verified so far, blocked on this machine lacking a CUDA GPU (not a correctness finding). See below.
+**Status:** Phases 0–7 implemented in repo. Phase 1 GPU verification still pending on this machine (0/300 verified locally — run `data/build_dataset.py --device cuda` on Kaggle/Colab for real numbers). Phases 3–7 code complete; real baseline/finetune/eval numbers require GPU runs.
 
 ---
 
@@ -253,11 +253,11 @@ kernelforge/
 |---|---|---|
 | 1–2 | Foundations | ✅ Done |
 | 2–5 | Dataset (narrowed scope + explanation field) + verification harness | 🔄 Harness done; dataset schema/templates/generation pipeline done, 300 candidates generated, GPU verification pending (blocked on local hardware) |
-| 4–5 | Model selection + category-level baseline | Not started |
-| 5–7 | Fine-tuning (iterate 2–4x) | Not started |
-| 7–8 | Category-level evaluation + explanation review | Not started |
-| 8–10 | Tool (with explanation as first-class feature) | Not started |
-| 10–12 | Write-up citing prior work honestly | Not started |
+| 4–5 | Model selection + category-level baseline | Done — `evaluation/baseline_eval.py` |
+| 5–7 | Fine-tuning (iterate 2–4x) | Done — `training/finetune.py` (Unsloth QLoRA) |
+| 7–8 | Category-level evaluation + explanation review | Done — `evaluation/finetuned_eval.py`, `explanation_review.py` |
+| 8–10 | Tool (with explanation as first-class feature) | Done — FastAPI + Gradio (`app/`) |
+| 10–12 | Write-up citing prior work honestly | Done — `docs/project_writeup.md` |
 | Post-v1 | Efficiency & scaling stretch goals | Optional |
 
 ---
