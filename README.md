@@ -1,19 +1,26 @@
 # KernelForge
 
-Fine-tuned LLM that generates and optimizes Triton GPU kernels from PyTorch ops — with automated correctness verification and speedup benchmarking against eager execution.
+A data-efficient, explainable LLM specialist for **LLM-serving kernel optimization** —
+not a claim of beating large RL-trained systems on broad KernelBench coverage.
+Given a PyTorch reference op, KernelForge generates an optimized Triton kernel
+**and** a human-readable explanation of the optimization technique, with
+automated correctness verification and speedup benchmarking.
 
-See [DOCUMENTATION.md](DOCUMENTATION.md) for the full project plan, architecture, and current status.
+See [DOCUMENTATION.md](DOCUMENTATION.md) for architecture and harness details.
+See [docs/project_writeup.md](docs/project_writeup.md) for positioning, prior work, and evaluation design.
 
 ## Status
 
-**Phase 2 (verification harness) — done, locally testable.**
-**Phase 1 (dataset) — in progress:** schema approved (5 inference-serving
-categories), 300 candidate op→kernel pairs generated via a template
-library, and run through the harness — **0/300 verified so far, because
-this machine has no CUDA GPU** (Triton requires Linux + NVIDIA; see below),
-not because the kernels are known to be wrong. Real numbers require running
-the same command on Kaggle/Colab. Everything else (fine-tuning, evaluation,
-app) is not yet started.
+| Phase | State |
+|---|---|
+| 0 — Foundations | Done (example kernels) |
+| 1 — Dataset | Pipeline done; GPU verification pending (run on Kaggle/Colab) |
+| 2 — Verification harness | Done |
+| 3 — Baseline eval | Done (`evaluation/baseline_eval.py`) |
+| 4 — Fine-tuning | Done (`training/finetune.py`) |
+| 5 — Evaluation + rubric | Done (`evaluation/finetuned_eval.py`, `explanation_review.py`) |
+| 6 — Demo tool | Done (FastAPI + Gradio) |
+| 7 — Write-up | Done (`docs/project_writeup.md`) |
 
 ## Quickstart
 
@@ -21,29 +28,49 @@ app) is not yet started.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# Runs anywhere (CPU, no Triton needed) — validates the harness itself
+# Harness tests (CPU, no Triton)
 pytest tests/ -v
 
-# Runs only on Linux + NVIDIA GPU (Kaggle/Colab) — verifies a real Triton kernel
-python verification/verify_kernel.py \
-    examples/kernels/softmax/reference.py \
-    examples/kernels/softmax/candidate_triton.py \
-    --shape 4096 4096 --device cuda
-
-# Generate + verify the full dataset (300 entries, 5 categories) — Kaggle/Colab only
+# Generate + verify dataset (Linux + NVIDIA GPU)
 python data/build_dataset.py --device cuda
+
+# Baseline eval (un-fine-tuned model)
+python evaluation/baseline_eval.py --device cuda
+
+# Fine-tune (QLoRA via Unsloth on T4)
+python training/finetune.py --config training/configs/finetune_default.json
+
+# Fine-tuned eval + category comparison
+python evaluation/finetuned_eval.py --adapter training/checkpoints/run_*/adapter --device cuda
+
+# Demo tool
+uvicorn app.backend.main:app --host 0.0.0.0 --port 8000
+python app/frontend/gradio_app.py
+```
+
+Dry-run the eval pipeline locally (no GPU/model):
+
+```bash
+python evaluation/baseline_eval.py --dry-run --device cpu
 ```
 
 ## Repo layout
 
 ```
-verification/   correctness + benchmark harness (verify_kernel.py, sandbox_runner.py)
-examples/kernels/  hand-written Triton kernels used to prove out the harness (Phase 0)
-tests/          CPU-only tests for harness mechanics (no GPU/Triton required)
-data/templates/ template library generating dataset entries (5 categories x 3 templates x 20 shapes)
-data/build_dataset.py  generates + verifies the full dataset -> data/verified/dataset.jsonl
-data/SCHEMA.md  dataset entry schema + status
-training/       LoRA/QLoRA fine-tuning scripts (Phase 4, not yet populated)
-evaluation/     baseline vs. fine-tuned comparison (Phase 3/5, not yet populated)
-app/            demo tool: backend + frontend (Phase 6, not yet populated)
+kernelforge/       shared prompts, parsing, dataset, model loading
+verification/      correctness + benchmark harness
+data/              schema, templates, build_dataset.py
+training/          LoRA fine-tuning + configs
+evaluation/        baseline/finetuned eval + explanation rubric
+app/               FastAPI backend + Gradio frontend
+docs/              project write-up (Phase 7)
+examples/kernels/  Phase 0 hand-written kernels
+tests/             harness + utility tests
 ```
+
+## Positioning
+
+This project explicitly cites KernelBench, TritonBench, KernelLLM, Kevin-32B,
+AutoTriton, and related work. Its narrow contribution is **supervised specialization
+on 5 LLM-serving kernel categories with explanation generation**, built on a
+solo/free-tier compute budget without RL.
