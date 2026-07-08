@@ -1,0 +1,9 @@
+{
+  "model_name": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+  "adapter_path": null,
+  "max_new_tokens": 4096,
+  "temperature": 0.2,
+  "top_p": 0.95,
+  "load_in_4bit": true,
+  "max_seq_length": 8192
+}
