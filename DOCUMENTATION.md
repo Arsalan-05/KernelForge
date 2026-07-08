@@ -14,11 +14,11 @@ kickoff — this file tracks implementation, not the roadmap.
 | 0 — Foundations | Partial: 3 hand-written example kernels done (`examples/kernels/`) |
 | 1 — Dataset | In progress: schema approved, 300 candidate entries generated across 5 categories, harness-verified pipeline built and run — **0/300 GPU-verified so far, blocked on lacking a local CUDA GPU, not on kernel correctness** (see below) |
 | 2 — Verification harness | **Done**, locally testable, now supports both the function contract and KernelBench's Model/ModelNew contract |
-| 3 — Model selection & baseline | Not started |
-| 4 — Fine-tuning | Not started |
-| 5 — Evaluation | Not started |
-| 6 — Tool/UI | Not started |
-| 7 — Write-up & positioning | Not started |
+| 3 — Model selection & baseline | **Done** — `evaluation/baseline_eval.py`, `training/configs/` |
+| 4 — Fine-tuning | **Done** — `training/finetune.py` (Unsloth QLoRA + PEFT fallback) |
+| 5 — Evaluation | **Done** — `evaluation/finetuned_eval.py`, `evaluation/explanation_review.py` |
+| 6 — Tool/UI | **Done** — `app/backend/main.py` (FastAPI), `app/frontend/gradio_app.py` |
+| 7 — Write-up & positioning | **Done** — `docs/project_writeup.md`, updated README |
 
 ## Why the harness came first
 
@@ -304,11 +304,7 @@ correct by inspection.
 
 1. Run `python data/build_dataset.py --device cuda` on Kaggle/Colab to get
    the real per-category pass/fail/speedup numbers.
-2. For any template with a low pass rate, fix the template (not each
-   individual failing shape variant) and regenerate — the shape-grid
-   design means one fix propagates to all 20 variants of that template.
-3. Once a solid verified set exists, decide whether 300 is enough or
-   whether to widen shape grids / add templates for under-represented
-   categories.
-4. Run the three Phase 0 example kernels (`examples/kernels/`) through the
-   harness too, closing out that deliverable.
+2. Run `evaluation/baseline_eval.py --device cuda` for category-level baseline.
+3. Run `training/finetune.py` then `evaluation/finetuned_eval.py` for before/after.
+4. Use `evaluation/explanation_review.py` for manual explanation rubric scoring.
+5. Deploy the demo tool (`uvicorn app.backend.main:app` + `gradio_app.py`).

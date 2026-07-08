@@ -12,6 +12,17 @@ peft
 bitsandbytes; sys_platform == "linux"
 unsloth; sys_platform == "linux"
 accelerate
+trl
+
+# Demo tool (Phase 6)
+fastapi
+uvicorn[standard]
+gradio
+httpx
+pydantic
+
+# Config
+pyyaml
 
 # Tooling
 pytest
