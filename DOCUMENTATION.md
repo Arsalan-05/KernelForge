@@ -101,6 +101,28 @@ The engine is pure orchestration. It takes `generate`, `verify`,
 `skip_reason`, and `count_tokens` as arguments, so the demo, the mock
 generator in tests, and evaluation can all drive the same loop.
 
+**Prompting for general-purpose models.** `few_shot` on a request is
+automatic by default: on for the base and hosted models, off for the
+fine-tuned adapter, which learned the format in training. When it's on, the
+prompt gets two additions.
+
+- **A solved example.** `Catalog.example_for` picks the solved smoke
+  template, as a prior user/assistant turn:
+  - It is never the requested op.
+  - It is the shortest interpreter-checked sibling in the same category. For a
+    custom op, the category is guessed from keywords in the description and
+    reference.
+- **`TRITON_NOTES`:** Triton 3.x pitfalls, such as hand-written softmax, no
+  `tl.isnan`, power-of-two `tl.arange`, `tl.dot` shape rules and NaN-safe
+  causal masking.
+
+The example is disclosed in the `round` event and in the response's
+`example` field, and the UI shows it on the round. Repair feedback also gets
+**targeted hints** (`prompts.repair_hints`) when the harness error matches a
+known pattern: a missing `tl.*` function, an unexpected keyword argument,
+NaN/inf output, `tl.arange`/`tl.dot` shape errors, syntax errors or policy
+blocks. These were the failure modes observed live with `qwen3-coder`.
+
 - **Round 0 (sample):** `num_candidates` completions from one batched
   `generate()` (`num_return_sequences`, streamed per row by
   `BatchTextStreamer`). With N > 1, temperature is raised to at least 0.7;

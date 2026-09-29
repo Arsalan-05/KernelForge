@@ -20,6 +20,18 @@ KERNEL_CONTRACT = (
     "- Don't redefine `get_inputs`, `get_init_inputs` or the shape constants; the harness supplies them."
 )
 
+TRITON_NOTES = (
+    "Triton 3.x pitfalls to avoid:\n"
+    "- Write softmax by hand: m = tl.max(x, axis=1); p = tl.exp(x - m[:, None]); p / tl.sum(p, axis=1)[:, None]. "
+    "There is no axis argument on tl.softmax.\n"
+    "- There is no tl.isnan/tl.isinf; use x != x. Math lives in tl (tl.exp, tl.log, tl.sqrt, tl.rsqrt, tl.where).\n"
+    "- tl.arange(0, BLOCK) needs a constexpr power-of-two BLOCK; mask the tail and pass other= to masked tl.load.\n"
+    "- tl.dot needs 2-D blocks with every dimension >= 16 and matching input dtypes; accumulate in tl.float32.\n"
+    "- For causal masks use a large finite negative (e.g. -1e9) or guard fully-masked rows, otherwise "
+    "exp(-inf - -inf) produces NaN.\n"
+    "- Cast explicitly with x.to(tl.float32) and store in the output's dtype."
+)
+
 OUTPUT_FORMAT_INSTRUCTION = (
     f"{KERNEL_CONTRACT}\n\n"
     "Respond with exactly two sections:\n"
@@ -39,11 +51,26 @@ def format_instruction(description: str, pytorch_reference: str) -> str:
     )
 
 
-def build_messages(description: str, pytorch_reference: str) -> list[dict]:
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": format_instruction(description, pytorch_reference)},
-    ]
+def format_response(entry: dict) -> str:
+    return (
+        f"kernel:\n{entry['triton_kernel'].strip()}\n\n"
+        f"explanation:\n{entry['optimization_explanation'].strip()}"
+    )
+
+
+def build_messages(description: str, pytorch_reference: str, example: dict | None = None,
+                   notes: bool = False) -> list[dict]:
+    """`example` (a dataset entry for a *different* op) is shown as a solved prior turn;
+    `notes` appends TRITON_NOTES to the system prompt. Both are for general-purpose models."""
+    system = f"{SYSTEM_PROMPT}\n\n{TRITON_NOTES}" if notes else SYSTEM_PROMPT
+    messages = [{"role": "system", "content": system}]
+    if example is not None:
+        messages += [
+            {"role": "user", "content": format_instruction(example["description"], example["pytorch_reference"])},
+            {"role": "assistant", "content": format_response(example)},
+        ]
+    messages.append({"role": "user", "content": format_instruction(description, pytorch_reference)})
+    return messages
 
 
 _TEMP_PATH = re.compile(r"/[^\s\"']*kernelforge_verify_src_[^/\s]+/(candidate|reference)_module\.py")
@@ -56,6 +83,42 @@ def _trim_error(error: str) -> str:
     if len(lines) > _MAX_FEEDBACK_LINES:
         lines = ["..."] + lines[-_MAX_FEEDBACK_LINES:]
     return "\n".join(lines)[-3000:]
+
+
+_REPAIR_HINTS = [
+    (re.compile(r"module 'triton\.language' has no attribute '(\w+)'"),
+     lambda m: f"`tl.{m.group(1)}` does not exist in Triton 3.x. Build it from tl.exp/tl.max/tl.sum/tl.where "
+               "or plain comparisons instead."),
+    (re.compile(r"(\w+)\(\) got an unexpected keyword argument '(\w+)'"),
+     lambda m: f"`{m.group(1)}` takes no `{m.group(2)}=` argument in Triton 3.x; compute it explicitly "
+               "(e.g. softmax via tl.max, tl.exp and tl.sum along the axis)."),
+    (re.compile(r"contains NaN|contains inf", re.I),
+     lambda m: "NaN/inf usually means a fully-masked row (exp(-inf - -inf)) or an unmasked out-of-bounds load. "
+               "Use a large finite negative for masking, pass other= to masked loads, and keep the running "
+               "max/sum in float32."),
+    (re.compile(r"arange's (range|arguments) must be a power of 2|arange.*power of 2", re.I),
+     lambda m: "tl.arange bounds must be constexpr powers of two; round BLOCK up with "
+               "triton.next_power_of_2 and mask the tail."),
+    (re.compile(r"(shape mismatch|incompatible dimensions|must be >= 16)", re.I),
+     lambda m: "Check block shapes: tl.dot needs 2-D operands with every dimension >= 16 and matching inner "
+               "dimensions; transpose with tl.trans where needed."),
+    (re.compile(r"SyntaxError"),
+     lambda m: "Return the full module again as valid Python; check indentation and line breaks around the "
+               "reported line."),
+    (re.compile(r"code policy"),
+     lambda m: "Import only torch, triton, triton.language and math, and don't touch files, processes, "
+               "getattr/eval or dunder attributes."),
+]
+
+
+def repair_hints(error: str) -> list[str]:
+    """Targeted fixes for failure patterns general-purpose models hit in Triton code."""
+    hints = []
+    for pattern, render in _REPAIR_HINTS:
+        m = pattern.search(error or "")
+        if m:
+            hints.append(render(m))
+    return hints
 
 
 def format_repair_feedback(parse_status: str, verification: dict | None) -> str:
@@ -76,6 +139,9 @@ def format_repair_feedback(parse_status: str, verification: dict | None) -> str:
             f"Your previous kernel failed in the verification harness (status: {status}):\n"
             f"{_trim_error((verification or {}).get('error') or 'no error message')}"
         )
+    hints = repair_hints((verification or {}).get("error") or "")
+    if hints:
+        problem += "\n\nLikely fix:\n" + "\n".join(f"- {h}" for h in hints)
     return (
         f"{problem}\n\n"
         "Fix it. Keep `ModelNew` with the same __init__ and forward signatures as `Model`, return "
@@ -85,9 +151,10 @@ def format_repair_feedback(parse_status: str, verification: dict | None) -> str:
 
 
 def build_repair_messages(description: str, pytorch_reference: str, previous_output: str,
-                          parse_status: str, verification: dict | None) -> list[dict]:
+                          parse_status: str, verification: dict | None,
+                          example: dict | None = None, notes: bool = False) -> list[dict]:
     """Only the latest attempt is kept, so context stays bounded across repair rounds."""
-    return build_messages(description, pytorch_reference) + [
+    return build_messages(description, pytorch_reference, example, notes) + [
         {"role": "assistant", "content": previous_output},
         {"role": "user", "content": format_repair_feedback(parse_status, verification)},
     ]
@@ -96,10 +163,7 @@ def build_repair_messages(description: str, pytorch_reference: str, previous_out
 def format_training_example(entry: dict) -> dict:
     """Project a schema entry into an instruction-tuning triple."""
     instruction = format_instruction(entry["description"], entry["pytorch_reference"])
-    response = (
-        f"kernel:\n{entry['triton_kernel'].strip()}\n\n"
-        f"explanation:\n{entry['optimization_explanation'].strip()}"
-    )
+    response = format_response(entry)
     return {
         "id": entry["id"],
         "category": entry["category"],

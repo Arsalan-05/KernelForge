@@ -271,3 +271,25 @@ def test_no_repair_when_verification_is_skipped(client):
                                           "verify": False, "repair_rounds": 2}).json()
     assert len(body["candidates"]) == 1
     assert body["selection_reason"].startswith("not verified")
+
+
+def test_few_shot_example_is_a_different_op_and_is_reported(client):
+    t = _first_template(client)
+    body = client.post("/generate", json={
+        "description": t["description"], "pytorch_reference": t["pytorch_reference"], "verify": False}).json()
+    assert body["example"] and not body["example"].startswith(t["id"] + "__")
+    assert body["status"] == "ok"  # mock still answers the requested op, not the example
+
+    off = client.post("/generate", json={
+        "description": t["description"], "pytorch_reference": t["pytorch_reference"], "verify": False,
+        "few_shot": False}).json()
+    assert off["example"] is None
+
+
+def test_catalog_never_uses_the_requested_op_as_its_example():
+    catalog = main._get_catalog()
+    for t in catalog.templates:
+        for ref in (t.detail()["pytorch_reference"], t.detail()["smoke_reference"]):
+            example = catalog.example_for(ref)
+            assert not example["id"].startswith(t.id + "__"), t.id
+            assert example["category"] == t.category
