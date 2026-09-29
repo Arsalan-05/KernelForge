@@ -36,6 +36,8 @@ class SearchConfig:
     num_candidates: int = 1
     repair_rounds: int = 0
     base_temperature: Optional[float] = None
+    example: Optional[dict] = None  # solved dataset entry for a different op, shown few-shot
+    triton_notes: bool = False
 
     def temperature(self, n: int) -> Optional[float]:
         # Best-of-N is pointless if every sample is near-greedy.
@@ -121,7 +123,7 @@ def run_search(
     stats = stats or SearchStats()
     candidates: list[Candidate] = []
     verified_by_kernel: dict[str, Candidate] = {}
-    messages = build_messages(description, pytorch_reference)
+    messages = build_messages(description, pytorch_reference, config.example, config.triton_notes)
     repair_target: Optional[Candidate] = None
     search_start = time.perf_counter()
 
@@ -131,6 +133,7 @@ def run_search(
             messages = build_repair_messages(
                 description, pytorch_reference, repair_target.raw_output,
                 repair_target.status, repair_target.verification,
+                config.example, config.triton_notes,
             )
         round_event = {
             "event": "round",
@@ -139,6 +142,8 @@ def run_search(
             "num_candidates": n,
             "candidates": [f"r{round_idx}c{i}" for i in range(n)],
         }
+        if round_idx == 0 and config.example is not None:
+            round_event["example"] = {"id": config.example["id"], "op_name": config.example.get("op_name")}
         if repair_target is not None:
             round_event["repairing"] = repair_target.id
             round_event["feedback"] = messages[-1]["content"]

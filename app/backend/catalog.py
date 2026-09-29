@@ -22,6 +22,13 @@ ROOT = Path(__file__).parent.parent.parent
 INTERPRET_REPORT = ROOT / "data" / "raw" / "interpret_report.json"
 
 _REFERENCE_IN_PROMPT = re.compile(r"PyTorch reference:\n```python\n(.*?)\n```", re.S)
+_CATEGORY_KEYWORDS = {
+    "attention": ("attention", "softmax", "scaled_dot_product", "causal", "attn"),
+    "kv_cache": ("cache", "decode", "past_key", "kv"),
+    "norm": ("norm", "rms", "variance", "eps"),
+    "rope": ("rope", "rotary", "cos", "sin", "rotate"),
+    "quantized_matmul": ("int8", "quant", "dequant", "matmul", "linear", "scale"),
+}
 
 
 @dataclass
@@ -116,8 +123,27 @@ class Catalog:
     def match_reference(self, pytorch_reference: str) -> Optional[dict]:
         return self._by_reference.get(pytorch_reference.strip())
 
+    def example_for(self, pytorch_reference: str, description: str = "") -> Optional[dict]:
+        """A solved entry to show few-shot: never the requested op itself, preferring an
+        interpreter-checked sibling in the same category (the shortest, to keep prompts small)."""
+        target = self.match_reference(pytorch_reference)
+        target_slug = _slug(target["id"]) if target else None
+        pool = [t for t in self.templates if t.id != target_slug]
+        checked = [t for t in pool if t.interpreter_checked] or pool
+        if not checked:
+            return None
+        if target is not None:
+            category = target["category"]
+        else:
+            text = f"{description}\n{pytorch_reference}".lower()
+            scores = {c: sum(text.count(k) for k in keys) for c, keys in _CATEGORY_KEYWORDS.items()}
+            category = max(scores, key=scores.get) if any(scores.values()) else "norm"
+        same = [t for t in checked if t.category == category] or checked
+        return min(same, key=lambda t: len(t.smoke["triton_kernel"])).smoke
+
     def match_prompt(self, messages: list[dict]) -> Optional[dict]:
-        for m in messages:
+        # Newest first: earlier user turns may hold a few-shot example.
+        for m in reversed(messages):
             if m["role"] == "user":
                 found = _REFERENCE_IN_PROMPT.search(m["content"])
                 if found:

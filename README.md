@@ -44,7 +44,7 @@ result numbers to report.
 | Piece | State |
 |---|---|
 | Verification harness | Done, GPU-validated; GPU mode (correctness + speedup) and interpreter mode (CPU, correctness only) |
-| Demo studio + kernel search (best-of-N, repair, result cache, `/stats`) | Built; 75 tests (74 on macOS, plus 1 interpreter test that runs in Docker); first live GPU session + GIF pending |
+| Demo studio + kernel search (best-of-N, repair, result cache, `/stats`) | Built; 81 tests (80 on macOS, plus 1 interpreter test that runs in Docker); first live GPU session + GIF pending |
 | Public deployment (Railway: Dockerfile + `railway.json`, hosted-model option, code policy, rate limits) | Built; interpreter-only (Railway has no GPU) |
 | Dataset (15 templates × 20 shapes, 5 categories) | Templates fixed; 15/15 pass the interpreter; GPU verification pending |
 | Fine-tuning (QLoRA, `training/finetune.py`) | Code written, not yet run |

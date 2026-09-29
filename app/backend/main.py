@@ -411,6 +411,10 @@ class GenerateRequest(BaseModel):
     tolerance_rtol: float = Field(0.01, gt=0, le=1)
     num_candidates: int = Field(1, ge=1, le=MAX_CANDIDATES, description="Samples drawn in the first round")
     repair_rounds: int = Field(0, ge=0, le=MAX_REPAIR_ROUNDS, description="Harness-feedback repair attempts")
+    few_shot: Optional[bool] = Field(
+        None, description="Show a solved template for a different op plus Triton API notes; "
+        "default: on for general-purpose models, off for the fine-tuned adapter",
+    )
 
 
 class VerificationInfo(BaseModel):
@@ -455,6 +459,7 @@ class GenerateResponse(BaseModel):
     selected: str
     selection_reason: str
     candidates: list[CandidateInfo]
+    example: Optional[str] = None
 
 
 class TemplateInfo(BaseModel):
@@ -543,11 +548,17 @@ def _run_verification(req: GenerateRequest, kernel: str) -> dict:
     return info
 
 
-def _search(req: GenerateRequest, generator, stats: SearchStats) -> Iterator[dict]:
+def _few_shot_example(req: GenerateRequest) -> Optional[dict]:
+    enabled = req.few_shot if req.few_shot is not None else _model_variant() != "fine-tuned"
+    return _get_catalog().example_for(req.pytorch_reference, req.description) if enabled else None
+
+
+def _search(req: GenerateRequest, generator, stats: SearchStats, example: Optional[dict] = None) -> Iterator[dict]:
     return run_search(
         req.description,
         req.pytorch_reference,
-        SearchConfig(req.num_candidates, req.repair_rounds, _generation_config().temperature),
+        SearchConfig(req.num_candidates, req.repair_rounds, _generation_config().temperature,
+                     example=example, triton_notes=example is not None),
         generate=generator.stream_chat,
         verify=lambda kernel: _run_verification(req, kernel),
         skip_reason=lambda kernel: _verification_skip_reason(req, kernel),
@@ -641,13 +652,14 @@ def generate(req: GenerateRequest):
     config = _generation_config()
     variant = _model_variant()
     search_stats = SearchStats()
+    example = _few_shot_example(req)
 
     # One device, one model instance: serialize generation + verification so concurrent
     # visitors queue instead of contending for VRAM/CPU.
     with _QueueSlot(), _inference_lock:
         start = time.perf_counter()
         try:
-            selected = next(e for e in _search(req, generator, search_stats) if e["event"] == "selected")
+            selected = next(e for e in _search(req, generator, search_stats, example) if e["event"] == "selected")
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Generation failed: {type(exc).__name__}: {exc}") from exc
         _stats.record(search_stats, selected)
@@ -664,6 +676,7 @@ def generate(req: GenerateRequest):
         selected=selected["candidate"],
         selection_reason=selected["reason"],
         candidates=[CandidateInfo(**c) for c in selected["candidates"]],
+        example=example["id"] if example else None,
     )
 
 
@@ -714,7 +727,7 @@ async def generate_stream(req: GenerateRequest):
         try:
             yield _event("started")
             start = time.perf_counter()
-            search = _search(req, generator, search_stats)
+            search = _search(req, generator, search_stats, _few_shot_example(req))
             try:
                 while True:
                     event = await anyio.to_thread.run_sync(next, search, None)

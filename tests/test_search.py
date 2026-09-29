@@ -168,3 +168,36 @@ def test_harness_mismatch_message_locates_the_error():
     assert "NaN (1 elements)" in _compare(nan, ref, 1e-2, 1e-2)[1]
     assert _compare((ref, ref), ref, 1e-2, 1e-2)[1].startswith("candidate returned 2 output(s)")
     assert _compare(ref.clone(), ref, 1e-2, 1e-2) == (True, None)
+
+
+EXAMPLE = {"id": "norm__layernorm__smoke", "op_name": "LayerNorm", "description": "ex desc",
+           "pytorch_reference": "ex ref", "triton_kernel": "import torch\nclass ModelNew: pass",
+           "optimization_explanation": "one pass"}
+
+
+def test_few_shot_example_and_notes_reach_every_round():
+    events, seen, _ = _run(
+        [[_reply("bad")], [_reply("good")]],
+        {"bad": {"status": "error", "error": "AttributeError(\"module 'triton.language' has no attribute 'isnan'\")"},
+         "good": PASS},
+        SearchConfig(repair_rounds=1, example=EXAMPLE, triton_notes=True),
+    )
+    first_round = next(e for e in events if e["event"] == "round")
+    assert first_round["example"] == {"id": "norm__layernorm__smoke", "op_name": "LayerNorm"}
+    for messages, _, _ in seen:
+        assert "Triton 3.x pitfalls" in messages[0]["content"]
+        assert messages[1]["role"] == "user" and "ex ref" in messages[1]["content"]
+        assert messages[2]["role"] == "assistant" and "one pass" in messages[2]["content"]
+        assert "PyTorch reference:\n```python\nref" in messages[3]["content"]
+    repair_feedback = seen[1][0][-1]["content"]
+    assert "`tl.isnan` does not exist" in repair_feedback
+    assert events[-1]["verification"]["passed"]
+
+
+def test_repair_hints_cover_common_triton_failures():
+    from kernelforge.prompts import repair_hints
+
+    assert any("no `axis=`" in h for h in repair_hints("softmax() got an unexpected keyword argument 'axis'"))
+    assert any("fully-masked row" in h for h in repair_hints("output contains NaN (16384 elements)"))
+    assert any("valid Python" in h for h in repair_hints("SyntaxError on line 3: invalid syntax"))
+    assert repair_hints("outputs differ at index 3") == []

@@ -658,6 +658,14 @@ function addRound(r, ev) {
   round.append(
     el("div", { class: "round-head" }, el("span", { class: "round-k" }, `round ${ev.round}`), el("span", { class: "round-title" }, title))
   );
+  if (ev.example) {
+    r.example = ev.example;
+    $("#search-card").hidden = false;
+    round.append(el("p", { class: "round-note" },
+      "Prompt included a solved example for a different op: ",
+      el("strong", {}, ev.example.op_name || ev.example.id),
+      " (from the verified template library), plus Triton API notes."));
+  }
   if (ev.feedback) {
     round.append(el("details", { class: "feedback" }, el("summary", {}, "Harness feedback sent to the model"), el("pre", {}, ev.feedback)));
   }
