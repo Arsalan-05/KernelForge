@@ -1,0 +1,9 @@
+.venv
+.git
+**/__pycache__
+.pytest_cache
+.DS_Store
+training/checkpoints
+evaluation/results
+data/raw/rejected.jsonl
+data/raw/generation_report.json

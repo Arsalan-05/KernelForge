@@ -1,0 +1,129 @@
+{
+  "generated_at": "2026-09-29T18:11:21.177087+00:00",
+  "mode": "triton-interpreter (correctness only, CPU; no timings)",
+  "smoke": true,
+  "total": 15,
+  "passed": 15,
+  "templates": {
+    "quantized_matmul/w8a16_pertensor": [
+      {
+        "id": "quantized_matmul__w8a16_pertensor__smoke_b5",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "quantized_matmul/w8a16_perchannel": [
+      {
+        "id": "quantized_matmul__w8a16_perchannel__smoke_b5",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "quantized_matmul/w8a8": [
+      {
+        "id": "quantized_matmul__w8a8__smoke_b5",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "attention/causal_prefill": [
+      {
+        "id": "attention__causal_prefill__b2_s80__smoke",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "attention/cross_noncausal": [
+      {
+        "id": "attention__cross_noncausal__b2_skv80__smoke",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "attention/gqa_causal_prefill": [
+      {
+        "id": "attention__gqa_causal_prefill__b2_s80__smoke",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "kv_cache/decode_attention_mha": [
+      {
+        "id": "kv_cache__decode_attention_mha__b2_s100__smoke",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "kv_cache/decode_attention_gqa": [
+      {
+        "id": "kv_cache__decode_attention_gqa__b2_s100__smoke",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "kv_cache/cache_write": [
+      {
+        "id": "kv_cache__cache_write__b2_s100__smoke",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "norm/rmsnorm": [
+      {
+        "id": "norm__rmsnorm__smoke",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "norm/layernorm": [
+      {
+        "id": "norm__layernorm__smoke",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "norm/rmsnorm_residual": [
+      {
+        "id": "norm__rmsnorm_residual__smoke",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "rope/rotate_half": [
+      {
+        "id": "rope__rotate_half__b2_s9__smoke",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "rope/interleaved": [
+      {
+        "id": "rope__interleaved__b2_s9__smoke",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "rope/fused_qk": [
+      {
+        "id": "rope__fused_qk__b2_s9__smoke",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ]
+  }
+}

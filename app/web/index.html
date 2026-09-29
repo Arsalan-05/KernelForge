@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KernelForge — PyTorch → Triton kernel studio</title>
+  <meta name="description" content="Generate optimized Triton kernels for LLM-serving ops, with an optimization explanation and a live correctness + speedup check.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2384cc16'/%3E%3Cpath d='M9 8v16M9 16l9-8M9 16l9 8M20 12h4M20 20h4' stroke='%230b1400' stroke-width='3' stroke-linecap='round' fill='none'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#studio">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M9 8v16M9 16l9-8M9 16l9 8M20 12h4M20 20h4"/></svg>
+      <span class="brand-name">KernelForge</span>
+      <span class="brand-tag">research preview</span>
+    </a>
+    <nav class="nav">
+      <a href="#studio">Studio</a>
+      <a href="#how">How it works</a>
+      <a href="#limits">Limitations</a>
+      <a href="/docs" target="_blank" rel="noopener">API</a>
+    </nav>
+    <div class="status">
+      <span class="pill" id="model-pill" data-variant="unknown"><span class="dot"></span><span id="model-pill-text">Connecting…</span></span>
+      <span class="pill subtle" id="gpu-pill"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="4" width="12" height="8" rx="1.5"/><path d="M5 2v2M8 2v2M11 2v2M5 12v2M8 12v2M11 12v2"/></svg><span id="gpu-pill-text">—</span></span>
+      <a class="icon-btn" href="https://github.com/Arsalan-05/KernelForge" target="_blank" rel="noopener" aria-label="Source on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" data-variant="base" role="status">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7"/><path d="M8 7v4M8 4.5v.5"/></svg>
+    <span id="banner-text">Running the base model — not fine-tuned. The fine-tuned adapter is in progress and will drop into this same pipeline.</span>
+  </div>
+
+  <main id="studio" class="studio">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <h2>Op library</h2>
+        <span class="count" id="op-count">—</span>
+      </div>
+      <label class="search">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+        <input id="op-search" type="search" placeholder="Search ops" autocomplete="off">
+      </label>
+      <button class="op-item custom" id="custom-op" type="button">
+        <span class="op-plus">+</span>
+        <span><span class="op-name">Custom op</span><span class="op-sub">Paste your own <code>Model</code></span></span>
+      </button>
+      <div class="op-groups" id="op-groups"></div>
+      <p class="sidebar-foot">The 15 dataset templates. <span class="badge interp">interp ✓</span> passed Triton's CPU interpreter; <span class="badge gpu">GPU</span> has harness-verified GPU entries.</p>
+      <div class="stats-card">
+        <div class="sidebar-head"><h2>Server</h2><span class="count" id="stats-uptime">—</span></div>
+        <div class="stats" id="stats"></div>
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <div class="card input-card">
+        <div class="card-head">
+          <div class="title-group">
+            <h3 id="op-title">Select an op</h3>
+            <span class="chip" id="op-category" hidden></span>
+          </div>
+          <div class="actions">
+            <button class="btn ghost sm" id="reset-btn" type="button" title="Restore the selected example">Reset</button>
+            <button class="btn ghost sm" id="copy-ref" type="button">Copy</button>
+          </div>
+        </div>
+        <label class="field">
+          <span class="field-label">Op description</span>
+          <textarea id="description" rows="2" maxlength="2000" placeholder="Plain-English description of what the op computes"></textarea>
+        </label>
+        <div class="field">
+          <span class="field-label">PyTorch reference <span class="hint">KernelBench contract: <code>Model</code> + <code>get_inputs()</code> + <code>get_init_inputs()</code></span></span>
+          <div class="editor">
+            <div class="gutter" id="ref-gutter" aria-hidden="true"></div>
+            <textarea id="reference" spellcheck="false" autocapitalize="off" autocomplete="off" maxlength="20000"></textarea>
+          </div>
+        </div>
+        <div class="controls">
+          <label class="toggle">
+            <input type="checkbox" id="verify" checked>
+            <span class="track"><span class="thumb"></span></span>
+            <span>Verify</span>
+          </label>
+          <div class="control-group">
+            <span class="control-label">Harness</span>
+            <div class="segmented" id="device-seg" role="radiogroup" aria-label="Verification device">
+              <button type="button" data-value="cuda" class="on" role="radio" aria-checked="true" title="Real GPU run: correctness + timed speedup">GPU</button>
+              <button type="button" data-value="cpu" role="radio" aria-checked="false" title="Triton's CPU interpreter: correctness only, no timings">Interpreter</button>
+            </div>
+          </div>
+          <div class="control-group">
+            <span class="control-label">Samples</span>
+            <div class="segmented" id="samples-seg" role="radiogroup" aria-label="Candidates sampled in the first round">
+              <button type="button" data-value="1" class="on" role="radio" aria-checked="true">1</button>
+              <button type="button" data-value="2" role="radio" aria-checked="false">2</button>
+              <button type="button" data-value="3" role="radio" aria-checked="false">3</button>
+              <button type="button" data-value="4" role="radio" aria-checked="false">4</button>
+            </div>
+          </div>
+          <div class="control-group">
+            <span class="control-label">Repair</span>
+            <div class="segmented" id="repair-seg" role="radiogroup" aria-label="Harness-feedback repair rounds">
+              <button type="button" data-value="0" class="on" role="radio" aria-checked="true">off</button>
+              <button type="button" data-value="1" role="radio" aria-checked="false">1</button>
+              <button type="button" data-value="2" role="radio" aria-checked="false">2</button>
+            </div>
+          </div>
+          <details class="advanced">
+            <summary>Tolerances</summary>
+            <div class="advanced-body">
+              <label>atol <input id="atol" type="number" min="0.0001" max="1" step="0.001" value="0.01"></label>
+              <label>rtol <input id="rtol" type="number" min="0.0001" max="1" step="0.001" value="0.01"></label>
+            </div>
+          </details>
+          <div class="spacer"></div>
+          <button class="btn primary" id="run-btn" type="button">
+            <span id="run-label">Generate kernel</span>
+            <kbd id="run-kbd">⌘ ↵</kbd>
+          </button>
+        </div>
+      </div>
+
+      <div class="card pipeline" id="pipeline" aria-label="Pipeline progress">
+        <div class="step" data-step="queue" data-state="idle">
+          <span class="step-icon"></span>
+          <div><div class="step-name">GPU slot</div><div class="step-meta">—</div></div>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" data-step="generate" data-state="idle">
+          <span class="step-icon"></span>
+          <div><div class="step-name">Generate</div><div class="step-meta">—</div></div>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" data-step="parse" data-state="idle">
+          <span class="step-icon"></span>
+          <div><div class="step-name">Parse</div><div class="step-meta">—</div></div>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" data-step="verify" data-state="idle">
+          <span class="step-icon"></span>
+          <div><div class="step-name">Verify</div><div class="step-meta">—</div></div>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" data-step="select" data-state="idle">
+          <span class="step-icon"></span>
+          <div><div class="step-name">Select</div><div class="step-meta">—</div></div>
+        </div>
+      </div>
+
+      <div class="card search-card" id="search-card" hidden>
+        <div class="card-head">
+          <h3>Kernel search</h3>
+          <span class="chip subtle" id="search-summary"></span>
+          <span class="muted small search-help">Click a candidate to inspect it. Identical kernels share one harness run.</span>
+        </div>
+        <div class="rounds" id="rounds"></div>
+      </div>
+
+      <div class="results">
+        <div class="card output-card">
+          <div class="card-head tabs" role="tablist">
+            <button class="tab on" data-tab="kernel" type="button" role="tab">Triton kernel</button>
+            <button class="tab" data-tab="compare" type="button" role="tab">Side by side</button>
+            <button class="tab" data-tab="raw" type="button" role="tab">Raw output <span class="live-dot" id="live-dot" hidden></span></button>
+            <div class="spacer"></div>
+            <span class="chip subtle mono" id="focus-chip" hidden></span>
+            <button class="btn ghost sm" id="copy-kernel" type="button" disabled>Copy</button>
+            <button class="btn ghost sm" id="download-kernel" type="button" disabled>Download .py</button>
+          </div>
+          <div class="callout warn" id="unparseable-callout" hidden>
+            <strong>No parseable Triton kernel in this output.</strong>
+            The base model hasn't been trained on the <code>kernel:</code> / <code>explanation:</code> format yet, so this happens. The raw output is shown instead.
+          </div>
+          <div class="tab-panel on" data-panel="kernel">
+            <div class="empty" id="kernel-empty">
+              <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="6" y="10" width="36" height="28" rx="4"/><path d="M16 21l-4 3 4 3M32 21l4 3-4 3M26 18l-4 12"/></svg>
+              <p>Pick an op and hit <strong>Generate</strong>. The kernel streams in live, then goes through the verification harness.</p>
+            </div>
+            <div class="codeview" id="kernel-view" hidden><div class="gutter" id="kernel-gutter"></div><pre><code id="kernel-code" class="language-python"></code></pre></div>
+          </div>
+          <div class="tab-panel" data-panel="compare">
+            <div class="split">
+              <div class="split-pane"><div class="pane-label">PyTorch reference · <code>Model</code></div><div class="codeview"><pre><code id="cmp-ref" class="language-python"></code></pre></div></div>
+              <div class="split-pane"><div class="pane-label">Generated Triton · <code>ModelNew</code></div><div class="codeview"><pre><code id="cmp-kernel" class="language-python"></code></pre></div></div>
+            </div>
+          </div>
+          <div class="tab-panel" data-panel="raw">
+            <div class="codeview raw" id="raw-view"><pre><code id="raw-code"></code><span class="cursor" id="raw-cursor" hidden></span></pre></div>
+          </div>
+        </div>
+
+        <div class="side-col">
+          <div class="card verify-card" id="verify-card"></div>
+          <div class="card explain-card">
+            <div class="card-head">
+              <h3>Why it's faster</h3>
+              <span class="chip subtle">model-generated</span>
+            </div>
+            <div class="explanation" id="explanation"><p class="muted">The optimization rationale appears here. The model writes it alongside the kernel; it isn't a caption added afterwards.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card history-card">
+        <div class="card-head">
+          <h3>Session runs <span class="muted small" id="history-count"></span></h3>
+          <button class="btn ghost sm" id="clear-history" type="button">Clear</button>
+        </div>
+        <div class="table-wrap">
+          <table class="history">
+            <thead><tr><th>Time</th><th>Op</th><th>Model</th><th>Search</th><th>Output</th><th>Verification</th><th class="num">Speedup</th><th class="num">Total</th></tr></thead>
+            <tbody id="history-body"><tr class="empty-row"><td colspan="8">No runs yet. Results stay in this browser only.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <section id="how" class="section">
+    <div class="section-inner">
+      <p class="eyebrow">Architecture</p>
+      <h2>One verification harness, everywhere</h2>
+      <p class="lede">The correctness + speedup check you just watched is the exact <code>verify_model_kernel</code> function that filters the training dataset and scores the evaluation runs. The demo has no separate, friendlier check.</p>
+
+      <div class="flow">
+        <div class="flow-node"><span class="flow-k">Input</span><strong>PyTorch <code>Model</code></strong><span>+ <code>get_inputs()</code> / <code>get_init_inputs()</code></span></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-node"><span class="flow-k">Model</span><strong id="flow-model-name">Qwen2.5-Coder-1.5B</strong><span id="flow-model-sub">base today · QLoRA adapter next</span></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-node"><span class="flow-k">Sample</span><strong>N candidates, one batch</strong><span>parsed into <code>kernel:</code> / <code>explanation:</code>; duplicates collapsed</span></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-node accent"><span class="flow-k">Harness</span><strong>Subprocess sandbox</strong><span>seeded inputs · <code>allclose</code> · median CUDA-event timing, or Triton interpreter · timeout</span></div>
+        <div class="flow-arrow"></div>
+        <div class="flow-node"><span class="flow-k">Select / repair</span><strong>Fastest correct wins</strong><span>otherwise the harness error goes back to the model as the next turn</span></div>
+      </div>
+      <div class="fanout">
+        <span>The same harness gates</span>
+        <span class="chip">Dataset build</span><span class="chip">Baseline &amp; fine-tuned eval</span><span class="chip accent">This demo</span>
+      </div>
+
+      <div class="grid3 grid4">
+        <article class="feature">
+          <span class="feature-n">01</span>
+          <h3>Verifier-guided search</h3>
+          <p>Best-of-N sampling plus harness-feedback repair, with no extra training. The model sees the exact mismatch (element count, max error, index) or traceback and gets another attempt, which is the multi-turn idea behind Kevin-32B applied at inference time.</p>
+        </article>
+        <article class="feature">
+          <span class="feature-n">02</span>
+          <h3>Data-efficient specialization</h3>
+          <p>Five LLM-<em>serving</em> categories (quantized matmul, prefill attention, KV-cache decode, normalization, RoPE), targeting 60 harness-verified examples each, rather than generic KernelBench breadth. Supervised QLoRA, no RL.</p>
+        </article>
+        <article class="feature">
+          <span class="feature-n">03</span>
+          <h3>Explainability</h3>
+          <p>Every kernel ships with a short rationale: which fusion, tiling, or memory-traffic decision was made and why. Prior systems output code and a benchmark number only.</p>
+        </article>
+        <article class="feature">
+          <span class="feature-n">04</span>
+          <h3>Verified, not claimed</h3>
+          <p>Nothing here is shown as verified unless the harness actually ran on this GPU. When it doesn't run, the UI says why instead of showing a pass or fail.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="limits" class="section alt">
+    <div class="section-inner narrow">
+      <p class="eyebrow">Honest scope</p>
+      <h2>Limitations</h2>
+      <ul class="limits">
+        <li id="limit-model"><strong>Base model today.</strong> This demo runs Qwen2.5-Coder-1.5B-Instruct without fine-tuning. The adapter drops into the same pipeline once training finishes, and the badge at the top will change.</li>
+        <li><strong>Small and narrow by design.</strong> A 1.5B model and a ~300-example target, positioned against 8B–32B RL-trained systems (KernelLLM, Kevin-32B, AutoTriton), not claiming to beat them on broad benchmarks.</li>
+        <li><strong>Interpreter checks are correctness-only.</strong> The Interpreter harness runs kernels through Triton's CPU interpreter on a small shape. It catches indexing, masking, and numerics bugs, but says nothing about speed, and a pass there doesn't count as GPU-verified.</li>
+        <li><strong>No automated explanation metric.</strong> Explanations are scored with a manual rubric; there isn't a good automatic one yet.</li>
+        <li id="limit-sandbox"><strong>Demo-grade sandbox.</strong> Generated code runs in a separate subprocess with a timeout, CPU/file-size limits and a scrubbed environment. That stops hangs, crashes and key leaks, but Python has no airtight sandbox.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <span>KernelForge · supervised specialization for LLM-serving Triton kernels</span>
+    <span class="muted" id="footer-note">Speedups are measured against PyTorch eager on the GPU serving this page.</span>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

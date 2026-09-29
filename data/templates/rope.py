@@ -3,6 +3,11 @@ rope templates: rotary positional embedding, applied to every Q/K vector at
 every layer, every forward pass -- another small-but-frequent op in the
 inference-serving critical path.
 
+Kernels view the (batch, heads, seq, head_dim) tensor as rows of head_dim
+and process BLOCK_M rows per program (position = row % seq_len), instead of
+one tiny program per row -- the largest shape here would otherwise launch
+over a million programs of 64 elements each.
+
 3 templates x 20 (batch, seq_len) shape combos = 60 entries.
 """
 
@@ -12,8 +17,17 @@ BATCHES = [1, 2, 4, 8, 16]
 SEQ_LENS = [256, 512, 1024, 2048]  # 5 x 4 = 20 combos per template
 NUM_HEADS, HEAD_DIM = 32, 128
 
+_CACHE = '''
+def _rope_cache(seq_len, head_dim, base, device, dtype):
+    inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, device=device).float() / head_dim))
+    positions = torch.arange(seq_len, device=device).float()
+    freqs = torch.outer(positions, inv_freq)  # (seq_len, head_dim / 2)
+    return freqs.cos().to(dtype).contiguous(), freqs.sin().to(dtype).contiguous()
+'''
 
-def _rope_rotate_half(batch: int, seq_len: int) -> dict:
+
+def _rope_rotate_half(batch: int, seq_len: int, num_heads: int = NUM_HEADS, head_dim: int = HEAD_DIM,
+                      suffix: str = "") -> dict:
     reference = f'''import torch
 import torch.nn as nn
 
@@ -49,9 +63,9 @@ class Model(nn.Module):
         return q * cos + _rotate_half(q) * sin
 
 batch_size = {batch}
-num_heads = {NUM_HEADS}
+num_heads = {num_heads}
 seq_len = {seq_len}
-head_dim = {HEAD_DIM}
+head_dim = {head_dim}
 
 def get_inputs():
     return [torch.randn(batch_size, num_heads, seq_len, head_dim, dtype=torch.float16)]
@@ -68,33 +82,23 @@ import triton.language as tl
 @triton.jit
 def _rope_rotate_half_kernel(
     x_ptr, cos_ptr, sin_ptr, out_ptr,
-    stride_xbh, stride_xm, stride_xd,
-    stride_cm, stride_cd,
-    half_dim,
-    BLOCK_D: tl.constexpr,
+    n_rows, seq_len, half_dim, head_dim,
+    BLOCK_M: tl.constexpr, BLOCK_D: tl.constexpr,
 ):
-    pid_bh = tl.program_id(0)
-    pid_m = tl.program_id(1)
+    rows = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+    cols = tl.arange(0, BLOCK_D)
+    mask = (rows[:, None] < n_rows) & (cols[None, :] < half_dim)
 
-    d_offsets = tl.arange(0, BLOCK_D)
-    d_mask = d_offsets < half_dim
+    x_offs = rows[:, None] * head_dim + cols[None, :]
+    cs_offs = (rows % seq_len)[:, None] * half_dim + cols[None, :]
+    x1 = tl.load(x_ptr + x_offs, mask=mask, other=0.0).to(tl.float32)
+    x2 = tl.load(x_ptr + x_offs + half_dim, mask=mask, other=0.0).to(tl.float32)
+    cos = tl.load(cos_ptr + cs_offs, mask=mask, other=0.0).to(tl.float32)
+    sin = tl.load(sin_ptr + cs_offs, mask=mask, other=0.0).to(tl.float32)
 
-    row_ptr = x_ptr + pid_bh * stride_xbh + pid_m * stride_xm
-    x1 = tl.load(row_ptr + d_offsets * stride_xd, mask=d_mask, other=0.0).to(tl.float32)
-    x2 = tl.load(row_ptr + (d_offsets + half_dim) * stride_xd, mask=d_mask, other=0.0).to(tl.float32)
-
-    cos_row = cos_ptr + pid_m * stride_cm
-    sin_row = sin_ptr + pid_m * stride_cm
-    cos_v = tl.load(cos_row + d_offsets * stride_cd, mask=d_mask, other=0.0).to(tl.float32)
-    sin_v = tl.load(sin_row + d_offsets * stride_cd, mask=d_mask, other=0.0).to(tl.float32)
-
-    out1 = x1 * cos_v - x2 * sin_v
-    out2 = x2 * cos_v + x1 * sin_v
-
-    out_row_ptr = out_ptr + pid_bh * stride_xbh + pid_m * stride_xm
-    tl.store(out_row_ptr + d_offsets * stride_xd, out1.to(tl.float16), mask=d_mask)
-    tl.store(out_row_ptr + (d_offsets + half_dim) * stride_xd, out2.to(tl.float16), mask=d_mask)
-
+    tl.store(out_ptr + x_offs, (x1 * cos - x2 * sin).to(tl.float16), mask=mask)
+    tl.store(out_ptr + x_offs + half_dim, (x2 * cos + x1 * sin).to(tl.float16), mask=mask)
+''' + _CACHE + '''
 
 class ModelNew(torch.nn.Module):
     def __init__(self, num_heads, head_dim, base=10000.0):
@@ -103,63 +107,53 @@ class ModelNew(torch.nn.Module):
         self.head_dim = head_dim
         self.base = base
 
-    def _build_cache(self, seq_len, device, dtype):
-        half = self.head_dim // 2
-        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.head_dim, 2, device=device).float() / self.head_dim))
-        positions = torch.arange(seq_len, device=device).float()
-        freqs = torch.outer(positions, inv_freq)  # (seq_len, half)
-        return freqs.cos().to(dtype), freqs.sin().to(dtype)
-
     def forward(self, q: torch.Tensor) -> torch.Tensor:
-        assert q.is_cuda
         batch, num_heads, seq_len, head_dim = q.shape
-        cos, sin = self._build_cache(seq_len, q.device, q.dtype)
+        cos, sin = _rope_cache(seq_len, head_dim, self.base, q.device, q.dtype)
+        q = q.contiguous()
         out = torch.empty_like(q)
+        n_rows = batch * num_heads * seq_len
 
-        q_ = q.reshape(batch * num_heads, seq_len, head_dim)
-        out_ = out.reshape(batch * num_heads, seq_len, head_dim)
-
+        BLOCK_M = 16
         BLOCK_D = triton.next_power_of_2(head_dim // 2)
-        grid = (batch * num_heads, seq_len)
-        _rope_rotate_half_kernel[grid](
-            q_, cos, sin, out_,
-            q_.stride(0), q_.stride(1), q_.stride(2),
-            cos.stride(0), cos.stride(1),
-            head_dim // 2,
-            BLOCK_D=BLOCK_D,
+        _rope_rotate_half_kernel[(triton.cdiv(n_rows, BLOCK_M),)](
+            q, cos, sin, out,
+            n_rows, seq_len, head_dim // 2, head_dim,
+            BLOCK_M=BLOCK_M, BLOCK_D=BLOCK_D,
         )
         return out
 '''
 
     return make_entry(
-        id=f"rope__rotate_half__b{batch}_s{seq_len}",
+        id=f"rope__rotate_half__b{batch}_s{seq_len}{suffix}",
         category="rope",
         op_name="RoPE (rotate-half / LLaMA-style)",
         description=(
             f"Apply rotate-half rotary positional embedding to a query tensor "
-            f"of batch={batch}, seq_len={seq_len}, num_heads={NUM_HEADS}, "
-            f"head_dim={HEAD_DIM}."
+            f"of batch={batch}, seq_len={seq_len}, num_heads={num_heads}, "
+            f"head_dim={head_dim}."
         ),
         dtype="float16",
         pytorch_reference=reference,
         triton_kernel=triton_kernel,
         optimization_explanation=(
-            "Eager builds rotate_half(x) as its own concatenated tensor (a full "
-            "extra allocation and copy the same size as x), then runs two "
-            "elementwise multiplies and an add as separate passes. The Triton "
-            "kernel reads each half of the head_dim once, computes both rotated "
-            "halves in registers, and writes the result once -- rotate_half's "
-            "tensor never gets materialized. Applied to every Q/K vector, every "
-            "head, every layer, every forward pass, so avoiding that extra "
-            "allocation is a small win that repeats at very high frequency."
+            "Eager builds a full-size cos/sin table by concatenating the frequencies "
+            "twice, materializes rotate_half(x) as its own tensor (a full extra "
+            "allocation and copy), then runs two multiplies and an add as separate "
+            "passes. The kernel reads each half of every head vector once, rotates both "
+            "halves in registers, and writes once; the cos/sin table is only "
+            "(seq_len, head_dim/2) and is shared by every batch and head through "
+            "row % seq_len, so it stays hot in L2. Each program handles a 16-row tile "
+            "rather than a single 64-element row, keeping the launch grid small."
         ),
         tolerance=FP16_TOLERANCE,
-        test_shapes=[{"name": "default", "batch_size": batch, "seq_len": seq_len, "num_heads": NUM_HEADS, "head_dim": HEAD_DIM}],
+        test_shapes=[{"name": "default", "batch_size": batch, "seq_len": seq_len, "num_heads": num_heads, "head_dim": head_dim}],
         provenance_notes="Hand-written; no learnable random state.",
     )
 
 
-def _rope_interleaved(batch: int, seq_len: int) -> dict:
+def _rope_interleaved(batch: int, seq_len: int, num_heads: int = NUM_HEADS, head_dim: int = HEAD_DIM,
+                      suffix: str = "") -> dict:
     reference = f'''import torch
 import torch.nn as nn
 
@@ -179,7 +173,6 @@ class Model(nn.Module):
     def forward(self, q: torch.Tensor) -> torch.Tensor:
         # q: (batch, num_heads, seq_len, head_dim)
         seq_len = q.shape[2]
-        half = self.head_dim // 2
         inv_freq = 1.0 / (self.base ** (torch.arange(0, self.head_dim, 2, device=q.device).float() / self.head_dim))
         positions = torch.arange(seq_len, device=q.device).float()
         freqs = torch.outer(positions, inv_freq)  # (seq_len, half)
@@ -193,9 +186,9 @@ class Model(nn.Module):
         return torch.stack([out_even, out_odd], dim=-1).flatten(-2)
 
 batch_size = {batch}
-num_heads = {NUM_HEADS}
+num_heads = {num_heads}
 seq_len = {seq_len}
-head_dim = {HEAD_DIM}
+head_dim = {head_dim}
 
 def get_inputs():
     return [torch.randn(batch_size, num_heads, seq_len, head_dim, dtype=torch.float16)]
@@ -212,35 +205,23 @@ import triton.language as tl
 @triton.jit
 def _rope_interleaved_kernel(
     x_ptr, cos_ptr, sin_ptr, out_ptr,
-    stride_xbh, stride_xm, stride_xd,
-    stride_cm, stride_cd,
-    half_dim,
-    BLOCK_D: tl.constexpr,
+    n_rows, seq_len, half_dim, head_dim,
+    BLOCK_M: tl.constexpr, BLOCK_D: tl.constexpr,
 ):
-    pid_bh = tl.program_id(0)
-    pid_m = tl.program_id(1)
+    rows = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+    pairs = tl.arange(0, BLOCK_D)
+    mask = (rows[:, None] < n_rows) & (pairs[None, :] < half_dim)
 
-    d_offsets = tl.arange(0, BLOCK_D)
-    d_mask = d_offsets < half_dim
+    even_offs = rows[:, None] * head_dim + 2 * pairs[None, :]
+    cs_offs = (rows % seq_len)[:, None] * half_dim + pairs[None, :]
+    x_even = tl.load(x_ptr + even_offs, mask=mask, other=0.0).to(tl.float32)
+    x_odd = tl.load(x_ptr + even_offs + 1, mask=mask, other=0.0).to(tl.float32)
+    cos = tl.load(cos_ptr + cs_offs, mask=mask, other=0.0).to(tl.float32)
+    sin = tl.load(sin_ptr + cs_offs, mask=mask, other=0.0).to(tl.float32)
 
-    row_ptr = x_ptr + pid_bh * stride_xbh + pid_m * stride_xm
-    even_ptrs = row_ptr + (2 * d_offsets) * stride_xd
-    odd_ptrs = row_ptr + (2 * d_offsets + 1) * stride_xd
-    x_even = tl.load(even_ptrs, mask=d_mask, other=0.0).to(tl.float32)
-    x_odd = tl.load(odd_ptrs, mask=d_mask, other=0.0).to(tl.float32)
-
-    cos_row = cos_ptr + pid_m * stride_cm
-    sin_row = sin_ptr + pid_m * stride_cm
-    cos_v = tl.load(cos_row + d_offsets * stride_cd, mask=d_mask, other=0.0).to(tl.float32)
-    sin_v = tl.load(sin_row + d_offsets * stride_cd, mask=d_mask, other=0.0).to(tl.float32)
-
-    out_even = x_even * cos_v - x_odd * sin_v
-    out_odd = x_odd * cos_v + x_even * sin_v
-
-    out_row_ptr = out_ptr + pid_bh * stride_xbh + pid_m * stride_xm
-    tl.store(out_row_ptr + (2 * d_offsets) * stride_xd, out_even.to(tl.float16), mask=d_mask)
-    tl.store(out_row_ptr + (2 * d_offsets + 1) * stride_xd, out_odd.to(tl.float16), mask=d_mask)
-
+    tl.store(out_ptr + even_offs, (x_even * cos - x_odd * sin).to(tl.float16), mask=mask)
+    tl.store(out_ptr + even_offs + 1, (x_odd * cos + x_even * sin).to(tl.float16), mask=mask)
+''' + _CACHE + '''
 
 class ModelNew(torch.nn.Module):
     def __init__(self, num_heads, head_dim, base=10000.0):
@@ -249,41 +230,31 @@ class ModelNew(torch.nn.Module):
         self.head_dim = head_dim
         self.base = base
 
-    def _build_cache(self, seq_len, device, dtype):
-        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.head_dim, 2, device=device).float() / self.head_dim))
-        positions = torch.arange(seq_len, device=device).float()
-        freqs = torch.outer(positions, inv_freq)  # (seq_len, half)
-        return freqs.cos().to(dtype), freqs.sin().to(dtype)
-
     def forward(self, q: torch.Tensor) -> torch.Tensor:
-        assert q.is_cuda
         batch, num_heads, seq_len, head_dim = q.shape
-        cos, sin = self._build_cache(seq_len, q.device, q.dtype)
+        cos, sin = _rope_cache(seq_len, head_dim, self.base, q.device, q.dtype)
+        q = q.contiguous()
         out = torch.empty_like(q)
+        n_rows = batch * num_heads * seq_len
 
-        q_ = q.reshape(batch * num_heads, seq_len, head_dim)
-        out_ = out.reshape(batch * num_heads, seq_len, head_dim)
-
+        BLOCK_M = 16
         BLOCK_D = triton.next_power_of_2(head_dim // 2)
-        grid = (batch * num_heads, seq_len)
-        _rope_interleaved_kernel[grid](
-            q_, cos, sin, out_,
-            q_.stride(0), q_.stride(1), q_.stride(2),
-            cos.stride(0), cos.stride(1),
-            head_dim // 2,
-            BLOCK_D=BLOCK_D,
+        _rope_interleaved_kernel[(triton.cdiv(n_rows, BLOCK_M),)](
+            q, cos, sin, out,
+            n_rows, seq_len, head_dim // 2, head_dim,
+            BLOCK_M=BLOCK_M, BLOCK_D=BLOCK_D,
         )
         return out
 '''
 
     return make_entry(
-        id=f"rope__interleaved__b{batch}_s{seq_len}",
+        id=f"rope__interleaved__b{batch}_s{seq_len}{suffix}",
         category="rope",
         op_name="RoPE (interleaved-pair / GPT-NeoX-J-style)",
         description=(
             f"Apply interleaved-pair rotary positional embedding to a query "
-            f"tensor of batch={batch}, seq_len={seq_len}, num_heads={NUM_HEADS}, "
-            f"head_dim={HEAD_DIM}."
+            f"tensor of batch={batch}, seq_len={seq_len}, num_heads={num_heads}, "
+            f"head_dim={head_dim}."
         ),
         dtype="float16",
         pytorch_reference=reference,
@@ -294,16 +265,18 @@ class ModelNew(torch.nn.Module):
             "extra tensors around the actual rotation math. The Triton kernel "
             "reads even/odd elements directly via strided pointer arithmetic and "
             "writes the rotated pairs back to their original interleaved "
-            "positions in one pass -- no intermediate even/odd/stacked tensors "
-            "at all."
+            "positions in one pass, processing 16-row tiles per program with the "
+            "(seq_len, head_dim/2) cos/sin table indexed by row % seq_len -- no "
+            "intermediate even/odd/stacked tensors at all."
         ),
         tolerance=FP16_TOLERANCE,
-        test_shapes=[{"name": "default", "batch_size": batch, "seq_len": seq_len, "num_heads": NUM_HEADS, "head_dim": HEAD_DIM}],
+        test_shapes=[{"name": "default", "batch_size": batch, "seq_len": seq_len, "num_heads": num_heads, "head_dim": head_dim}],
         provenance_notes="Hand-written; no learnable random state.",
     )
 
 
-def _rope_fused_qk(batch: int, seq_len: int) -> dict:
+def _rope_fused_qk(batch: int, seq_len: int, num_heads: int = NUM_HEADS, head_dim: int = HEAD_DIM,
+                   suffix: str = "") -> dict:
     reference = f'''import torch
 import torch.nn as nn
 
@@ -341,9 +314,9 @@ class Model(nn.Module):
         return q_out, k_out
 
 batch_size = {batch}
-num_heads = {NUM_HEADS}
+num_heads = {num_heads}
 seq_len = {seq_len}
-head_dim = {HEAD_DIM}
+head_dim = {head_dim}
 
 def get_inputs():
     q = torch.randn(batch_size, num_heads, seq_len, head_dim, dtype=torch.float16)
@@ -362,38 +335,28 @@ import triton.language as tl
 @triton.jit
 def _rope_fused_qk_kernel(
     q_ptr, k_ptr, cos_ptr, sin_ptr, q_out_ptr, k_out_ptr,
-    stride_bh, stride_m, stride_d,
-    stride_cm, stride_cd,
-    half_dim,
-    BLOCK_D: tl.constexpr,
+    n_rows, seq_len, half_dim, head_dim,
+    BLOCK_M: tl.constexpr, BLOCK_D: tl.constexpr,
 ):
-    pid_bh = tl.program_id(0)
-    pid_m = tl.program_id(1)
+    rows = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+    cols = tl.arange(0, BLOCK_D)
+    mask = (rows[:, None] < n_rows) & (cols[None, :] < half_dim)
 
-    d_offsets = tl.arange(0, BLOCK_D)
-    d_mask = d_offsets < half_dim
+    x_offs = rows[:, None] * head_dim + cols[None, :]
+    cs_offs = (rows % seq_len)[:, None] * half_dim + cols[None, :]
+    cos = tl.load(cos_ptr + cs_offs, mask=mask, other=0.0).to(tl.float32)
+    sin = tl.load(sin_ptr + cs_offs, mask=mask, other=0.0).to(tl.float32)
 
-    cos_row = cos_ptr + pid_m * stride_cm
-    sin_row = sin_ptr + pid_m * stride_cm
-    cos_v = tl.load(cos_row + d_offsets * stride_cd, mask=d_mask, other=0.0).to(tl.float32)
-    sin_v = tl.load(sin_row + d_offsets * stride_cd, mask=d_mask, other=0.0).to(tl.float32)
+    q1 = tl.load(q_ptr + x_offs, mask=mask, other=0.0).to(tl.float32)
+    q2 = tl.load(q_ptr + x_offs + half_dim, mask=mask, other=0.0).to(tl.float32)
+    tl.store(q_out_ptr + x_offs, (q1 * cos - q2 * sin).to(tl.float16), mask=mask)
+    tl.store(q_out_ptr + x_offs + half_dim, (q2 * cos + q1 * sin).to(tl.float16), mask=mask)
 
-    base_offset = pid_bh * stride_bh + pid_m * stride_m
-
-    q_row = q_ptr + base_offset
-    q1 = tl.load(q_row + d_offsets * stride_d, mask=d_mask, other=0.0).to(tl.float32)
-    q2 = tl.load(q_row + (d_offsets + half_dim) * stride_d, mask=d_mask, other=0.0).to(tl.float32)
-    q_out_row = q_out_ptr + base_offset
-    tl.store(q_out_row + d_offsets * stride_d, (q1 * cos_v - q2 * sin_v).to(tl.float16), mask=d_mask)
-    tl.store(q_out_row + (d_offsets + half_dim) * stride_d, (q2 * cos_v + q1 * sin_v).to(tl.float16), mask=d_mask)
-
-    k_row = k_ptr + base_offset
-    k1 = tl.load(k_row + d_offsets * stride_d, mask=d_mask, other=0.0).to(tl.float32)
-    k2 = tl.load(k_row + (d_offsets + half_dim) * stride_d, mask=d_mask, other=0.0).to(tl.float32)
-    k_out_row = k_out_ptr + base_offset
-    tl.store(k_out_row + d_offsets * stride_d, (k1 * cos_v - k2 * sin_v).to(tl.float16), mask=d_mask)
-    tl.store(k_out_row + (d_offsets + half_dim) * stride_d, (k2 * cos_v + k1 * sin_v).to(tl.float16), mask=d_mask)
-
+    k1 = tl.load(k_ptr + x_offs, mask=mask, other=0.0).to(tl.float32)
+    k2 = tl.load(k_ptr + x_offs + half_dim, mask=mask, other=0.0).to(tl.float32)
+    tl.store(k_out_ptr + x_offs, (k1 * cos - k2 * sin).to(tl.float16), mask=mask)
+    tl.store(k_out_ptr + x_offs + half_dim, (k2 * cos + k1 * sin).to(tl.float16), mask=mask)
+''' + _CACHE + '''
 
 class ModelNew(torch.nn.Module):
     def __init__(self, num_heads, head_dim, base=10000.0):
@@ -402,61 +365,48 @@ class ModelNew(torch.nn.Module):
         self.head_dim = head_dim
         self.base = base
 
-    def _build_cache(self, seq_len, device, dtype):
-        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.head_dim, 2, device=device).float() / self.head_dim))
-        positions = torch.arange(seq_len, device=device).float()
-        freqs = torch.outer(positions, inv_freq)  # (seq_len, half)
-        return freqs.cos().to(dtype), freqs.sin().to(dtype)
-
     def forward(self, q: torch.Tensor, k: torch.Tensor):
-        assert q.is_cuda
         batch, num_heads, seq_len, head_dim = q.shape
-        cos, sin = self._build_cache(seq_len, q.device, q.dtype)
+        cos, sin = _rope_cache(seq_len, head_dim, self.base, q.device, q.dtype)
+        q = q.contiguous()
+        k = k.contiguous()
         q_out = torch.empty_like(q)
         k_out = torch.empty_like(k)
+        n_rows = batch * num_heads * seq_len
 
-        q_ = q.reshape(batch * num_heads, seq_len, head_dim)
-        k_ = k.reshape(batch * num_heads, seq_len, head_dim)
-        q_out_ = q_out.reshape(batch * num_heads, seq_len, head_dim)
-        k_out_ = k_out.reshape(batch * num_heads, seq_len, head_dim)
-
+        BLOCK_M = 16
         BLOCK_D = triton.next_power_of_2(head_dim // 2)
-        grid = (batch * num_heads, seq_len)
-        _rope_fused_qk_kernel[grid](
-            q_, k_, cos, sin, q_out_, k_out_,
-            q_.stride(0), q_.stride(1), q_.stride(2),
-            cos.stride(0), cos.stride(1),
-            head_dim // 2,
-            BLOCK_D=BLOCK_D,
+        _rope_fused_qk_kernel[(triton.cdiv(n_rows, BLOCK_M),)](
+            q, k, cos, sin, q_out, k_out,
+            n_rows, seq_len, head_dim // 2, head_dim,
+            BLOCK_M=BLOCK_M, BLOCK_D=BLOCK_D,
         )
         return q_out, k_out
 '''
 
     return make_entry(
-        id=f"rope__fused_qk__b{batch}_s{seq_len}",
+        id=f"rope__fused_qk__b{batch}_s{seq_len}{suffix}",
         category="rope",
         op_name="RoPE fused over Q and K",
         description=(
             f"Apply rotate-half RoPE to both query and key tensors in a single "
             f"fused call, for batch={batch}, seq_len={seq_len}, "
-            f"num_heads={NUM_HEADS}, head_dim={HEAD_DIM}."
+            f"num_heads={num_heads}, head_dim={head_dim}."
         ),
         dtype="float16",
         pytorch_reference=reference,
         triton_kernel=triton_kernel,
         optimization_explanation=(
-            "Eager's `apply_rotary_pos_emb(q, k, cos, sin)` is typically two "
-            "independent rotate-half calls under the hood -- two kernel launches "
-            "each materializing their own rotate_half tensor. This kernel handles "
-            "both Q and K from a single launch, reusing the same loaded cos/sin "
-            "values for both without a second grid dispatch. Since this call "
-            "happens once per layer, per forward pass, halving the launch count "
-            "for this specific op is a direct, easily-measurable win, distinct "
-            "from (and additive with) the per-tensor rotate_half fusion in the "
-            "single-tensor RoPE template."
+            "Eager's `apply_rotary_pos_emb(q, k, cos, sin)` is two independent "
+            "rotate-half chains -- each materializing its own rotate_half tensor and "
+            "running separate multiply/add passes. This kernel rotates Q and K in the "
+            "same program: each cos/sin tile is loaded once and applied to both "
+            "tensors, so the table traffic is halved and the whole op is one launch "
+            "over 16-row tiles instead of several per tensor. It runs once per layer "
+            "per forward pass, so the launch and traffic savings repeat constantly."
         ),
         tolerance=FP16_TOLERANCE,
-        test_shapes=[{"name": "default", "batch_size": batch, "seq_len": seq_len, "num_heads": NUM_HEADS, "head_dim": HEAD_DIM}],
+        test_shapes=[{"name": "default", "batch_size": batch, "seq_len": seq_len, "num_heads": num_heads, "head_dim": head_dim}],
         provenance_notes="Hand-written; no learnable random state. Two-tensor output exercises the harness's tuple-output comparison path.",
     )
 
@@ -469,3 +419,12 @@ def generate() -> list:
             entries.append(_rope_interleaved(batch, seq_len))
             entries.append(_rope_fused_qk(batch, seq_len))
     return entries
+
+
+def generate_smoke() -> list:
+    """One small, non-power-of-2 instance per template, for interpreter checks."""
+    return [
+        _rope_rotate_half(2, 9, num_heads=3, head_dim=64, suffix="__smoke"),
+        _rope_interleaved(2, 9, num_heads=3, head_dim=64, suffix="__smoke"),
+        _rope_fused_qk(2, 9, num_heads=3, head_dim=64, suffix="__smoke"),
+    ]

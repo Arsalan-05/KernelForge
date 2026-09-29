@@ -22,9 +22,16 @@ Two contracts are supported:
 
 Execution happens in a subprocess (see sandbox_runner.py) so a candidate
 that hangs, segfaults, or wedges the GPU can't take down the caller.
+
+`interpret=True` runs Triton kernels through Triton's CPU interpreter
+(TRITON_INTERPRET=1) on CPU tensors: a correctness-only check usable on any
+Linux box with Triton installed (e.g. the docker/verify image on a Mac). It
+never reports timings or a speedup — interpreter speed says nothing about GPU
+speed — so an interpreted pass is not a substitute for a GPU verification.
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -53,13 +60,36 @@ class VerifyResult:
     reference_time_s: Optional[float] = None
     candidate_time_s: Optional[float] = None
     error: Optional[str] = None
+    interpreted: bool = False
 
     @property
     def passed(self) -> bool:
         return self.status == "ok" and bool(self.correct)
 
 
+_SANDBOX_ENV_KEYS = {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "PYTHONPATH", "LD_LIBRARY_PATH", "USER"}
+_SANDBOX_ENV_PREFIXES = ("CUDA_", "NVIDIA_", "TRITON_", "OMP_", "MKL_", "TORCH_")
+
+
+def _sandbox_env() -> dict:
+    """The parent environment minus anything that isn't needed to run torch/triton
+    (API keys and tokens never reach candidate code)."""
+    return {
+        k: v for k, v in os.environ.items()
+        if k in _SANDBOX_ENV_KEYS or k.startswith(_SANDBOX_ENV_PREFIXES)
+    }
+
+
 def _run_sandbox(payload: dict, timeout_s: float) -> VerifyResult:
+    env = _sandbox_env()
+    if payload.get("interpret"):
+        env["TRITON_INTERPRET"] = "1"
+    else:
+        env.pop("TRITON_INTERPRET", None)
+    # torch runs multithreaded, so CPU seconds can exceed wall seconds.
+    payload.setdefault("cpu_limit_s", int(timeout_s * 4) + 5)
+    payload.setdefault("file_size_limit_bytes", 256 * 1024 * 1024)
+
     with tempfile.TemporaryDirectory(prefix="kernelforge_verify_") as tmpdir:
         payload_path = Path(tmpdir) / "payload.json"
         payload_path.write_text(json.dumps(payload))
@@ -70,6 +100,7 @@ def _run_sandbox(payload: dict, timeout_s: float) -> VerifyResult:
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
+                env=env,
             )
         except subprocess.TimeoutExpired:
             return VerifyResult(status="timeout", error=f"candidate exceeded {timeout_s}s timeout")
@@ -147,6 +178,7 @@ def verify_model_kernel(
     seed: int = 0,
     timeout_s: float = 30.0,
     memory_limit_bytes: Optional[int] = None,
+    interpret: bool = False,
 ) -> VerifyResult:
     """Run a KernelBench-style candidate against its reference and report correctness + speedup.
 
@@ -156,7 +188,12 @@ def verify_model_kernel(
     signature as `Model`. This is the contract dataset entries are stored
     in (see data/SCHEMA.md) — `Model` supplies both the reference forward
     pass and the shared get_inputs/get_init_inputs used to build `ModelNew`.
+
+    `interpret=True` forces device="cpu" and checks correctness only (see
+    module docstring).
     """
+    if interpret:
+        device = "cpu"
     with tempfile.TemporaryDirectory(prefix="kernelforge_verify_src_") as tmpdir:
         tmp = Path(tmpdir)
         reference_path = tmp / "reference_module.py"
@@ -175,6 +212,7 @@ def verify_model_kernel(
             "iters": iters,
             "seed": seed,
             "memory_limit_bytes": memory_limit_bytes,
+            "interpret": interpret,
         }
         return _run_sandbox(payload, timeout_s)
 

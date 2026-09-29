@@ -18,6 +18,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from typing import Optional
 
 try:
     import resource
@@ -25,8 +26,27 @@ try:
     def _limit_memory(max_bytes: int) -> None:
         resource.setrlimit(resource.RLIMIT_AS, (max_bytes, max_bytes))
 
+    def _limit_process(cpu_s: Optional[int], file_bytes: Optional[int]) -> None:
+        for limit, value in (
+            (resource.RLIMIT_CORE, 0),
+            (resource.RLIMIT_CPU, cpu_s),
+            (resource.RLIMIT_FSIZE, file_bytes),
+        ):
+            if value is None:
+                continue
+            try:
+                _, hard = resource.getrlimit(limit)
+                if hard != resource.RLIM_INFINITY:
+                    value = min(value, hard)
+                resource.setrlimit(limit, (value, value))
+            except (ValueError, OSError):
+                pass
+
 except ImportError:  # resource is POSIX-only; skip the limit on other platforms
     def _limit_memory(max_bytes: int) -> None:
+        pass
+
+    def _limit_process(cpu_s: Optional[int], file_bytes: Optional[int]) -> None:
         pass
 
 
@@ -79,19 +99,38 @@ def _as_tuple(value):
     return value if isinstance(value, (tuple, list)) else (value,)
 
 
-def _check_correct(candidate_out, reference_out, atol: float, rtol: float) -> bool:
+def _compare(candidate_out, reference_out, atol: float, rtol: float):
+    """Return (correct, mismatch description or None)."""
     import torch
 
     cand = _as_tuple(candidate_out)
     ref = _as_tuple(reference_out)
     if len(cand) != len(ref):
-        return False
-    for c, r in zip(cand, ref):
+        return False, f"candidate returned {len(cand)} output(s), reference returned {len(ref)}"
+    for i, (c, r) in enumerate(zip(cand, ref)):
+        label = f"output {i}" if len(ref) > 1 else "output"
+        if not hasattr(c, "shape"):
+            return False, f"{label} is {type(c).__name__}, expected a tensor"
         if c.shape != r.shape:
-            return False
-        if not torch.allclose(c.float(), r.float(), atol=atol, rtol=rtol, equal_nan=False):
-            return False
-    return True
+            return False, f"{label} shape {tuple(c.shape)} != reference shape {tuple(r.shape)}"
+        cf, rf = c.detach().float().cpu(), r.detach().float().cpu()
+        if not torch.allclose(cf, rf, atol=atol, rtol=rtol, equal_nan=False):
+            if torch.isnan(cf).any() and not torch.isnan(rf).any():
+                return False, f"{label} contains NaN ({int(torch.isnan(cf).sum())} elements)"
+            diff = (cf - rf).abs().nan_to_num(nan=float("inf"))
+            bad = diff > atol + rtol * rf.abs()
+            flat = int(diff.argmax())
+            idx = tuple(int(v) for v in torch.unravel_index(torch.tensor(flat), diff.shape)) if diff.ndim else ()
+            return False, (
+                f"{label} mismatch: {int(bad.sum())}/{bad.numel()} elements outside atol={atol}, rtol={rtol}; "
+                f"max abs error {float(diff.max()):.4g} at index {idx} "
+                f"(candidate {float(cf.flatten()[flat]):.4g}, reference {float(rf.flatten()[flat]):.4g})"
+            )
+    return True, None
+
+
+def _check_correct(candidate_out, reference_out, atol: float, rtol: float) -> bool:
+    return _compare(candidate_out, reference_out, atol, rtol)[0]
 
 
 def _time_fn(fn, inputs, device: str, warmup: int, iters: int):
@@ -125,8 +164,6 @@ def _time_fn(fn, inputs, device: str, warmup: int, iters: int):
 def run_function_contract(payload: dict, device: str) -> dict:
     """Reference/candidate are each a bare `solution(*tensors) -> tensor` function."""
     entry_point = payload["entry_point"]
-    atol = payload["atol"]
-    rtol = payload["rtol"]
     warmup = payload["warmup"]
     iters = payload["iters"]
     seed = payload["seed"]
@@ -139,16 +176,21 @@ def run_function_contract(payload: dict, device: str) -> dict:
 
     ref_out, ref_time = _time_fn(reference_fn, ref_inputs, device, warmup, iters)
     cand_out, cand_time = _time_fn(candidate_fn, cand_inputs, device, warmup, iters)
+    return _result(cand_out, ref_out, ref_time, cand_time, payload)
 
-    correct = _check_correct(cand_out, ref_out, atol, rtol)
+
+def _result(cand_out, ref_out, ref_time, cand_time, payload: dict) -> dict:
+    correct, mismatch = _compare(cand_out, ref_out, payload["atol"], payload["rtol"])
+    if payload.get("interpret"):
+        return {"status": "ok", "correct": correct, "error": mismatch, "interpreted": True}
     speedup = (ref_time / cand_time) if cand_time > 0 else float("inf")
-
     return {
         "status": "ok",
         "correct": correct,
         "reference_time_s": ref_time,
         "candidate_time_s": cand_time,
         "speedup": speedup,
+        "error": mismatch,
     }
 
 
@@ -166,8 +208,6 @@ def run_model_contract(payload: dict, device: str) -> dict:
     """
     import torch
 
-    atol = payload["atol"]
-    rtol = payload["rtol"]
     warmup = payload["warmup"]
     iters = payload["iters"]
     seed = payload["seed"]
@@ -196,20 +236,13 @@ def run_model_contract(payload: dict, device: str) -> dict:
     ref_inputs = [t.clone() if hasattr(t, "clone") else t for t in base_inputs]
     cand_inputs = [t.clone() if hasattr(t, "clone") else t for t in base_inputs]
 
+    if payload.get("interpret"):
+        warmup, iters = 0, 1
+
     with torch.no_grad():
         ref_out, ref_time = _time_fn(ref_model.forward, ref_inputs, device, warmup, iters)
         cand_out, cand_time = _time_fn(cand_model.forward, cand_inputs, device, warmup, iters)
-
-    correct = _check_correct(cand_out, ref_out, atol, rtol)
-    speedup = (ref_time / cand_time) if cand_time > 0 else float("inf")
-
-    return {
-        "status": "ok",
-        "correct": correct,
-        "reference_time_s": ref_time,
-        "candidate_time_s": cand_time,
-        "speedup": speedup,
-    }
+    return _result(cand_out, ref_out, ref_time, cand_time, payload)
 
 
 def run(payload: dict) -> dict:
@@ -235,6 +268,7 @@ def main() -> None:
             _limit_memory(mem_limit)
         except Exception:
             pass  # best-effort; not all platforms/kernels allow this
+    _limit_process(payload.get("cpu_limit_s"), payload.get("file_size_limit_bytes"))
 
     try:
         result = run(payload)

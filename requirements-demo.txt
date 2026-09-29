@@ -1,0 +1,13 @@
+# Minimal install for running the demo on Kaggle/Colab (Linux + NVIDIA).
+# torch and triton come preinstalled there. Unsloth is intentionally omitted:
+# KernelGenerator falls back to transformers + PEFT, and Unsloth's install
+# tends to fight the preinstalled torch build.
+transformers>=4.40
+accelerate
+peft
+bitsandbytes
+fastapi
+uvicorn[standard]
+httpx
+pydantic
+pyyaml

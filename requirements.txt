@@ -14,10 +14,9 @@ unsloth; sys_platform == "linux"
 accelerate
 trl
 
-# Demo tool (Phase 6)
+# Demo (Phase 0.5): FastAPI serves the API and the web UI in app/web/
 fastapi
 uvicorn[standard]
-gradio
 httpx
 pydantic
 
