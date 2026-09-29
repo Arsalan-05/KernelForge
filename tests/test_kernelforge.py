@@ -49,6 +49,17 @@ def test_parse_structured_output():
     assert "memory traffic" in parsed.optimization_explanation
 
 
+@pytest.mark.parametrize("kernel_header, explanation_header", [
+    ("### kernel:", "### explanation:"),
+    ("**Kernel:**", "**Explanation:**"),
+])
+def test_parse_markdown_decorated_headers(kernel_header, explanation_header):
+    text = f"{kernel_header}\n```python\nimport triton\nclass ModelNew: pass\n```\n\n{explanation_header}\nTiles the K loop."
+    parsed = parse_model_output(text)
+    assert parsed.triton_kernel == "import triton\nclass ModelNew: pass"
+    assert parsed.optimization_explanation == "Tiles the K loop."
+
+
 def test_parse_fenced_code_block():
     text = "```python\nimport triton\nclass ModelNew: pass\n```\n\nFused the norm and residual."
     parsed = parse_model_output(text)
