@@ -43,13 +43,16 @@ def parse_model_output(text: str) -> ParsedOutput:
     if not raw:
         return ParsedOutput(None, None, raw)
 
+    # Section headers may carry markdown decoration from general-purpose
+    # models: "### kernel:", "**Explanation:**".
+    header = r"(?:^|\n)[#>*_ \t]*{name}[*_ \t]*:[*_ \t]*\n"
     kernel_match = re.search(
-        r"(?:^|\n)kernel:\s*\n(.*?)(?:\n\nexplanation:|\Z)",
+        header.format(name="kernel") + r"(.*?)(?=" + header.format(name="explanation") + r"|\Z)",
         raw,
         flags=re.DOTALL | re.IGNORECASE,
     )
     explanation_match = re.search(
-        r"(?:^|\n)explanation:\s*\n(.*)\Z",
+        header.format(name="explanation") + r"(.*)\Z",
         raw,
         flags=re.DOTALL | re.IGNORECASE,
     )

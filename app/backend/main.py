@@ -50,6 +50,23 @@ from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+
+def _load_dotenv(path: Path) -> None:
+    """Fill unset variables from a local .env (real environment wins)."""
+    if not path.is_file():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip().strip("'\"")
+        if key and value:
+            os.environ.setdefault(key, value)
+
+
+_load_dotenv(Path(__file__).parent.parent.parent / ".env")
+
 from app.backend.catalog import Catalog
 from kernelforge.dataset import CATEGORIES
 from kernelforge.model import GenerationConfig, KernelGenerator, load_generation_config
