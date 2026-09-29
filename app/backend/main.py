@@ -479,6 +479,20 @@ def _verification_skip_reason(req: GenerateRequest, kernel: Optional[str]) -> Op
     return None
 
 
+def _static_rejection(kernel: str) -> Optional[str]:
+    """Why the kernel can't be run at all (syntax, or public code policy), else None."""
+    try:
+        compile(kernel, "candidate.py", "exec")
+    except SyntaxError as exc:
+        line = (exc.text or "").rstrip()
+        return f"SyntaxError on line {exc.lineno}: {exc.msg}" + (f"\n    {line.strip()}" if line else "")
+    violation = check_code(kernel, "The kernel") if _public() else None
+    if violation:
+        return (f"Not executed — blocked by the public-server code policy: {violation}. "
+                "Use only torch/triton/math and no file, process or dunder access.")
+    return None
+
+
 def _run_verification(req: GenerateRequest, kernel: str) -> dict:
     """Harness result as a VerificationInfo dict, memoized across requests."""
     interpret = req.device == "cpu"
@@ -487,13 +501,11 @@ def _run_verification(req: GenerateRequest, kernel: str) -> dict:
     if hit is not None:
         return {**hit, "cached": True}
 
-    violation = check_code(kernel, "The kernel") if _public() else None
-    if violation:
+    rejection = _static_rejection(kernel)
+    if rejection:
         return VerificationInfo(
             ran=True, status="error", correct=False, passed=False, device=req.device,
-            interpreted=interpret, atol=req.tolerance_atol, rtol=req.tolerance_rtol,
-            error=f"Not executed — blocked by the public-server code policy: {violation}. "
-            "Use only torch/triton/math and no file, process or dunder access.",
+            interpreted=interpret, atol=req.tolerance_atol, rtol=req.tolerance_rtol, error=rejection,
         ).model_dump()
 
     start = time.perf_counter()

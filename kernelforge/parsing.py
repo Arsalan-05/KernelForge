@@ -23,6 +23,10 @@ class ParsedOutput:
 
 def _strip_code_fences(text: str) -> str:
     text = text.strip()
+    fenced = re.match(r"```[\w+-]*[ \t]*\n(.*?)\n[ \t]*```", text, flags=re.DOTALL)
+    if fenced:
+        # Prose after the closing fence isn't part of the module.
+        return fenced.group(1).strip()
     if text.startswith("```"):
         lines = text.splitlines()
         if lines[0].startswith("```"):

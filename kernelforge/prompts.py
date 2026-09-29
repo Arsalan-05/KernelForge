@@ -10,7 +10,18 @@ SYSTEM_PROMPT = (
     "using KernelBench's ModelNew convention, and explain the optimization technique."
 )
 
+KERNEL_CONTRACT = (
+    "Requirements for the kernel source:\n"
+    "- One self-contained module: import only torch, triton, triton.language (as tl) and math. "
+    "Don't import the reference or any `kernelbench` package; they aren't available.\n"
+    "- Define `class ModelNew(torch.nn.Module)` with the same __init__ and forward signatures as "
+    "`Model`, returning outputs with the same shapes and dtypes.\n"
+    "- Allocate outputs on the inputs' device (e.g. torch.empty_like(x)); never hardcode 'cuda'.\n"
+    "- Don't redefine `get_inputs`, `get_init_inputs` or the shape constants; the harness supplies them."
+)
+
 OUTPUT_FORMAT_INSTRUCTION = (
+    f"{KERNEL_CONTRACT}\n\n"
     "Respond with exactly two sections:\n"
     "kernel:\n"
     "<full Python source with @triton.jit kernel(s) and ModelNew>\n\n"
