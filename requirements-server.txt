@@ -1,0 +1,12 @@
+# Web server for GPU-less hosts (Railway): API + UI + Triton interpreter harness.
+# torch is installed separately from the CPU wheel index (see Dockerfile);
+# the full training stack lives in requirements.txt.
+triton==3.5.0
+# numpy 2.3+ refuses int() on 1-element arrays, which Triton 3.5's interpreter
+# does for every runtime loop bound.
+numpy<2.3
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27
+pydantic>=2.6
+pyyaml>=6.0

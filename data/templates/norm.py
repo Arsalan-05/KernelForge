@@ -77,14 +77,14 @@ class ModelNew(torch.nn.Module):
         self.weight = torch.nn.Parameter(torch.ones(hidden_size))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        assert x.is_cuda and x.ndim == 2
         n_rows, n_cols = x.shape
         out = torch.empty_like(x)
         BLOCK_SIZE = triton.next_power_of_2(n_cols)
+        num_warps = min(max(BLOCK_SIZE // 256, 1), 16)  # ~8 fp32 values per thread, no spills
         _rmsnorm_kernel[(n_rows,)](
             x, self.weight, out,
             x.stride(0), n_cols, self.eps,
-            BLOCK_SIZE=BLOCK_SIZE,
+            BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps,
         )
         return out
 '''
@@ -106,7 +106,8 @@ class ModelNew(torch.nn.Module):
             "tensor. One Triton program per row loads the row once, computes the "
             "reduction and rsqrt on-chip, and writes the result once -- one read "
             "plus one write per row instead of roughly five. This sits on the "
-            "critical path of every transformer block, twice per layer."
+            "critical path of every transformer block, twice per layer. num_warps scales "
+            "with the row width so even 12K-wide rows stay in registers without spilling."
         ),
         tolerance=FP16_TOLERANCE,
         test_shapes=[{"name": "default", "rows": rows, "hidden_size": hidden_size}],
@@ -184,14 +185,14 @@ class ModelNew(torch.nn.Module):
         self.bias = torch.nn.Parameter(torch.zeros(hidden_size))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        assert x.is_cuda and x.ndim == 2
         n_rows, n_cols = x.shape
         out = torch.empty_like(x)
         BLOCK_SIZE = triton.next_power_of_2(n_cols)
+        num_warps = min(max(BLOCK_SIZE // 256, 1), 16)  # ~8 fp32 values per thread, no spills
         _layernorm_kernel[(n_rows,)](
             x, self.weight, self.bias, out,
             x.stride(0), n_cols, self.eps,
-            BLOCK_SIZE=BLOCK_SIZE,
+            BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps,
         )
         return out
 '''
@@ -296,15 +297,15 @@ class ModelNew(torch.nn.Module):
         self.weight = torch.nn.Parameter(torch.ones(hidden_size))
 
     def forward(self, x: torch.Tensor, residual: torch.Tensor):
-        assert x.is_cuda and x.ndim == 2
         n_rows, n_cols = x.shape
         out = torch.empty_like(x)
         new_residual = torch.empty_like(x)
         BLOCK_SIZE = triton.next_power_of_2(n_cols)
+        num_warps = min(max(BLOCK_SIZE // 256, 1), 16)  # ~8 fp32 values per thread, no spills
         _rmsnorm_residual_kernel[(n_rows,)](
             x, residual, self.weight, out, new_residual,
             x.stride(0), n_cols, self.eps,
-            BLOCK_SIZE=BLOCK_SIZE,
+            BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps,
         )
         return out, new_residual
 '''
@@ -345,3 +346,12 @@ def generate() -> list:
             entries.append(_layernorm(rows, hidden_size))
             entries.append(_rmsnorm_residual(rows, hidden_size))
     return entries
+
+
+def generate_smoke() -> list:
+    """One small, non-power-of-2 instance per template, for interpreter checks."""
+    return [
+        {**_rmsnorm(7, 300), "id": "norm__rmsnorm__smoke"},
+        {**_layernorm(7, 300), "id": "norm__layernorm__smoke"},
+        {**_rmsnorm_residual(7, 300), "id": "norm__rmsnorm_residual__smoke"},
+    ]

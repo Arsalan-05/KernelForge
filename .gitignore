@@ -9,6 +9,7 @@ evaluation/results/*
 !evaluation/results/.gitkeep
 data/raw/*
 !data/raw/.gitkeep
+!data/raw/interpret_report.json
 data/verified/*
 !data/verified/.gitkeep
 *.egg-info/

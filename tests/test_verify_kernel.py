@@ -5,8 +5,12 @@ PyTorch functions standing in for kernels. This does not require Triton or
 a GPU, so it runs anywhere — including this macOS dev machine.
 
 Real Triton kernels (examples/kernels/) still need to be verified on a
-Linux + NVIDIA box (Kaggle/Colab); see examples/kernels/README.md.
+Linux + NVIDIA box (Kaggle/Colab); see examples/kernels/README.md. The
+interpreter-mode test runs only where Triton is installed (e.g. the
+docker/verify.Dockerfile image).
 """
+
+import pytest
 
 from verification.verify_kernel import TensorSpec, verify_kernel, verify_model_kernel
 
@@ -277,3 +281,44 @@ def test_model_contract_handles_tuple_outputs():
     )
     assert result.status == "ok"
     assert result.correct is True
+
+
+def test_model_contract_reports_where_outputs_differ():
+    result = verify_model_kernel(
+        MODEL_REFERENCE_ADD, MODEL_CANDIDATE_WRONG,
+        device="cpu", warmup=1, iters=3,
+    )
+    assert result.correct is False
+    assert "max abs error" in result.error
+
+
+MODEL_CANDIDATE_TRITON_ADD = """
+import torch
+import triton
+import triton.language as tl
+
+@triton.jit
+def _add(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr):
+    offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < n
+    tl.store(out_ptr + offs, tl.load(x_ptr + offs, mask=mask) + tl.load(y_ptr + offs, mask=mask), mask=mask)
+
+class ModelNew(torch.nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+
+    def forward(self, x, y):
+        out = torch.empty_like(x)
+        _add[(triton.cdiv(x.numel(), 4),)](x, y, out, x.numel(), BLOCK=4)
+        return out
+"""
+
+
+def test_interpreter_mode_checks_a_triton_kernel_on_cpu():
+    pytest.importorskip("triton")
+    result = verify_model_kernel(
+        MODEL_REFERENCE_ADD, MODEL_CANDIDATE_TRITON_ADD, interpret=True, timeout_s=120,
+    )
+    assert result.status == "ok", result.error
+    assert result.passed and result.interpreted
+    assert result.speedup is None  # interpreter timings would be meaningless

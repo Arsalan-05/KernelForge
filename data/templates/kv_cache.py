@@ -3,6 +3,10 @@ kv_cache templates: the decode-step ops (executed once per generated token)
 -- the highest-frequency ops in an LLM serving system, and the most direct
 link to Cohere/NVIDIA serving-efficiency framing.
 
+The decode-attention kernels stream the cache in BLOCK_N tiles with an
+online softmax (flash-decoding style, without the split-KV second pass), so
+cached context length costs loop iterations rather than registers.
+
 3 templates x 20 (batch, seq_len) shape combos = 60 entries.
 """
 
@@ -11,9 +15,12 @@ from .common import FP16_TOLERANCE, make_entry
 BATCHES = [1, 2, 4, 8, 16]
 SEQ_LENS = [256, 512, 1024, 2048]  # cached context length at the decode step
 
+NUM_HEADS, HEAD_DIM = 32, 128
+GQA_QUERY_HEADS, GQA_KV_HEADS = 32, 8
 
-def _decode_attention_mha(batch: int, seq_len: int) -> dict:
-    num_heads, head_dim = 32, 128
+
+def _decode_attention_mha(batch: int, seq_len: int, num_heads: int = NUM_HEADS, head_dim: int = HEAD_DIM,
+                          suffix: str = "") -> dict:
     reference = f'''import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -61,44 +68,47 @@ import triton.language as tl
 @triton.jit
 def _decode_attention_kernel(
     q_ptr, k_ptr, v_ptr, out_ptr,
-    stride_qb, stride_qh, stride_qd,
-    stride_kb, stride_kh, stride_kn, stride_kd,
-    stride_vb, stride_vh, stride_vn, stride_vd,
-    stride_ob, stride_oh, stride_od,
-    seq_len, head_dim, scale,
+    stride_qb, stride_qh,
+    stride_kb, stride_kh, stride_kn,
+    stride_vb, stride_vh, stride_vn,
+    stride_ob, stride_oh,
+    seq_len, head_dim, qk_scale,
     BLOCK_N: tl.constexpr, BLOCK_D: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
     pid_h = tl.program_id(1)
 
-    d_offsets = tl.arange(0, BLOCK_D)
-    d_mask = d_offsets < head_dim
+    offs_n = tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, BLOCK_D)
+    d_mask = offs_d < head_dim
 
-    q_ptrs = q_ptr + pid_b * stride_qb + pid_h * stride_qh + d_offsets * stride_qd
-    q = tl.load(q_ptrs, mask=d_mask, other=0.0).to(tl.float32)
+    q = tl.load(q_ptr + pid_b * stride_qb + pid_h * stride_qh + offs_d, mask=d_mask, other=0.0).to(tl.float32)
+    k_base = k_ptr + pid_b * stride_kb + pid_h * stride_kh
+    v_base = v_ptr + pid_b * stride_vb + pid_h * stride_vh
 
-    n_offsets = tl.arange(0, BLOCK_N)
-    n_mask = n_offsets < seq_len
+    m_i = tl.full((1,), float("-inf"), dtype=tl.float32)
+    l_i = tl.zeros((1,), dtype=tl.float32)
+    acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
 
-    k_ptrs = (k_ptr + pid_b * stride_kb + pid_h * stride_kh
-              + n_offsets[:, None] * stride_kn + d_offsets[None, :] * stride_kd)
-    k = tl.load(k_ptrs, mask=n_mask[:, None] & d_mask[None, :], other=0.0).to(tl.float32)
+    for start_n in range(0, seq_len, BLOCK_N):
+        cols = start_n + offs_n
+        n_mask = cols < seq_len
+        kv_mask = n_mask[:, None] & d_mask[None, :]
+        k = tl.load(k_base + cols[:, None] * stride_kn + offs_d[None, :], mask=kv_mask, other=0.0).to(tl.float32)
+        s = tl.sum(q[None, :] * k, axis=1) * qk_scale
+        s = tl.where(n_mask, s, float("-inf"))
 
-    scores = tl.sum(q[None, :] * k, axis=1) * scale
-    scores = tl.where(n_mask, scores, -float("inf"))
+        m_new = tl.maximum(m_i, tl.max(s, axis=0))
+        alpha = tl.exp2(m_i - m_new)
+        p = tl.exp2(s - m_new)
+        l_i = l_i * alpha + tl.sum(p, axis=0)
 
-    m = tl.max(scores, axis=0)
-    p = tl.exp(scores - m)
-    denom = tl.sum(p, axis=0)
+        v = tl.load(v_base + cols[:, None] * stride_vn + offs_d[None, :], mask=kv_mask, other=0.0).to(tl.float32)
+        acc = acc * alpha + tl.sum(p[:, None] * v, axis=0)
+        m_i = m_new
 
-    v_ptrs = (v_ptr + pid_b * stride_vb + pid_h * stride_vh
-              + n_offsets[:, None] * stride_vn + d_offsets[None, :] * stride_vd)
-    v = tl.load(v_ptrs, mask=n_mask[:, None] & d_mask[None, :], other=0.0).to(tl.float32)
-
-    out = tl.sum(p[:, None] * v, axis=0) / denom
-
-    out_ptrs = out_ptr + pid_b * stride_ob + pid_h * stride_oh + d_offsets * stride_od
-    tl.store(out_ptrs, out.to(tl.float16), mask=d_mask)
+    out = acc / l_i
+    tl.store(out_ptr + pid_b * stride_ob + pid_h * stride_oh + offs_d, out.to(tl.float16), mask=d_mask)
 
 
 class ModelNew(torch.nn.Module):
@@ -109,28 +119,31 @@ class ModelNew(torch.nn.Module):
         self.scale = head_dim ** -0.5
 
     def forward(self, q, k_cache, v_cache):
-        assert q.is_cuda
         batch, num_heads, _, head_dim = q.shape
         seq_len = k_cache.shape[2]
+        q = q.contiguous()
+        k_cache = k_cache.contiguous()
+        v_cache = v_cache.contiguous()
         out = torch.empty((batch, num_heads, 1, head_dim), device=q.device, dtype=torch.float16)
 
-        BLOCK_N = triton.next_power_of_2(seq_len)
+        BLOCK_N = 64
         BLOCK_D = triton.next_power_of_2(head_dim)
         grid = (batch, num_heads)
         _decode_attention_kernel[grid](
-            q.squeeze(2), k_cache, v_cache, out.squeeze(2),
-            q.stride(0), q.stride(1), q.stride(3),
-            k_cache.stride(0), k_cache.stride(1), k_cache.stride(2), k_cache.stride(3),
-            v_cache.stride(0), v_cache.stride(1), v_cache.stride(2), v_cache.stride(3),
-            out.stride(0), out.stride(1), out.stride(3),
-            seq_len, head_dim, self.scale,
+            q, k_cache, v_cache, out,
+            q.stride(0), q.stride(1),
+            k_cache.stride(0), k_cache.stride(1), k_cache.stride(2),
+            v_cache.stride(0), v_cache.stride(1), v_cache.stride(2),
+            out.stride(0), out.stride(1),
+            seq_len, head_dim, self.scale * 1.4426950408889634,
             BLOCK_N=BLOCK_N, BLOCK_D=BLOCK_D,
+            num_warps=4,
         )
         return out
 '''
 
     return make_entry(
-        id=f"kv_cache__decode_attention_mha__b{batch}_s{seq_len}",
+        id=f"kv_cache__decode_attention_mha__b{batch}_s{seq_len}{suffix}",
         category="kv_cache",
         op_name="Single-query decode-step attention (MHA)",
         description=(
@@ -143,14 +156,16 @@ class ModelNew(torch.nn.Module):
         pytorch_reference=reference,
         triton_kernel=triton_kernel,
         optimization_explanation=(
-            "Fuses QK^T, softmax, and the weighted V-sum into one launch per "
-            "(batch, head), so attention scores never leave on-chip memory. This "
-            "is the single highest-frequency op in the decode loop -- executed "
-            "once per token per layer -- so removing the extra launches and score "
-            "materialization compounds heavily across a full generation run. "
-            "CAVEAT: loads the entire cache into one block; a production kernel "
-            "would tile over KV pages with an online softmax ('flash decoding') "
-            "to scale past a few thousand tokens of context."
+            "Decode attention is pure memory bandwidth: each step reads the whole K/V "
+            "cache once to produce one output vector. Eager adds three launches and "
+            "writes/re-reads the score and probability rows in between. This kernel is "
+            "one launch per (batch, head) that streams the cache in 64-token tiles, "
+            "keeps a running max and sum (online softmax) so each tile is read exactly "
+            "once, and never writes scores to memory. It's the highest-frequency op in "
+            "the decode loop (once per token per layer), so the saved launches and "
+            "traffic compound over a generation. At batch*heads below the SM count, a "
+            "split-KV (flash-decoding) second pass would add parallelism across the "
+            "sequence -- the natural next step."
         ),
         tolerance=FP16_TOLERANCE,
         test_shapes=[{"name": "default", "batch_size": batch, "seq_len": seq_len, "num_heads": num_heads, "head_dim": head_dim}],
@@ -158,8 +173,8 @@ class ModelNew(torch.nn.Module):
     )
 
 
-def _decode_attention_gqa(batch: int, seq_len: int) -> dict:
-    num_query_heads, num_kv_heads, head_dim = 32, 8, 128
+def _decode_attention_gqa(batch: int, seq_len: int, num_query_heads: int = GQA_QUERY_HEADS,
+                          num_kv_heads: int = GQA_KV_HEADS, head_dim: int = HEAD_DIM, suffix: str = "") -> dict:
     group_size = num_query_heads // num_kv_heads
     reference = f'''import torch
 import torch.nn as nn
@@ -214,45 +229,58 @@ import triton.language as tl
 @triton.jit
 def _decode_attention_gqa_kernel(
     q_ptr, k_ptr, v_ptr, out_ptr,
-    stride_qb, stride_qh, stride_qd,
-    stride_kb, stride_kh, stride_kn, stride_kd,
-    stride_vb, stride_vh, stride_vn, stride_vd,
-    stride_ob, stride_oh, stride_od,
-    group_size, seq_len, head_dim, scale,
-    BLOCK_N: tl.constexpr, BLOCK_D: tl.constexpr,
+    stride_qb, stride_qh,
+    stride_kb, stride_kh, stride_kn,
+    stride_vb, stride_vh, stride_vn,
+    stride_ob, stride_oh,
+    group_size, seq_len, head_dim, qk_scale,
+    BLOCK_G: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_D: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
-    pid_qh = tl.program_id(1)
-    pid_kvh = pid_qh // group_size
+    pid_kvh = tl.program_id(1)
 
-    d_offsets = tl.arange(0, BLOCK_D)
-    d_mask = d_offsets < head_dim
+    offs_g = tl.arange(0, BLOCK_G)
+    offs_n = tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, BLOCK_D)
+    g_mask = offs_g < group_size
+    d_mask = offs_d < head_dim
+    q_heads = pid_kvh * group_size + offs_g
 
-    q_ptrs = q_ptr + pid_b * stride_qb + pid_qh * stride_qh + d_offsets * stride_qd
-    q = tl.load(q_ptrs, mask=d_mask, other=0.0).to(tl.float32)
+    # Every query head that shares this KV head, as the rows of one (BLOCK_G, D) tile.
+    q = tl.load(
+        q_ptr + pid_b * stride_qb + q_heads[:, None] * stride_qh + offs_d[None, :],
+        mask=g_mask[:, None] & d_mask[None, :], other=0.0,
+    )
+    k_base = k_ptr + pid_b * stride_kb + pid_kvh * stride_kh
+    v_base = v_ptr + pid_b * stride_vb + pid_kvh * stride_vh
 
-    n_offsets = tl.arange(0, BLOCK_N)
-    n_mask = n_offsets < seq_len
+    m_i = tl.full((BLOCK_G,), float("-inf"), dtype=tl.float32)
+    l_i = tl.zeros((BLOCK_G,), dtype=tl.float32)
+    acc = tl.zeros((BLOCK_G, BLOCK_D), dtype=tl.float32)
 
-    k_ptrs = (k_ptr + pid_b * stride_kb + pid_kvh * stride_kh
-              + n_offsets[:, None] * stride_kn + d_offsets[None, :] * stride_kd)
-    k = tl.load(k_ptrs, mask=n_mask[:, None] & d_mask[None, :], other=0.0).to(tl.float32)
+    for start_n in range(0, seq_len, BLOCK_N):
+        cols = start_n + offs_n
+        n_mask = cols < seq_len
+        k = tl.load(k_base + cols[None, :] * stride_kn + offs_d[:, None],
+                    mask=n_mask[None, :] & d_mask[:, None], other=0.0)  # (BLOCK_D, BLOCK_N)
+        s = tl.dot(q, k) * qk_scale
+        s = tl.where(n_mask[None, :], s, float("-inf"))
 
-    scores = tl.sum(q[None, :] * k, axis=1) * scale
-    scores = tl.where(n_mask, scores, -float("inf"))
+        m_new = tl.maximum(m_i, tl.max(s, 1))
+        alpha = tl.exp2(m_i - m_new)
+        p = tl.exp2(s - m_new[:, None])
+        l_i = l_i * alpha + tl.sum(p, 1)
 
-    m = tl.max(scores, axis=0)
-    p = tl.exp(scores - m)
-    denom = tl.sum(p, axis=0)
+        v = tl.load(v_base + cols[:, None] * stride_vn + offs_d[None, :],
+                    mask=n_mask[:, None] & d_mask[None, :], other=0.0)
+        acc = acc * alpha[:, None] + tl.dot(p.to(tl.float16), v)
+        m_i = m_new
 
-    v_ptrs = (v_ptr + pid_b * stride_vb + pid_kvh * stride_vh
-              + n_offsets[:, None] * stride_vn + d_offsets[None, :] * stride_vd)
-    v = tl.load(v_ptrs, mask=n_mask[:, None] & d_mask[None, :], other=0.0).to(tl.float32)
-
-    out = tl.sum(p[:, None] * v, axis=0) / denom
-
-    out_ptrs = out_ptr + pid_b * stride_ob + pid_qh * stride_oh + d_offsets * stride_od
-    tl.store(out_ptrs, out.to(tl.float16), mask=d_mask)
+    acc = acc / l_i[:, None]
+    tl.store(
+        out_ptr + pid_b * stride_ob + q_heads[:, None] * stride_oh + offs_d[None, :],
+        acc.to(tl.float16), mask=g_mask[:, None] & d_mask[None, :],
+    )
 
 
 class ModelNew(torch.nn.Module):
@@ -265,28 +293,32 @@ class ModelNew(torch.nn.Module):
         self.scale = head_dim ** -0.5
 
     def forward(self, q, k_cache, v_cache):
-        assert q.is_cuda
         batch, num_query_heads, _, head_dim = q.shape
-        seq_len = k_cache.shape[2]
+        num_kv_heads, seq_len = k_cache.shape[1], k_cache.shape[2]
+        q = q.contiguous()
+        k_cache = k_cache.contiguous()
+        v_cache = v_cache.contiguous()
         out = torch.empty((batch, num_query_heads, 1, head_dim), device=q.device, dtype=torch.float16)
 
-        BLOCK_N = triton.next_power_of_2(seq_len)
+        BLOCK_G = max(16, triton.next_power_of_2(self.group_size))  # tl.dot needs >= 16 rows
+        BLOCK_N = 64
         BLOCK_D = triton.next_power_of_2(head_dim)
-        grid = (batch, num_query_heads)
+        grid = (batch, num_kv_heads)
         _decode_attention_gqa_kernel[grid](
-            q.squeeze(2), k_cache, v_cache, out.squeeze(2),
-            q.stride(0), q.stride(1), q.stride(3),
-            k_cache.stride(0), k_cache.stride(1), k_cache.stride(2), k_cache.stride(3),
-            v_cache.stride(0), v_cache.stride(1), v_cache.stride(2), v_cache.stride(3),
-            out.stride(0), out.stride(1), out.stride(3),
-            self.group_size, seq_len, head_dim, self.scale,
-            BLOCK_N=BLOCK_N, BLOCK_D=BLOCK_D,
+            q, k_cache, v_cache, out,
+            q.stride(0), q.stride(1),
+            k_cache.stride(0), k_cache.stride(1), k_cache.stride(2),
+            v_cache.stride(0), v_cache.stride(1), v_cache.stride(2),
+            out.stride(0), out.stride(1),
+            self.group_size, seq_len, head_dim, self.scale * 1.4426950408889634,
+            BLOCK_G=BLOCK_G, BLOCK_N=BLOCK_N, BLOCK_D=BLOCK_D,
+            num_warps=4,
         )
         return out
 '''
 
     return make_entry(
-        id=f"kv_cache__decode_attention_gqa__b{batch}_s{seq_len}",
+        id=f"kv_cache__decode_attention_gqa__b{batch}_s{seq_len}{suffix}",
         category="kv_cache",
         op_name="Single-query decode-step attention (GQA)",
         description=(
@@ -297,13 +329,15 @@ class ModelNew(torch.nn.Module):
         pytorch_reference=reference,
         triton_kernel=triton_kernel,
         optimization_explanation=(
-            "Same decode-step fusion as the MHA version, plus avoiding the eager "
-            "repeat_interleave materialization of the cached K/V by mapping each "
-            "query-head program to its KV head via integer division. Relevant "
-            "specifically to GQA-serving models, where the whole point of the "
-            "cache layout is to store fewer KV heads than query heads -- eager's "
-            "repeat_interleave briefly reconstructs the larger tensor the cache "
-            "was designed to avoid."
+            "Eager's repeat_interleave rebuilds a full-size K/V cache -- exactly what the "
+            "GQA layout exists to avoid -- before an unfused softmax chain. This kernel "
+            "uses GQA packing: one program per (batch, KV head) loads all "
+            f"{group_size} query heads that share that KV head as the rows of a single "
+            "tile, so every cached K/V tile is read from HBM once per group instead of "
+            "once per query head, and the group's scores come out of one tensor-core "
+            "tl.dot (padded to 16 rows, the MMA minimum) instead of per-head dot "
+            "products. The cache is streamed in 64-token tiles with an online softmax, "
+            "so context length never has to fit in registers."
         ),
         tolerance=FP16_TOLERANCE,
         test_shapes=[{"name": "default", "batch_size": batch, "seq_len": seq_len, "num_query_heads": num_query_heads, "num_kv_heads": num_kv_heads, "head_dim": head_dim}],
@@ -311,8 +345,8 @@ class ModelNew(torch.nn.Module):
     )
 
 
-def _kv_cache_write(batch: int, seq_len: int) -> dict:
-    num_heads, head_dim = 32, 128
+def _kv_cache_write(batch: int, seq_len: int, num_heads: int = NUM_HEADS, head_dim: int = HEAD_DIM,
+                    suffix: str = "") -> dict:
     position = seq_len // 2
     reference = f'''import torch
 import torch.nn as nn
@@ -382,9 +416,9 @@ def _kv_cache_write_kernel(
     v_val = tl.load(new_v_ptrs, mask=d_mask, other=0.0)
 
     cache_k_ptrs = (cache_k_ptr + pid_b * stride_ckb + pid_h * stride_ckh
-                     + position * stride_ckn + d_offsets * stride_ckd)
+                    + position * stride_ckn + d_offsets * stride_ckd)
     cache_v_ptrs = (cache_v_ptr + pid_b * stride_cvb + pid_h * stride_cvh
-                     + position * stride_cvn + d_offsets * stride_cvd)
+                    + position * stride_cvn + d_offsets * stride_cvd)
     tl.store(cache_k_ptrs, k_val, mask=d_mask)
     tl.store(cache_v_ptrs, v_val, mask=d_mask)
 
@@ -397,7 +431,6 @@ class ModelNew(torch.nn.Module):
         self.position = position
 
     def forward(self, cache_k, cache_v, new_k, new_v):
-        assert cache_k.is_cuda
         batch, num_heads, max_seq_len, head_dim = cache_k.shape
         new_k_ = new_k.squeeze(2)
         new_v_ = new_v.squeeze(2)
@@ -419,7 +452,7 @@ class ModelNew(torch.nn.Module):
 '''
 
     return make_entry(
-        id=f"kv_cache__cache_write__b{batch}_s{seq_len}",
+        id=f"kv_cache__cache_write__b{batch}_s{seq_len}{suffix}",
         category="kv_cache",
         op_name="KV-cache write (single-token insert)",
         description=(
@@ -458,3 +491,12 @@ def generate() -> list:
             entries.append(_decode_attention_gqa(batch, seq_len))
             entries.append(_kv_cache_write(batch, seq_len))
     return entries
+
+
+def generate_smoke() -> list:
+    """One small, non-power-of-2 instance per template, for interpreter checks."""
+    return [
+        _decode_attention_mha(2, 100, num_heads=2, head_dim=64, suffix="__smoke"),
+        _decode_attention_gqa(2, 100, num_query_heads=8, num_kv_heads=2, head_dim=64, suffix="__smoke"),
+        _kv_cache_write(2, 100, num_heads=2, head_dim=64, suffix="__smoke"),
+    ]
