@@ -15,7 +15,7 @@ from evaluation.common import (
     print_metrics_table,
     save_eval_report,
 )
-from kernelforge.dataset import load_training_data, split_dataset
+from kernelforge.dataset import interleave_by_category, load_training_data, make_split
 from kernelforge.model import KernelGenerator, load_generation_config
 
 
@@ -40,6 +40,8 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--skip-verification", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--split", choices=["template", "random"], default="template",
+                        help="template = held-out ops (no leakage); random = shape-level split")
     args = parser.parse_args()
 
     if args.checkpoint_run and (args.checkpoint_run / "held_out_test.jsonl").exists():
@@ -53,10 +55,10 @@ def main() -> None:
         if not entries:
             print("No dataset entries found.", file=sys.stderr)
             sys.exit(1)
-        _, _, test_entries = split_dataset(entries)
+        _, _, test_entries = make_split(entries, args.split)
 
     if args.limit:
-        test_entries = test_entries[: args.limit]
+        test_entries = interleave_by_category(test_entries)[: args.limit]
 
     gen_config = load_generation_config(args.config)
     if args.adapter:

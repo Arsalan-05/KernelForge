@@ -44,7 +44,7 @@ result numbers to report.
 | Piece | State |
 |---|---|
 | Verification harness | Done, GPU-validated; GPU mode (correctness + speedup) and interpreter mode (CPU, correctness only) |
-| Demo studio + kernel search (best-of-N, repair, result cache, `/stats`) | Built; 81 tests (80 on macOS, plus 1 interpreter test that runs in Docker); first live GPU session + GIF pending |
+| Demo studio + kernel search (best-of-N, repair, result cache, `/stats`) | Built; 84 tests (83 on macOS, plus 1 interpreter test that runs in Docker); first live GPU session + GIF pending |
 | Public deployment (Railway: Dockerfile + `railway.json`, hosted-model option, code policy, rate limits) | Built; interpreter-only (Railway has no GPU) |
 | Dataset (15 templates × 20 shapes, 5 categories) | Templates fixed; 15/15 pass the interpreter; GPU verification pending |
 | Fine-tuning (QLoRA, `training/finetune.py`) | Code written, not yet run |
@@ -52,6 +52,17 @@ result numbers to report.
 
 See [DOCUMENTATION.md](DOCUMENTATION.md) for how it works, [docs/project_writeup.md](docs/project_writeup.md)
 for positioning and prior work, and [MASTER_PLAN.md](MASTER_PLAN.md) for the roadmap, study track and next steps.
+
+## GPU session: dataset, baseline, fine-tune
+
+Import [`notebooks/kaggle_gpu_session.ipynb`](notebooks/kaggle_gpu_session.ipynb) into Kaggle (GPU T4, Internet on) and choose *Run All*, or run it from a shell:
+
+```bash
+python scripts/gpu_session.py              # GPU-verify the dataset + baseline eval on held-out templates
+python scripts/gpu_session.py --finetune   # + QLoRA fine-tune and fine-tuned eval
+```
+
+All results end up in `kernelforge_outputs.zip`. Evaluation holds out whole templates (one op per category), so test scores measure unseen ops rather than memorised kernels.
 
 ## Run the demo
 
@@ -139,6 +150,8 @@ app/               FastAPI backend (streaming API, template catalog), web studio
 verification/      correctness + benchmark harness (subprocess sandbox, GPU or Triton interpreter)
 kernelforge/       shared prompts, parsing, dataset, model loading, kernel search engine
 docker/            CPU image with Triton's interpreter for local correctness checks
+scripts/           gpu_session.py: one-command GPU session (dataset, baseline, fine-tune, eval)
+notebooks/         Kaggle notebook that runs the GPU session
 data/              schema, templates, build_dataset.py
 training/          QLoRA fine-tuning + configs
 evaluation/        baseline/fine-tuned eval + explanation rubric

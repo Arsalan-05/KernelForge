@@ -111,7 +111,7 @@ directly comparable by construction.
 | Phase | Script | What it measures |
 |---|---|---|
 | 3 Baseline | `evaluation/baseline_eval.py` | Un-fine-tuned model: % correct, avg speedup, explanation presence |
-| 4 Fine-tune | `training/finetune.py` | LoRA adapter on 85/10/5 split |
+| 4 Fine-tune | `training/finetune.py` | QLoRA adapter; test set = one held-out template per category |
 | 5 Eval | `evaluation/finetuned_eval.py` | Category-level before/after table |
 | 5 Rubric | `evaluation/explanation_review.py` | Manual 0/1/2 scoring on 25 samples |
 | 3 + 5 Search | `kernelforge/search.py` | pass@1 vs best-of-4 vs best-of-4 + 1 repair, same harness |

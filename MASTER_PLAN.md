@@ -24,7 +24,7 @@ This is the single plan for the project. It replaces `PROJECT PLAN.md` (build ro
 
 **What has not happened yet, stated plainly:** no GPU-verified dataset entries (`data/verified/dataset.jsonl` is empty), no baseline numbers, no fine-tuned adapter, no evaluation results. The interpreter pass means the kernels compute the right thing; it says nothing about speed.
 
-**Tests:** 81 tests. 80 pass on macOS; the 81st (interpreter mode on a real Triton kernel) needs Triton and passes inside `docker/verify.Dockerfile`.
+**Tests:** 84 tests. 83 pass on macOS; the 84th (interpreter mode on a real Triton kernel) needs Triton and passes inside `docker/verify.Dockerfile`.
 
 ---
 
@@ -173,7 +173,7 @@ Candidates (all fit a T4 with 4-bit + LoRA): Qwen2.5-Coder 1.5B/7B (default), De
 **Deliverable:** baseline report broken down by the 5 categories.
 
 ## Phase 4 — Fine-tuning — script written (`training/finetune.py`), not trained
-QLoRA via Unsloth. The training target contains both sections (`kernel:` … `explanation:` …). Split 85/10/5. LoRA r=16, α=32, lr 2e-4, 3 epochs, batch 1 × accumulation 8. Expect 2–4 iterations; spot-check explanations every time for generic boilerplate. Once an adapter exists: `python app/launch.py --share --adapter <path>` flips the badge automatically.
+QLoRA via Unsloth, or transformers + PEFT + bitsandbytes 4-bit on Kaggle, where Unsloth fights the preinstalled torch. The training target contains both sections (`kernel:` … `explanation:` …). Split by template: one held-out op per category for test, 10% of the remaining shapes for val. LoRA r=16, α=32, lr 2e-4, 3 epochs, batch 1 × accumulation 8. Expect 2–4 iterations; spot-check explanations every time for generic boilerplate. Once an adapter exists: `python app/launch.py --share --adapter <path>` flips the badge automatically.
 
 **Deliverable:** LoRA adapter + training logs.
 
@@ -273,7 +273,7 @@ Limitations to state: small model and dataset vs 8B–32B RL systems; 5 narrow c
 ## Phase E — Fine-tuning
 **Outcome:** explain QLoRA, the hyperparameters, and that the model learns code *and* explanations.
 
-- **Concepts:** LoRA r/α/dropout; target q/k/v/o + MLP; 4-bit base; SFTTrainer + chat template; 85/10/5 split; generic-explanation failure mode.
+- **Concepts:** LoRA r/α/dropout; target q/k/v/o + MLP; 4-bit base; SFTTrainer + chat template; held-out-template split (why a random shape split leaks); generic-explanation failure mode.
 - **Read:** `training/finetune.py`; `training/configs/finetune_default.json`; `training/configs/qwen2.5-coder-1.5b.json`.
 - **Drills:**
   - [ ] Recite the config (r=16, α=32, lr 2e-4, 3 epochs, batch 1 × accumulation 8 = effective 8).
@@ -383,6 +383,19 @@ Limitations to state: small model and dataset vs 8B–32B RL systems; 5 narrow c
 ---
 
 # Part III — Immediate next steps
+
+**0. One-step GPU session (recommended):** import `notebooks/kaggle_gpu_session.ipynb` into Kaggle (GPU T4, Internet on) and *Run All*. It runs `scripts/gpu_session.py`:
+1. Checks the GPU environment and runs the harness tests on the real GPU.
+2. Runs `build_dataset.py --device cuda`.
+3. Runs a baseline eval on held-out templates.
+4. With `FINETUNE = True`, also runs a QLoRA fine-tune plus its evaluation.
+
+Every artifact (dataset, reports, logs, adapter) ends up in `/kaggle/working/kernelforge_outputs.zip`. Local pre-flight (Oct 1, 2026, Docker interpreter, all 300 grid shapes):
+- **261/300 pass and 0 are incorrect.**
+- The other 39 were killed for running out of memory (8 parallel jobs in an 8 GB Docker VM). They are the largest shapes: attention/RoPE at batch 8–16 × sequence 2048, and norms at 16k–65k rows.
+- On a 16 GB T4 the largest references peak at roughly 9–12 GB, so a few may still run out of memory. The dataset report now lists `oom` separately from incorrect kernels (per category and per template), so a memory limit isn't mistaken for a broken template.
+
+**Evaluation split (changed Oct 1, 2026):** train/val/test is now **split by template**. One whole template per category is held out (100 test entries; 180 train, 20 val). A random shape-level split put the same kernel, with different shape constants, in both train and test, so a fine-tuned model would score by memorisation. `--split random` still exists for comparison, but report the template split.
 
 **1. Ship the live demo (Kaggle, GPU T4, Internet on):**
 ```bash
