@@ -15,7 +15,7 @@ from evaluation.common import (
     print_metrics_table,
     save_eval_report,
 )
-from kernelforge.dataset import load_training_data, split_dataset
+from kernelforge.dataset import interleave_by_category, load_training_data, make_split, template_of
 from kernelforge.model import GenerationConfig, KernelGenerator, load_generation_config
 
 
@@ -34,6 +34,8 @@ def main() -> None:
         action="store_true",
         help="Skip model inference; use ground-truth kernels to validate the eval pipeline",
     )
+    parser.add_argument("--split", choices=["template", "random"], default="template",
+                        help="template = held-out ops (no leakage); random = shape-level split")
     args = parser.parse_args()
 
     entries = load_training_data(args.dataset)
@@ -42,11 +44,13 @@ def main() -> None:
         print("or ensure data/examples/*.json exists for a minimal dry-run.", file=sys.stderr)
         sys.exit(1)
 
-    _, _, test_entries = split_dataset(entries)
+    _, _, test_entries = make_split(entries, args.split)
     if args.limit:
-        test_entries = test_entries[: args.limit]
+        test_entries = interleave_by_category(test_entries)[: args.limit]
 
-    print(f"Evaluating {len(test_entries)} held-out test examples (baseline, no adapter).")
+    held_out = sorted({template_of(e) for e in test_entries})
+    print(f"Evaluating {len(test_entries)} held-out test examples (baseline, no adapter); "
+          f"{args.split} split, templates: {', '.join(held_out)}")
 
     gen_config = load_generation_config(args.config)
     generator = None if args.dry_run else KernelGenerator(gen_config)
@@ -100,6 +104,8 @@ def main() -> None:
         metrics=metrics,
         extra={
             "dry_run": args.dry_run,
+            "split": args.split,
+            "held_out_templates": held_out,
             "skip_verification": args.skip_verification,
             "explanation_rate_pct": explanation_rate,
         },

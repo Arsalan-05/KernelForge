@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data.templates import GENERATORS, SMOKE_GENERATORS
+from kernelforge.dataset import template_of
 from verification.verify_kernel import verify_model_kernel
 
 VERIFIED_PATH = Path(__file__).parent / "verified" / "dataset.jsonl"
@@ -121,6 +122,18 @@ def _write_interpret_report(results, args) -> None:
     sys.exit(0 if passed == len(results) else 1)
 
 
+def _rejection_reason(result) -> str:
+    """Why an entry was rejected, so out-of-memory shapes aren't mistaken for broken templates."""
+    error = (result.error or "").lower()
+    if "out of memory" in error or "outofmemoryerror" in error or "exit code -9" in error:
+        return "oom"
+    if result.status == "ok" and result.correct is False:
+        return "incorrect"
+    if result.status == "ok" and result.correct:
+        return "not_passed"
+    return result.status
+
+
 def _write_dataset(results, args) -> None:
     VERIFIED_PATH.parent.mkdir(parents=True, exist_ok=True)
     REJECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +142,8 @@ def _write_dataset(results, args) -> None:
     verified_count = {c: 0 for c in categories}
     rejected_count = {c: 0 for c in categories}
     status_breakdown = {c: {} for c in categories}
+    rejection_reasons = {c: {} for c in categories}
+    per_template: dict[str, dict] = {}
     speedups = {c: [] for c in categories}
 
     with open(VERIFIED_PATH, "w") as verified_f, open(REJECTED_PATH, "w") as rejected_f:
@@ -142,13 +157,20 @@ def _write_dataset(results, args) -> None:
                 "device": args.device,
                 "verified_at": datetime.now(timezone.utc).isoformat(),
             }
+            template = per_template.setdefault(template_of(entry), {"verified": 0, "rejected": {}, "speedups": []})
             if result.passed:
                 verified_count[category] += 1
                 speedups[category].append(result.speedup)
+                template["verified"] += 1
+                template["speedups"].append(result.speedup)
                 verified_f.write(json.dumps(entry) + "\n")
             else:
                 rejected_count[category] += 1
+                reason = _rejection_reason(result)
+                rejection_reasons[category][reason] = rejection_reasons[category].get(reason, 0) + 1
+                template["rejected"][reason] = template["rejected"].get(reason, 0) + 1
                 entry["verification"]["status"] = result.status
+                entry["verification"]["reason"] = reason
                 entry["verification"]["error"] = result.error
                 rejected_f.write(json.dumps(entry) + "\n")
 
@@ -168,18 +190,28 @@ def _write_dataset(results, args) -> None:
                 "rejected": rejected_count[c],
                 "median_speedup": _median(speedups[c]),
                 "status_breakdown": status_breakdown[c],
+                "rejection_reasons": rejection_reasons[c],
             }
             for c in categories
+        },
+        "per_template": {
+            name: {"verified": t["verified"], "rejected": t["rejected"], "median_speedup": _median(t["speedups"])}
+            for name, t in per_template.items()
         },
     }
     REPORT_PATH.write_text(json.dumps(report, indent=2))
 
     print("\n=== Summary ===")
-    print(f"{'category':<18} {'generated':>10} {'verified':>10} {'rejected':>10} {'median x':>10}")
+    print(f"{'category':<18} {'generated':>10} {'verified':>10} {'rejected':>10} {'(oom)':>8} {'median x':>10}")
     for c in categories:
         med = report["per_category"][c]["median_speedup"]
         print(f"{c:<18} {verified_count[c] + rejected_count[c]:>10} {verified_count[c]:>10} "
-              f"{rejected_count[c]:>10} {(f'{med:.2f}' if med else '-'):>10}")
+              f"{rejected_count[c]:>10} {rejection_reasons[c].get('oom', 0):>8} {(f'{med:.2f}' if med else '-'):>10}")
+    print("\nPer template:")
+    for name, t in report["per_template"].items():
+        med = t["median_speedup"]
+        reasons = ", ".join(f"{k}={v}" for k, v in t["rejected"].items()) or "-"
+        print(f"  {name:<40} verified {t['verified']:>2}  median {(f'{med:.2f}x' if med else '-'):>7}  rejected: {reasons}")
     total_verified = sum(verified_count.values())
     print(f"{'TOTAL':<18} {len(results):>10} {total_verified:>10} {len(results) - total_verified:>10}")
     print(f"\nVerified dataset: {VERIFIED_PATH} ({total_verified} entries)")

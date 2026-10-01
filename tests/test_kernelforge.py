@@ -71,3 +71,52 @@ def test_parse_empty_output():
     parsed = parse_model_output("")
     assert not parsed.has_kernel
     assert not parsed.has_explanation
+
+
+def _grid_entries():
+    from data.templates import GENERATORS
+
+    return [e for make in GENERATORS.values() for e in make()]
+
+
+def test_template_split_holds_out_whole_ops():
+    from kernelforge.dataset import split_by_template, template_of
+
+    entries = _grid_entries()
+    train, val, test = split_by_template(entries, seed=42)
+    assert len(train) + len(val) + len(test) == len(entries)
+    seen = {template_of(e) for e in train + val}
+    held_out = {template_of(e) for e in test}
+    assert not seen & held_out
+    assert len(held_out) == 5 and {e["category"] for e in test} == {e["category"] for e in entries}
+    assert split_by_template(entries, seed=42)[2] == test  # deterministic
+
+
+def test_interleave_by_category_samples_every_category_first():
+    from kernelforge.dataset import interleave_by_category
+
+    entries = _grid_entries()
+    first = interleave_by_category(entries)[:5]
+    assert len({e["category"] for e in first}) == 5
+
+
+def test_dataset_report_separates_oom_from_broken_kernels(tmp_path, monkeypatch, capsys):
+    from argparse import Namespace
+
+    from data import build_dataset
+    from verification.verify_kernel import VerifyResult
+
+    for name in ("VERIFIED_PATH", "REJECTED_PATH", "REPORT_PATH"):
+        monkeypatch.setattr(build_dataset, name, tmp_path / f"{name}.json")
+    entries = [e for e in _grid_entries() if e["category"] == "norm"][:3]
+    results = [
+        (entries[0], VerifyResult(status="ok", correct=True, speedup=2.0)),
+        (entries[1], VerifyResult(status="error", error="torch.OutOfMemoryError: CUDA out of memory")),
+        (entries[2], VerifyResult(status="ok", correct=False, error="max abs error 3.1")),
+    ]
+    build_dataset._write_dataset(results, Namespace(device="cuda", smoke=False))
+    report = json.loads((tmp_path / "REPORT_PATH.json").read_text())
+    assert report["per_category"]["norm"]["rejection_reasons"] == {"oom": 1, "incorrect": 1}
+    template = report["per_template"]["norm__rmsnorm"]
+    assert template["verified"] == 1 and template["median_speedup"] == 2.0
+    assert "(oom)" in capsys.readouterr().out

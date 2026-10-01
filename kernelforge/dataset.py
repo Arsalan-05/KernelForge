@@ -94,3 +94,71 @@ def split_dataset(
     rng.shuffle(val)
     rng.shuffle(test)
     return train, val, test
+
+
+def template_of(entry: dict) -> str:
+    """Template slug, e.g. "attention__causal_prefill" from "attention__causal_prefill__b2_s512"."""
+    return "__".join(entry["id"].split("__")[:2])
+
+
+def split_by_template(
+    entries: list[dict],
+    *,
+    val_ratio: float = 0.10,
+    test_templates_per_category: int = 1,
+    seed: int = 42,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Hold out whole templates for test, so the test set measures unseen ops.
+
+    Entries of one template share the same kernel and differ only in shape
+    constants, so a shape-level random split leaks the answer into training.
+    Categories with a single template fall back to a shape-level split.
+    """
+    rng = random.Random(seed)
+    by_category: dict[str, dict[str, list[dict]]] = {}
+    for entry in entries:
+        by_category.setdefault(entry["category"], {}).setdefault(template_of(entry), []).append(entry)
+
+    train, val, test = [], [], []
+    for category in sorted(by_category):
+        templates = by_category[category]
+        names = sorted(templates)
+        if len(names) <= test_templates_per_category:
+            tr, va, te = split_dataset([e for n in names for e in templates[n]], seed=seed)
+            train += tr
+            val += va
+            test += te
+            continue
+        held_out = set(rng.sample(names, test_templates_per_category))
+        seen = []
+        for name in names:
+            (test if name in held_out else seen).extend(templates[name])
+        rng.shuffle(seen)
+        n_val = max(1, round(len(seen) * val_ratio)) if len(seen) > 1 else 0
+        val += seen[:n_val]
+        train += seen[n_val:]
+
+    rng.shuffle(train)
+    rng.shuffle(val)
+    return train, val, test
+
+
+def make_split(entries: list[dict], strategy: str = "template", seed: int = 42, **ratios):
+    if strategy == "template":
+        return split_by_template(entries, val_ratio=ratios.get("val_ratio", 0.10), seed=seed)
+    if strategy == "random":
+        return split_dataset(entries, seed=seed, **ratios)
+    raise ValueError(f"unknown split strategy {strategy!r}; use 'template' or 'random'")
+
+
+def interleave_by_category(entries: list[dict]) -> list[dict]:
+    """Round-robin across categories, so `--limit N` samples every category."""
+    queues: dict[str, list[dict]] = {}
+    for entry in entries:
+        queues.setdefault(entry["category"], []).append(entry)
+    out = []
+    while any(queues.values()):
+        for category in sorted(queues):
+            if queues[category]:
+                out.append(queues[category].pop(0))
+    return out

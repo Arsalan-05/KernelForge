@@ -2,10 +2,11 @@
 # torch and triton come preinstalled there. Unsloth is intentionally omitted:
 # KernelGenerator falls back to transformers + PEFT, and Unsloth's install
 # tends to fight the preinstalled torch build.
-transformers>=4.40
+transformers>=4.46
 accelerate
 peft
 bitsandbytes
+datasets
 fastapi
 uvicorn[standard]
 httpx
