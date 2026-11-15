@@ -600,6 +600,15 @@ variants = 60 entries/category, 300 total.**
   (one small instance per template through Triton's interpreter, in
   parallel; writes `data/raw/interpret_report.json` and never touches the
   dataset files).
+- Robustness (Nov 2026): every result is appended to
+  `data/raw/progress_<mode>.jsonl` as soon as it finishes. `--resume`
+  skips entry IDs already recorded there. `--max-minutes N` stops
+  *starting* new verifications after N minutes and writes a partial
+  dataset + report (`"partial": true`, with `run_stats.not_run` listing
+  what's left). Out-of-memory results are classified `oom` (never
+  `incorrect`) and retried once, alone, after the main pass. CUDA runs stay
+  serial; each verification is its own subprocess, so its GPU memory is
+  freed when it exits.
 
 ### Template fixes (Sep 29, 2026)
 
@@ -673,6 +682,61 @@ correct by inspection.
 The template bugs those GPU runs surfaced are fixed (see above); the table
 above is still the local no-GPU run and will be replaced with GPU numbers
 after the rerun.
+
+### One-step GPU session (`scripts/gpu_session.py`, `notebooks/kaggle_gpu_session.ipynb`)
+
+Runs the stages env → harness → dataset → baseline (→ finetune → eval with
+`--finetune`) and is built so one Kaggle *Run All* always leaves something
+to download:
+
+- **Failures are contained.** A stage that raises, exits non-zero or times
+  out is marked failed; later stages still run unless they need its output
+  (no GPU, no verified dataset, no adapter → skipped, with the reason).
+- **The zip is refreshed after every stage**, and every 10 minutes during a
+  long stage, so the dataset progress log is saved mid-run. It goes to
+  `/kaggle/working/kernelforge_outputs.zip` and is replaced atomically.
+- **`stage_status.json`** lists each stage as `{stage, status:
+  ok|failed|skipped, seconds, error}`. **`session.json`** adds the
+  environment (GPU, torch, Triton, git commit), the dataset report and the
+  list of collected artifacts. Both are in the zip.
+- **`--budget-hours H`** skips stages that can't fit in what's left, caps
+  each stage's timeout to the remaining time (5 minutes are kept for the
+  final zip), and passes `--max-minutes` to the dataset stage so it stops
+  cleanly. **`--resume`** resumes the dataset stage in the same session;
+  **`--resume-from PATH`** first restores the progress log from a previous
+  `kernelforge_outputs` zip or folder.
+- Notebook parameters: `BUDGET_HOURS = 11` (keep it below Kaggle's session
+  limit) and `RESUME_FROM = ""`.
+
+**Limitation:** `evaluation/baseline_eval.py` and `training/finetune.py`
+have no clean time limit yet. If the budget runs out during one of them,
+it is killed and marked failed (whatever finished earlier is still in
+the zip).
+
+#### If a Kaggle session dies
+
+1. Download `kernelforge_outputs.zip` from the Output panel (or save a
+   version) **before** the session is gone.
+2. In a new session, upload it as a Kaggle dataset, attach it, and set
+   `RESUME_FROM` to its path under `/kaggle/input/`. Entries already
+   verified are skipped.
+
+Resume assumes the zip was saved. If it wasn't, the dataset run starts
+over.
+
+#### Not yet verified on a GPU
+
+All of the above is tested on CPU only (mocked verifiers, synthetic
+fixtures). Still unverified:
+
+- whether the largest attention/RoPE/norm shapes fit in a T4's 16 GB, and
+  whether a CUDA OOM retry ever succeeds;
+- that a real CUDA OOM message is classified as `oom` (tested only against
+  the standard torch message text);
+- a full Kaggle Run All, including the 10-minute zip refresh during a real
+  dataset run and `--resume-from` with an `/kaggle/input` path;
+- whether Kaggle keeps `/kaggle/working` when a session dies;
+- the solo OOM retry in interpreter mode (Triton doesn't run on macOS).
 
 ## Next steps
 
