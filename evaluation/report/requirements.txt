@@ -1,0 +1,3 @@
+# Dependencies of python -m evaluation.report beyond the repo requirements.
+# Optional: without matplotlib the report still writes every table and lists the figures as skipped.
+matplotlib>=3.5

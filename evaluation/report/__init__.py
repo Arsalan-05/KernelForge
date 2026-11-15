@@ -4,6 +4,9 @@
 
 artifacts.py  find + parse the session artifacts (formats documented there)
 stats.py      Wilson intervals, means
-render.py     Markdown / LaTeX / README snippet / limitations / summary.json
-figures.py    matplotlib PNGs (optional dependency)
+render.py     table rows, Markdown, README snippet, limitations, summary.json
+latex.py      one LaTeX fragment per table, written only when its data exists
+figures.py    matplotlib PNGs (optional: pip install -r evaluation/report/requirements.txt)
+
+Usage, outputs and the eval-report interface: evaluation/report/README.md
 """

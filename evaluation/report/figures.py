@@ -1,7 +1,7 @@
 """Matplotlib figures for the results report.
 
-matplotlib is optional (not in requirements.txt): without it the report still
-writes every table and says the figures were skipped.
+matplotlib is optional (pip install -r evaluation/report/requirements.txt):
+without it the report still writes every table and lists the figures as skipped.
 
 Colours: base = blue, fine-tuned = orange (slots 1-2 of a colour-vision-
 deficiency-checked categorical palette), with a hatch on the fine-tuned series
@@ -156,7 +156,7 @@ def make_figures(art: Artifacts, out_dir: Path) -> tuple[list[tuple[str, str]], 
     try:
         _pyplot()
     except ImportError:
-        reason = "matplotlib is not installed (pip install matplotlib)"
+        reason = "matplotlib is not installed (pip install -r evaluation/report/requirements.txt)"
         return [], [(n, reason) for n in ("correctness_by_category", "speedup_distribution", "search_gain")]
 
     fig_dir = out_dir / "figures"
