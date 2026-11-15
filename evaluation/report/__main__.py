@@ -21,7 +21,7 @@ from pathlib import Path
 
 from evaluation.report.artifacts import load_artifacts
 from evaluation.report.figures import make_figures
-from evaluation.report.latex import FRAGMENT_NAMES, combined, fragments
+from evaluation.report.latex import FRAGMENT_NAMES, build_fragments, combined
 from evaluation.report.render import readme_snippet, results_markdown, stage_status, summary_json
 
 
@@ -30,12 +30,15 @@ def build_report(src: Path, out: Path, figures: bool = True) -> list[Path]:
     art = load_artifacts(src)
     out.mkdir(parents=True, exist_ok=True)
     made, skipped = make_figures(art, out) if figures else ([], [("all figures", "--no-figures")])
+    frags, refused = build_fragments(art)
+    latex_notes = ([f"Written: {', '.join(f'{n}.tex' for n in FRAGMENT_NAMES if n in frags)}."] if frags else [])
+    latex_notes += [f"Not written (no data): {', '.join(f'{n}.tex' for n in FRAGMENT_NAMES if n not in frags)}."]
+    latex_notes += [f"REFUSED: {why}" for why in refused]
     files = {
-        "results.md": results_markdown(art, made, skipped),
+        "results.md": results_markdown(art, made, skipped, latex_notes),
         "readme_results_snippet.md": readme_snippet(art),
         "summary.json": json.dumps(summary_json(art), indent=2) + "\n",
     }
-    frags = fragments(art)
     files.update({f"{name}.tex": tex for name, tex in frags.items()})
     if frags:
         files["tables.tex"] = combined(frags)
@@ -49,7 +52,9 @@ def build_report(src: Path, out: Path, figures: bool = True) -> list[Path]:
             print(f"  removed stale {stale.name} (its data is not in this source)")
     for name in FRAGMENT_NAMES:
         if name not in frags:
-            print(f"  {name}.tex: not written (no data)")
+            print(f"  {name}.tex: not written")
+    for why in refused:
+        print(f"  {why}")
 
     written = []
     for name, text in files.items():

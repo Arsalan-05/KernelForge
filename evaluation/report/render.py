@@ -279,7 +279,7 @@ def session_stage_table(art: Artifacts) -> list[list[str]]:
 def coverage_table(art: Artifacts) -> list[list[str]]:
     if not art.runs:
         return []
-    rows = [["Run", "Prompts scored", "Held-out prompts", "Full held-out set", "Status"]]
+    rows = [["Run", "Prompts scored", "Prompts planned", "Held-out prompts", "Full held-out set", "Status"]]
     for run in sorted_runs(art):
         if run.is_search:
             full = f"subset by design (search_limit {run.search_limit})" if run.search_limit else "subset (search)"
@@ -288,6 +288,7 @@ def coverage_table(art: Artifacts) -> list[list[str]]:
         status = ("PARTIAL: killed, incremental log only" if run.incremental
                   else "PARTIAL (report says so)" if run.partial else "complete")
         rows.append([run.label, str(n_scored(run)),
+                     str(run.prompts_planned) if run.prompts_planned is not None else "not recorded",
                      str(run.held_out_total) if run.held_out_total is not None else "unknown", full, status])
     return rows
 
@@ -305,9 +306,19 @@ def coverage_warnings(art: Artifacts) -> list[str]:
         if not run.is_search and run.full_held_out_set is False:
             total = f" of {run.held_out_total}" if run.held_out_total is not None else ""
             out.append(f"{run.label}: scored {n}{total} held-out prompts, NOT the full held-out set.")
-        if run.is_search and run.search_limit is not None and run.prompts_scored is not None \
-                and run.prompts_scored < run.search_limit:
-            out.append(f"{run.label}: scored {run.prompts_scored} of the {run.search_limit} prompts requested.")
+        if run.prompts_planned is not None and not run.from_summary and not run.derived_from \
+                and len(run.rows) < run.prompts_planned and not run.incremental:
+            out.append(f"{run.label}: scored {len(run.rows)} of the {run.prompts_planned} prompts planned.")
+    penalties = repetition_penalties(art)
+    if len(set(penalties.values())) > 1:
+        out.append("Runs compared in this report used DIFFERENT repetition_penalty values ("
+                   + "; ".join(f"{label}: {value}" for label, value in penalties.items())
+                   + "); differences between them may come from decoding, not the model.")
+    for t in art.training_runs:
+        if t.partial:
+            stop = f" at step {t.stopped_at_step}" if t.stopped_at_step is not None else ""
+            planned = f" of {t.steps_planned}" if t.steps_planned is not None else ""
+            out.append(f"Training run {t.name} is PARTIAL: it stopped early{stop}{planned} (time limit).")
     for g in search_groups(art):
         if g.incomplete_pass1:
             out.append(f"{g.label}: pass@1 scored only {len(g.shared_ids)} of the {len(g.ids)} search prompts; "
@@ -322,6 +333,32 @@ def coverage_warnings(art: Artifacts) -> list[str]:
             out.append(f"Dataset build ({log.mode}) did not finish: `{log.source}` records {log.records} "
                        f"verifications ({log.passed} passed) but no dataset report was written.")
     return out
+
+
+SETTING_COLUMNS = ("decoding", "do_sample", "temperature", "top_k", "top_p", "repetition_penalty",
+                   "max_new_tokens", "seed", "round0_temperature", "repair_temperature")
+
+
+def repetition_penalties(art: Artifacts) -> dict[str, object]:
+    """run label -> recorded repetition_penalty, for runs (not derived ones) that record it."""
+    return {r.label: r.settings["repetition_penalty"] for r in sorted_runs(art)
+            if not r.derived_from and r.settings.get("repetition_penalty") is not None}
+
+
+def settings_table(art: Artifacts) -> list[list[str]]:
+    """Generation settings each run recorded; "not recorded" where the report has no value."""
+    runs = [r for r in sorted_runs(art) if not r.derived_from]
+    if not runs:
+        return []
+    rows = [["Run", "Prompt mode", "Few-shot source"] + list(SETTING_COLUMNS)]
+    for r in runs:
+        values = {**r.settings}
+        if "max_new_tokens" not in values and r.max_new_tokens is not None:
+            values["max_new_tokens"] = r.max_new_tokens
+        few_shot = r.few_shot_source or ("n/a (zero-shot)" if r.prompt_mode == "zero_shot" else "not recorded")
+        rows.append([r.label, r.prompt_mode.replace("_", "-"), few_shot]
+                    + [str(values[k]) if values.get(k) is not None else "not recorded" for k in SETTING_COLUMNS])
+    return rows
 
 
 def outcomes_table(art: Artifacts) -> list[list[str]]:
@@ -374,6 +411,11 @@ def dataset_table(art: Artifacts, by: str = "category") -> list[list[str]]:
     return rows
 
 
+def hours_minutes(seconds: float) -> str:
+    minutes = int(round(seconds / 60))
+    return f"{minutes // 60}:{minutes % 60:02d}"
+
+
 def training_table(art: Artifacts) -> list[list[str]]:
     """(Metric, Value) rows for the newest training run, only for values that exist. [] if none."""
     t = art.training
@@ -382,6 +424,12 @@ def training_table(art: Artifacts) -> list[list[str]]:
     rows = []
     split = t.split_info or {}
     cfg = split.get("config") if isinstance(split.get("config"), dict) else {}
+    rows.append(["Run", t.name])
+    if t.partial:
+        rows.append(["Status", f"PARTIAL: stopped at step {t.stopped_at_step if t.stopped_at_step is not None else '?'}"
+                               f" of {t.steps_planned if t.steps_planned is not None else '?'} (time limit)"])
+    elif "partial" in split:
+        rows.append(["Status", "complete"])
     if cfg.get("model_name"):
         rows.append(["Base model", str(cfg["model_name"])])
     if split.get("split"):
@@ -398,22 +446,26 @@ def training_table(art: Artifacts) -> list[list[str]]:
             cfg.get("gradient_accumulation_steps"), int):
         rows.append(["Effective batch (configured)",
                      str(cfg["per_device_train_batch_size"] * cfg["gradient_accumulation_steps"])])
-    # Epochs/steps actually run come from the trainer, not the config (the CPU fallback runs 1 epoch).
+    # Epochs/steps actually run come from the trainer, not the config.
     if t.epochs is not None:
         rows.append(["Epochs completed", f"{t.epochs:g}"])
     elif "num_epochs" in cfg:
         rows.append(["Epochs (configured)", str(cfg["num_epochs"])])
     if t.steps is not None:
-        rows.append(["Optimizer steps", str(t.steps)])
-    if t.final_train_loss is not None:
-        rows.append(["Final train loss", f"{t.final_train_loss:.4f}"])
+        rows.append(["Optimizer steps", str(t.steps) + (f" of {t.steps_planned}" if t.steps_planned else "")])
+    if t.final_step_loss is not None:
+        rows.append(["Final logged train loss", f"{t.final_step_loss:.4f}"])
+    if t.mean_train_loss is not None:
+        rows.append(["Mean train loss over the run (Trainer summary)", f"{t.mean_train_loss:.4f}"])
+    if t.best_eval_loss is not None:
+        rows.append(["Best validation loss", f"{t.best_eval_loss:.4f}"])
     if t.final_eval_loss is not None:
         rows.append(["Final validation loss", f"{t.final_eval_loss:.4f}"])
-    if t.wall_clock_s is not None:
-        rows.append(["Training wall-clock", f"{t.wall_clock_s / 3600:.2f} h"])
-    if t.peak_memory_gb is not None:
-        rows.append(["Peak GPU memory", f"{t.peak_memory_gb:.1f} GB"])
-    return [["Metric", "Value"]] + rows if rows else []
+    seconds, origin = t.wall_clock
+    if seconds is not None:
+        rows.append(["Training wall-clock", f"{hours_minutes(seconds)} (h:mm, {origin})"])
+    rows.append(["Peak GPU memory", "n/r (no script records it)"])
+    return [["Metric", "Value"]] + rows
 
 
 def rubric_table(art: Artifacts, latex: bool = False) -> list[list[str]]:
@@ -422,9 +474,8 @@ def rubric_table(art: Artifacts, latex: bool = False) -> list[list[str]]:
     if not scored:
         return []
     rows = [["Model", "Scored", "Mean score (0-2)", "Scores 2 / 1 / 0", "Share scoring 2"]]
-    names = {"base": "Base", "ft": "Fine-tuned", "unknown": "Unknown model"}
     for r in scored:
-        rows.append([names[r.model], f"{len(r.scores)}/{r.n_items}", f"{r.mean_score:.2f}",
+        rows.append([r.label, f"{len(r.scores)}/{r.n_items}", f"{r.mean_score:.2f}",
                      " / ".join(str(r.scores.count(s)) for s in (2, 1, 0)), prop_cell(r.top_score, latex)])
     return rows
 
@@ -563,6 +614,8 @@ def limitations(art: Artifacts) -> list[str]:
     if art.prompt_modes("ft") and not (art.training and (art.training.trainer_state or art.training.train_log)):
         out.append("Training loss is not in the artifacts (no trainer_state.json or train_log.json), "
                    "so it is not reported.")
+    if art.training:
+        out.append("Peak GPU memory during training is not recorded by any script, so it is reported as n/r.")
 
     if art.dataset:
         oom = sum(c.oom for c in art.dataset.per_category.values())
@@ -579,7 +632,10 @@ def limitations(art: Artifacts) -> list[str]:
     scored = [r for r in art.reviews if r.scores]
     if scored:
         out.append("Explanations were scored by hand with a 0/1/2 rubric by one reviewer on "
-                   + ", ".join(f"{len(r.scores)} {r.model} samples" for r in scored) + "; not blind, not inter-rated.")
+                   + ", ".join(f"{len(r.scores)} {r.label} samples" for r in scored) + "; not inter-rated.")
+    if any(r.model == "unknown" for r in art.reviews):
+        out.append("Some review items could not be attributed to a model (a blind review without its "
+                   "<review>.key.json answer key); they are reported as 'Unknown model'.")
 
     out.append("Scope (fixed): a small model and dataset compared with 8B–32B RL systems; 5 narrow categories; "
                "no RL (search is inference-time only); demo-grade sandbox.")
@@ -593,10 +649,10 @@ def _review_lines(art: Artifacts) -> list[str]:
     lines = []
     for r in art.reviews:
         if not r.scores:
-            lines.append(f"- `{r.source}`: {r.n_items} items, none scored yet.")
+            lines.append(f"- {r.label} (`{r.source}`): {r.n_items} items, none scored yet.")
             continue
         dist = {s: r.scores.count(s) for s in (0, 1, 2)}
-        lines.append(f"- {r.model} (`{r.source}`): {len(r.scores)}/{r.n_items} scored; mean {r.mean_score:.2f}/2; "
+        lines.append(f"- {r.label} (`{r.source}`): {len(r.scores)}/{r.n_items} scored; mean {r.mean_score:.2f}/2; "
                      f"scores 2/1/0 = {dist[2]}/{dist[1]}/{dist[0]}; share scoring 2: {prop_cell(r.top_score)}")
     return lines or ["No explanation review found."]
 
@@ -633,7 +689,8 @@ def _section(title: str, rows: list[list[str]], empty: str) -> list[str]:
     return [f"## {title}", "", markdown_table(rows) if rows else empty, ""]
 
 
-def results_markdown(art: Artifacts, figures: list[tuple[str, str]], skipped_figures: list[tuple[str, str]]) -> str:
+def results_markdown(art: Artifacts, figures: list[tuple[str, str]], skipped_figures: list[tuple[str, str]],
+                     latex_notes: list[str] = ()) -> str:
     warnings = coverage_warnings(art)
     parts = [
         "# KernelForge results",
@@ -647,6 +704,7 @@ def results_markdown(art: Artifacts, figures: list[tuple[str, str]], skipped_fig
     parts += _section("Session stages", session_stage_table(art),
                       "No stage_status.json or session stage records found.")
     parts += _section("Eval coverage", coverage_table(art), "No evaluation runs found.")
+    parts += _section("Run settings", settings_table(art), "No evaluation runs found.")
     parts += _section("Artifacts found", [["Artifact", "Status"]] + [[s, v] for s, v in stage_status(art)], "")
     parts += ["## Category results (Phase 5)", "", markdown_table(phase5_table(art)), "", TABLE_NOTES, ""]
     parts += _section("Search: pass@1 vs best-of-N vs best-of-N + repair, on the same prompts", search_table(art),
@@ -674,6 +732,8 @@ def results_markdown(art: Artifacts, figures: list[tuple[str, str]], skipped_fig
     parts += ["## Explanation review", "", *_review_lines(art), "", "## Figures", ""]
     parts += [f"![{caption}]({path})\n\n*{caption}*\n" for path, caption in figures]
     parts += [f"- {name}: not drawn ({why})" for name, why in skipped_figures]
+    if latex_notes:
+        parts += ["", "## LaTeX fragments (docs/paper/RESULTS_INTERFACE.md)", "", *[f"- {n}" for n in latex_notes]]
     parts += ["", "## Limitations", "", *[f"- {line}" for line in limitations(art)], "",
               "## Sources", "", *_provenance_lines(art), ""]
     return "\n".join(parts)
@@ -744,7 +804,15 @@ def summary_json(art: Artifacts) -> dict:
                 "search_runs_on_shared_prompts": None if not g.incomplete_pass1 else
                 {r.mode_label: prop(merge(r.subset(g.shared_ids).values()).proportion) for r in g.runs}}
 
-    t = art.training
+    def training(t) -> dict:
+        seconds, origin = t.wall_clock
+        return {"run": t.name, "partial": t.partial, "stopped_at_step": t.stopped_at_step,
+                "steps_planned": t.steps_planned, "steps": t.steps, "epochs": t.epochs,
+                "final_step_loss": t.final_step_loss, "mean_train_loss": t.mean_train_loss,
+                "best_eval_loss": t.best_eval_loss, "final_eval_loss": t.final_eval_loss,
+                "wall_clock_s": seconds, "wall_clock_source": origin or None,
+                "peak_memory_gb": None, "split_info": t.split_info}
+
     return {
         "source": art.source,
         "warnings": coverage_warnings(art),
@@ -758,16 +826,16 @@ def summary_json(art: Artifacts) -> dict:
             "full_held_out_set": r.full_held_out_set, "search_limit": r.search_limit,
             "search_prompts_scored": r.prompts_scored, "max_new_tokens": r.max_new_tokens,
             "data_source": r.data_source, "backend": r.backend, "outcomes": r.outcomes,
+            "settings": r.settings, "few_shot_source": r.few_shot_source, "derived_from": r.derived_from,
+            "prompts_planned": r.prompts_planned,
             "token_limit": token(r),
             "per_category": {k: cat(r, v) for k, v in r.categories.items()},
             "all": cat(r, r.overall())} for r in sorted_runs(art)},
         "search_comparisons": [search(g) for g in search_groups(art)],
-        "training": None if t is None else {
-            "run": t.name, "trainer_state_source": t.trainer_state_source or None,
-            "final_train_loss": t.final_train_loss, "final_eval_loss": t.final_eval_loss,
-            "epochs": t.epochs, "steps": t.steps,
-            "wall_clock_s": t.wall_clock_s, "peak_memory_gb": t.peak_memory_gb, "split_info": t.split_info},
-        "explanation_reviews": [{"source": r.source, "model": r.model, "items": r.n_items, "scored": len(r.scores),
-                                 "mean_score": r.mean_score} for r in art.reviews],
+        "training_runs": [training(t) for t in art.training_runs],
+        "explanation_reviews": [{"source": r.source, "model": r.model, "prompt_mode": r.prompt_mode,
+                                 "items": r.n_items, "scored": len(r.scores),
+                                 "score_2": r.scores.count(2), "score_1": r.scores.count(1),
+                                 "score_0": r.scores.count(0), "mean_score": r.mean_score} for r in art.reviews],
         "limitations": limitations(art),
     }
