@@ -14,7 +14,7 @@ write; every key is optional and a missing key never becomes a number.
     data/raw/progress_<mode>.jsonl        one line per finished dataset verification
     evaluation/results/<run>_<ts>.json    eval report: pass@1 rows in "results", plus an
                                           embedded "search" block with its own "results"
-    evaluation/results/baseline.jsonl, baseline_few_shot.jsonl, finetuned.jsonl
+    evaluation/results/baseline.jsonl, baseline_few_shot_<source>.jsonl, finetuned.jsonl
                                           incremental log: {"type": "meta", ...} then
                                           {"type": "row", "phase": "pass@1"|"search", "id", ...}
     training/run_*/split_info.json        split, config, partial, stopped_at_step, steps_planned
@@ -22,7 +22,7 @@ write; every key is optional and a missing key never becomes a number.
     training/run_*/trainer_state.json, checkpoint-*/trainer_state.json
     <review>.json + <review>.key.json     evaluation/explanation_review.py (key only when blind)
 
-Nothing records peak GPU memory, so it is never reported (the paper's "n/r").
+Peak GPU memory is read from an optional split_info.json "peak_memory_gb"; without it, "n/r".
 Anything named dryrun_* is skipped.
 """
 
@@ -47,17 +47,20 @@ CATEGORY_LABELS = {
     "norm": "Norm",
     "rope": "RoPE",
 }
-PROMPT_LABELS = {"zero_shot": "zero-shot", "few_shot": "few-shot", "unspecified": ""}
+PROMPT_LABELS = {"zero_shot": "zero-shot", "few_shot": "few-shot", "unspecified": "",
+                 "few_shot_other_category": "few-shot (other_category)",
+                 "few_shot_same_category": "few-shot (same_category)"}
 MODEL_LABELS = {"base": "Base", "ft": "Fine-tuned", "unknown": "Unknown model"}
 
-# evaluation/common.py writes its per-prompt log to evaluation/results/<run name>.jsonl.
-INCREMENTAL_LOG_NAMES = ("baseline.jsonl", "baseline_few_shot.jsonl", "finetuned.jsonl")
+# evaluation/common.py writes its per-prompt log to evaluation/results/<run name>.jsonl:
+# baseline.jsonl, baseline_few_shot_<source>.jsonl, finetuned.jsonl. A rerun moves an old log
+# aside as <run name>.<timestamp>.jsonl, which this pattern does not match.
+INCREMENTAL_LOG = re.compile(r"^(baseline|finetuned|baseline_few_shot(_(other|same)_category)?)\.jsonl$")
 
-# Generation settings shown in the run-settings table. Looked up at the report's
-# top level and in any of the nested dicts below (agent/b has not fixed a key yet).
+# Generation settings shown in the run-settings table. The explicit "generation_settings"
+# dict (docs/handoff/B_integration_notes.md) wins over top-level keys of the same name.
 SETTING_KEYS = ("decoding", "do_sample", "temperature", "top_k", "top_p", "repetition_penalty",
                 "max_new_tokens", "seed", "round0_temperature", "repair_temperature", "few_shot_source")
-SETTING_DICTS = ("generation_settings", "effective_generation_settings", "generation", "sampling", "decoding")
 
 MAX_FILE_BYTES = 50 * 1024 * 1024  # skip anything larger; no report is close to this
 
@@ -212,7 +215,8 @@ class EvalRun:
     backend: Optional[str] = None
     max_new_tokens: Optional[int] = None
     baseline_report: Optional[str] = None
-    settings: dict = field(default_factory=dict)  # generation settings recorded by the report
+    settings: dict = field(default_factory=dict)  # generation settings recorded by the report (round 0 for search)
+    repair_settings: dict = field(default_factory=dict)  # search only: settings of the repair rounds
     reported_outcomes: dict[str, int] = field(default_factory=dict)  # top-level "outcomes"
     reported_hit_token_limit: Optional[int] = None  # top-level count, when rows don't say
     # Filled in from session records / split_info when available.
@@ -281,8 +285,8 @@ class EvalRun:
         """"same_category" / "other_category" as recorded, else derived from each row's
         example_id (its category prefix vs the row's category). None if neither exists."""
         recorded = self.settings.get("few_shot_source")
-        if recorded:
-            return str(recorded)
+        if isinstance(recorded, str) and recorded:
+            return recorded  # the explicit key wins; example_id is only a fallback
         shown = [r for r in self.rows if r.example_id]
         if not shown:
             return None
@@ -310,15 +314,24 @@ def group_label(model: str, prompt_mode: str) -> str:
     return f"{MODEL_LABELS.get(model, model)} {prompt}".strip()
 
 
-def _settings(block: dict) -> dict:
-    """Generation settings recorded at this level of a report (top level + nested dicts)."""
-    found = {}
-    for name in SETTING_DICTS:
-        nested = block.get(name)
-        if isinstance(nested, dict):
-            found.update({k: v for k, v in nested.items() if k in SETTING_KEYS})
-    found.update({k: block[k] for k in SETTING_KEYS if k in block and not isinstance(block[k], dict)})
+def _settings(block: dict, nested: Optional[dict] = None) -> dict:
+    """Generation settings recorded at this level of a report: top-level keys, overridden by the
+    explicit settings dict (block["generation_settings"] unless `nested` is given)."""
+    found = {k: block[k] for k in SETTING_KEYS if k in block and not isinstance(block[k], dict)}
+    nested = block.get("generation_settings") if nested is None else nested
+    if isinstance(nested, dict):
+        found.update({k: v for k, v in nested.items() if k in SETTING_KEYS and not isinstance(v, dict)})
     return found
+
+
+def _prompt_mode(meta: dict) -> str:
+    """The run's prompt variant. A few-shot run that records its source is keyed by it, so
+    other_category and same_category runs are separate runs, never one superseding the other."""
+    mode = str(meta.get("prompt_mode") or "unspecified")
+    source = meta.get("few_shot_source")
+    if mode == "few_shot" and isinstance(source, str) and source:
+        return f"few_shot_{source}"
+    return mode
 
 
 def _row(r: dict) -> EntryRow:
@@ -349,7 +362,7 @@ def _new_run(meta: dict, source: str, num_candidates: int, repair_rounds: int) -
     outcomes = meta.get("outcomes")
     return EvalRun(
         source=source, model="ft" if is_ft else "base", num_candidates=num_candidates,
-        repair_rounds=repair_rounds, prompt_mode=str(meta.get("prompt_mode") or "unspecified"),
+        repair_rounds=repair_rounds, prompt_mode=_prompt_mode(meta),
         run_name=run_name, model_name=str(meta.get("model_name") or ""), adapter_path=meta.get("adapter_path"),
         device=str(meta.get("device") or ""), generated_at=str(meta.get("generated_at") or ""),
         split=meta.get("split"), held_out_templates=list(meta.get("held_out_templates") or []),
@@ -414,7 +427,13 @@ def _search_run(meta: dict, block: dict, rows: list, source: str) -> EvalRun:
     run.search_limit = _int(block.get("search_limit"))
     run.prompts_planned = _int(block.get("prompts_planned"))
     run.prompts_scored = _int(block.get("prompts_scored"))
-    run.settings = _settings(block)  # the search samples; the pass@1 settings don't apply to it
+    # The search samples, so pass@1's settings don't apply: use the block's own round-0 / repair
+    # settings (search.generation_settings.round0 / .repair) plus its seed and temperatures.
+    gen = block.get("generation_settings") if isinstance(block.get("generation_settings"), dict) else {}
+    run.settings = _settings(block, gen.get("round0") if isinstance(gen.get("round0"), dict) else {})
+    run.repair_settings = _settings({}, gen.get("repair")) if isinstance(gen.get("repair"), dict) else {}
+    if meta.get("few_shot_source") is not None:
+        run.settings["few_shot_source"] = meta["few_shot_source"]  # the search uses the same examples
     outcomes = block.get("outcomes")
     run.reported_outcomes = ({k: _int(v) for k, v in outcomes.items() if _int(v) is not None}
                              if isinstance(outcomes, dict) else {})
@@ -436,7 +455,7 @@ def round0_run(search: EvalRun) -> Optional[EvalRun]:
                     speedup=r.speedup if r.selected_round == 0 else None,
                     infinite=r.infinite and r.selected_round == 0) for r in search.rows]
     run = replace(search, repair_rounds=0, derived_from=search.source, rows=rows, settings=dict(search.settings),
-                  reported_outcomes={})
+                  repair_settings={}, reported_outcomes={})
     run.categories = aggregate(rows)
     return run
 
@@ -506,7 +525,8 @@ def parse_incremental_log(lines: list[dict], source: str) -> tuple[list[EvalRun]
         runs.append(run)
     if search:
         block = {"num_candidates": meta.get("num_candidates"), "repair_rounds": meta.get("repair_rounds"),
-                 "search_limit": meta.get("search_limit"), "seed": meta.get("seed")}
+                 "search_limit": meta.get("search_limit"), "seed": meta.get("seed"),
+                 "repetition_penalty": meta.get("repetition_penalty")}
         run = _search_run(meta, block, search, f"{source} (search)")
         runs.append(run)
         derived = round0_run(run)
@@ -704,8 +724,7 @@ def parse_reviews(report: dict, source: str, key: Optional[dict]) -> list[Explan
 
 @dataclass
 class TrainingRun:
-    """What one training/run_*/ folder left behind (training/finetune.py). Every field is optional.
-    Peak GPU memory is not recorded by any script, so it is never reported."""
+    """What one training/run_*/ folder left behind (training/finetune.py). Every field is optional."""
 
     name: str
     split_info: Optional[dict] = None
@@ -789,6 +808,11 @@ class TrainingRun:
     @property
     def steps_planned(self) -> Optional[int]:
         return _int((self.split_info or {}).get("steps_planned"))
+
+    @property
+    def peak_memory_gb(self) -> Optional[float]:
+        """Optional split_info.json "peak_memory_gb" (a planned training/finetune.py change); None if absent."""
+        return _float((self.split_info or {}).get("peak_memory_gb"))
 
     @property
     def is_dry_run(self) -> bool:
@@ -991,7 +1015,7 @@ def load_artifacts(src: Path | str) -> Artifacts:
                 stage_status = data
             elif base.startswith("progress_") and name.endswith(".jsonl"):
                 art.progress.append(parse_progress_log(data, name))
-            elif base in INCREMENTAL_LOG_NAMES:
+            elif INCREMENTAL_LOG.match(base):
                 runs, why = parse_incremental_log(data, name)
                 logs.extend(runs) if runs else art.excluded.append((name, why))
             elif name.endswith(".jsonl"):

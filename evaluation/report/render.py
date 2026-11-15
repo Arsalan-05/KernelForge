@@ -341,8 +341,14 @@ SETTING_COLUMNS = ("decoding", "do_sample", "temperature", "top_k", "top_p", "re
 
 def repetition_penalties(art: Artifacts) -> dict[str, object]:
     """run label -> recorded repetition_penalty, for runs (not derived ones) that record it."""
-    return {r.label: r.settings["repetition_penalty"] for r in sorted_runs(art)
-            if not r.derived_from and r.settings.get("repetition_penalty") is not None}
+    found = {}
+    for r in sorted_runs(art):
+        if r.derived_from:
+            continue
+        for suffix, settings in (("", r.settings), (" (repair rounds)", r.repair_settings)):
+            if settings.get("repetition_penalty") is not None:
+                found[r.label + suffix] = settings["repetition_penalty"]
+    return found
 
 
 def settings_table(art: Artifacts) -> list[list[str]]:
@@ -350,14 +356,18 @@ def settings_table(art: Artifacts) -> list[list[str]]:
     runs = [r for r in sorted_runs(art) if not r.derived_from]
     if not runs:
         return []
-    rows = [["Run", "Prompt mode", "Few-shot source"] + list(SETTING_COLUMNS)]
+    rows = [["Run", "Prompt mode", "Few-shot source"] + list(SETTING_COLUMNS) + ["repair-round settings"]]
     for r in runs:
         values = {**r.settings}
         if "max_new_tokens" not in values and r.max_new_tokens is not None:
             values["max_new_tokens"] = r.max_new_tokens
         few_shot = r.few_shot_source or ("n/a (zero-shot)" if r.prompt_mode == "zero_shot" else "not recorded")
-        rows.append([r.label, r.prompt_mode.replace("_", "-"), few_shot]
-                    + [str(values[k]) if values.get(k) is not None else "not recorded" for k in SETTING_COLUMNS])
+        repair = (", ".join(f"{k}={v}" for k, v in r.repair_settings.items() if v is not None) or "not recorded"
+                  if r.repair_rounds else "n/a")
+        mode = "few-shot" if r.prompt_mode.startswith("few_shot") else r.prompt_mode.replace("_", "-")
+        rows.append([r.label, mode, few_shot]
+                    + [str(values[k]) if values.get(k) is not None else "not recorded" for k in SETTING_COLUMNS]
+                    + [repair])
     return rows
 
 
@@ -464,7 +474,8 @@ def training_table(art: Artifacts) -> list[list[str]]:
     seconds, origin = t.wall_clock
     if seconds is not None:
         rows.append(["Training wall-clock", f"{hours_minutes(seconds)} (h:mm, {origin})"])
-    rows.append(["Peak GPU memory", "n/r (no script records it)"])
+    rows.append(["Peak GPU memory", f"{t.peak_memory_gb:.1f} GB" if t.peak_memory_gb is not None
+                 else "n/r (split_info.json has no peak_memory_gb)"])
     return [["Metric", "Value"]] + rows
 
 
@@ -614,8 +625,9 @@ def limitations(art: Artifacts) -> list[str]:
     if art.prompt_modes("ft") and not (art.training and (art.training.trainer_state or art.training.train_log)):
         out.append("Training loss is not in the artifacts (no trainer_state.json or train_log.json), "
                    "so it is not reported.")
-    if art.training:
-        out.append("Peak GPU memory during training is not recorded by any script, so it is reported as n/r.")
+    if art.training and art.training.peak_memory_gb is None:
+        out.append("Peak GPU memory during training is not in the artifacts (no peak_memory_gb in "
+                   "split_info.json), so it is reported as n/r.")
 
     if art.dataset:
         oom = sum(c.oom for c in art.dataset.per_category.values())
@@ -811,7 +823,7 @@ def summary_json(art: Artifacts) -> dict:
                 "final_step_loss": t.final_step_loss, "mean_train_loss": t.mean_train_loss,
                 "best_eval_loss": t.best_eval_loss, "final_eval_loss": t.final_eval_loss,
                 "wall_clock_s": seconds, "wall_clock_source": origin or None,
-                "peak_memory_gb": None, "split_info": t.split_info}
+                "peak_memory_gb": t.peak_memory_gb, "split_info": t.split_info}
 
     return {
         "source": art.source,
@@ -826,7 +838,7 @@ def summary_json(art: Artifacts) -> dict:
             "full_held_out_set": r.full_held_out_set, "search_limit": r.search_limit,
             "search_prompts_scored": r.prompts_scored, "max_new_tokens": r.max_new_tokens,
             "data_source": r.data_source, "backend": r.backend, "outcomes": r.outcomes,
-            "settings": r.settings, "few_shot_source": r.few_shot_source, "derived_from": r.derived_from,
+            "settings": r.settings, "repair_settings": r.repair_settings, "few_shot_source": r.few_shot_source, "derived_from": r.derived_from,
             "prompts_planned": r.prompts_planned,
             "token_limit": token(r),
             "per_category": {k: cat(r, v) for k, v in r.categories.items()},

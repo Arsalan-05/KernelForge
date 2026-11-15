@@ -3,7 +3,8 @@
     table_dataset.tex     Table 1: 6 cells; 5 category rows, \\midrule, Total
     table_categories.tex  Table 2: 7 cells; 5 category rows
     table_search.tex      Table 3: 4 cells; rows Base, Fine-tuned
-    table_training.tex    Table 4: 5 cells; one row per training run, reported run last
+    table_training.tex    Table 4: 5 cells; one row per training run, reported run last (memory from
+                          split_info.json "peak_memory_gb" when present, else n/r)
     table_rubric.tex      Table 5: 5 cells; rows Base, Fine-tuned
 
 The paper owns header, column spec, caption and rules; a fragment is ONLY the body
@@ -199,10 +200,12 @@ def training_fragment(art: Artifacts) -> tuple[Optional[str], Optional[str]]:
         seconds, origin = t.wall_clock
         if origin:
             notes.append(f"{t.name}: wall clock from the {origin}")
+        memory = f"{t.peak_memory_gb:.1f} GB" if t.peak_memory_gb is not None else NOT_RUN
+        if t.peak_memory_gb is None:
+            notes.append(f"{t.name}: peak GPU memory n/r (split_info.json has no peak_memory_gb)")
         rows.append(_row([label, f"{t.final_step_loss:.3f}" if t.final_step_loss is not None else NOT_RUN, val,
-                          hours_minutes(seconds) if seconds is not None else NOT_RUN, NOT_RUN]))
+                          hours_minutes(seconds) if seconds is not None else NOT_RUN, memory]))
         sources.append(f"training/{t.name}")
-    notes.append("peak GPU memory: n/r, no script records it")
     return _fragment(sources, rows, notes), None
 
 
