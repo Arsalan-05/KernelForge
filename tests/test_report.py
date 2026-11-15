@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,17 +24,18 @@ import pytest
 import data.build_dataset as build_dataset
 import evaluation.common as common
 from evaluation.report.__main__ import build_report, main
-from evaluation.report.artifacts import CATEGORIES, load_artifacts, parse_eval_report
+from evaluation.report.artifacts import CATEGORIES, CategoryResult, load_artifacts, parse_eval_report
+from evaluation.report.figures import make_figures
+from evaluation.report.latex import FRAGMENT_NAMES, combined, fragments
 from evaluation.report.render import (
     NOT_RUN,
-    latex_fragments,
     limitations,
     phase5_table,
     prop_cell,
     readme_snippet,
     stage_status,
 )
-from evaluation.report.stats import Proportion, mean, median, wilson_interval
+from evaluation.report.stats import Proportion, geomean, mean, median, wilson_interval
 from kernelforge.dataset import CATEGORIES as DATASET_CATEGORIES
 from verification.verify_kernel import VerifyResult
 
@@ -227,12 +229,17 @@ def test_prop_cell_formats_and_flags_small_n():
 
 def test_phase5_table_cells(tmp_path, monkeypatch):
     _write_synthetic_eval(tmp_path, monkeypatch, "baseline", BASE_OUTCOMES)
-    rows = {r[0]: r for r in phase5_table(load_artifacts(tmp_path))}
+    table = phase5_table(load_artifacts(tmp_path))
+    assert table[0][1:5] == ["Base % correct", "Base mean speedup", "Base geomean speedup", "Base fast_1"]
+    rows = {r[0]: r for r in table}
     assert rows["Norm"][1] == "50% (2/4) [15–85]†"
-    assert rows["Norm"][2] == "2.00× (n=2)†"
-    assert rows["RoPE"][2] == "– (0 correct)"  # the only correct rope kernel had speedup=inf
+    assert rows["Norm"][2] == "2.00× (n=2)†"  # mean of the SYNTHETIC 1.5x and 2.5x
+    assert rows["Norm"][3] == "1.94× (n=2)†"  # sqrt(1.5 * 2.5)
+    assert rows["Norm"][4] == "50% (2/4) [15–85]†"  # both correct kernels beat 1x
+    assert rows["RoPE"][2] == "– (none timed)"  # the only correct rope kernel had speedup=inf
+    assert rows["RoPE"][4] == "0% (0/2) [0–66]†"  # inf is not counted as fast
     assert rows["Attention"][1] == "no samples"
-    assert rows["Norm"][3] == NOT_RUN and rows["Norm"][5] == NOT_RUN  # no FT runs
+    assert all(rows["Norm"][i] == NOT_RUN for i in range(5, 10))  # no FT runs
     assert rows["All"][1] == "50% (3/6) [19–81]†"
 
 
@@ -243,12 +250,14 @@ def test_interpreter_runs_report_no_speedup(tmp_path, monkeypatch):
     assert any("Interpreter-only" in line for line in limitations(art))
 
 
-def test_latex_fragments_are_escaped(tmp_path, monkeypatch):
+def test_latex_fragments_are_escaped_and_wrapped(tmp_path, monkeypatch):
     _write_synthetic_eval(tmp_path, monkeypatch, "baseline", BASE_OUTCOMES)
-    tex = latex_fragments(load_artifacts(tmp_path))
-    assert "Base \\% correct" in tex and "2.00$\\times$" in tex and "\\begin{tabular}{lrrrrr}" in tex
-    body = tex.split("\n", 1)[1]  # first line is a TeX comment, which may contain a bare %
-    assert "\\%" in body and " % " not in body
+    tex = combined(fragments(load_artifacts(tmp_path)))
+    assert "Base \\% correct" in tex and "2.00$\\times$" in tex and "Base fast\\_1" in tex
+    assert "\\resizebox{\\columnwidth}{!}{%" in tex and "\\begin{tabular}{l" + "r" * 9 + "}" in tex
+    assert "booktabs" in tex and "graphicx" in tex  # packages are stated
+    body = [line for line in tex.splitlines() if not line.startswith("%")]  # TeX comments may hold a bare %
+    assert all("%" not in line.replace("\\%", "").rstrip("%") for line in body)
 
 
 def test_limitations_flag_small_n_and_split(tmp_path, monkeypatch):
@@ -274,7 +283,9 @@ def test_build_report_from_zip_writes_all_files(tmp_path, monkeypatch):
     out = tmp_path / "report"
     written = build_report(archive, out, figures=False)
     names = {p.name for p in written}
-    assert {"results.md", "readme_results_snippet.md", "tables.tex", "summary.json"} <= names
+    assert {"results.md", "readme_results_snippet.md", "tables.tex", "summary.json", "table_categories.tex",
+            "table_search.tex", "table_dataset.tex"} <= names
+    assert not {"table_training.tex", "table_rubric.tex"} & names  # no training run, no review
     md = (out / "results.md").read_text()
     assert "Fine-tuned model, best-of-4 + repair | present" in md
     assert "Fine-tuned model, pass@1 | absent" in md
@@ -298,3 +309,142 @@ def test_figures_are_drawn_when_matplotlib_present(tmp_path, monkeypatch):
 def test_cli_rejects_missing_source(tmp_path, capsys):
     assert main([str(tmp_path / "nope.zip"), "--out", str(tmp_path / "o")]) == 2
     assert "does not exist" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- speedup metrics (SYNTHETIC numbers)
+
+
+def test_geomean_and_fast_1_on_synthetic_speedups():
+    # SYNTHETIC: 4 attempts, 3 correct; one timed 2x, one 0.5x, one at 0 s (inf).
+    c = CategoryResult(n=4, correct=3, speedups=[2.0, 0.5], infinite_speedups=1)
+    assert c.avg_speedup == 1.25  # arithmetic mean
+    assert c.geomean_speedup == pytest.approx(1.0)  # 2x and 0.5x cancel
+    assert (c.fast_1.successes, c.fast_1.n) == (1, 4)  # only the 2x kernel; n = ALL attempts
+    assert geomean([4.0, 1.0, float("inf"), -1.0]) == pytest.approx(2.0)
+
+
+def test_summary_only_report_has_no_geomean_or_fast_1():
+    report = {"run_name": "baseline", "per_category": {
+        "norm": {"total": 5, "correct": 2, "passed": 2, "avg_speedup": 1.25}}}
+    run, _ = parse_eval_report(report, "SYNTHETIC.json")
+    assert run.categories["norm"].geomean_speedup is None and run.categories["norm"].fast_1 is None
+    art = SimpleNamespace(run=lambda m, nc=1, rr=0: run if (m, nc, rr) == ("base", 1, 0) else None)
+    norm = {r[0]: r for r in phase5_table(art)}["Norm"]
+    assert norm[2] == "1.25× (n=2)†" and norm[3] == norm[4] == "n/a (summary-only report)"
+
+
+def test_summary_json_and_limitations_carry_new_metrics(tmp_path, monkeypatch):
+    outputs = tmp_path / "outputs"
+    _write_synthetic_eval(outputs, monkeypatch, "baseline", BASE_OUTCOMES)
+    build_report(outputs, tmp_path / "report", figures=False)
+    norm = json.loads((tmp_path / "report" / "summary.json").read_text())["runs"]["base/pass@1"]["per_category"]
+    assert norm["norm"]["geomean_speedup"] == pytest.approx(math.sqrt(1.5 * 2.5))
+    assert (norm["norm"]["fast_1"]["k"], norm["norm"]["fast_1"]["n"]) == (2, 4)
+    assert norm["rope"]["infinite_speedups_excluded"] == 1
+    text = " ".join(limitations(load_artifacts(outputs)))
+    assert "fast_1" in text and "geometric mean" in text and "speedup = inf" in text
+
+
+# --------------------------------------------------------------------------- LaTeX fragment skipping
+
+
+def _tex_files(out: Path) -> set[str]:
+    return {p.name for p in out.glob("*.tex")}
+
+
+def test_no_data_writes_no_latex_at_all(tmp_path):
+    (tmp_path / "src").mkdir()
+    build_report(tmp_path / "src", tmp_path / "out", figures=False)
+    assert _tex_files(tmp_path / "out") == set()  # not even tables.tex: the paper shows its TODO boxes
+
+
+def test_only_fragments_with_data_are_written(tmp_path, monkeypatch):
+    _write_synthetic_eval(tmp_path / "src", monkeypatch, "baseline", BASE_OUTCOMES)  # pass@1 only
+    build_report(tmp_path / "src", tmp_path / "out", figures=False)
+    # pass@1 alone is not a search result, and there is no dataset/training/review data.
+    assert _tex_files(tmp_path / "out") == {"table_categories.tex", "tables.tex"}
+
+
+def test_interpreter_dataset_check_is_not_a_dataset_table(tmp_path):
+    report = {"templates": {"norm/rmsnorm": [{"id": "x", "passed": True, "status": "ok"}]}, "smoke": True}
+    (tmp_path / "interpret_report.json").write_text(json.dumps(report))  # SYNTHETIC
+    assert "table_dataset" not in fragments(load_artifacts(tmp_path))
+
+
+def test_stale_fragment_is_removed_when_its_data_is_gone(tmp_path, monkeypatch):
+    _write_synthetic_eval(tmp_path / "src", monkeypatch, "baseline", BASE_OUTCOMES)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "table_search.tex").write_text("% left over from an older SYNTHETIC run")
+    build_report(tmp_path / "src", out, figures=False)
+    assert not (out / "table_search.tex").exists()
+
+
+def test_rubric_fragment_needs_scored_items(tmp_path):
+    review = {"source_report": "baseline_x.json", "rubric": {}, "items": [{"rubric_score": None}]}
+    (tmp_path / "review.json").write_text(json.dumps(review))  # SYNTHETIC, unscored
+    assert "table_rubric" not in fragments(load_artifacts(tmp_path))
+    review["items"] = [{"rubric_score": 2}, {"rubric_score": 0}]
+    (tmp_path / "review.json").write_text(json.dumps(review))
+    tex = fragments(load_artifacts(tmp_path))["table_rubric"]
+    assert "Base & 2/2 & 1.00 & 1 / 0 / 1" in tex
+
+
+def _write_synthetic_training_run(root: Path, *, with_state: bool) -> None:
+    run = root / "training" / "run_20990101T000000Z"
+    run.mkdir(parents=True)
+    (run / "split_info.json").write_text(json.dumps({  # SYNTHETIC split
+        "train": 9, "val": 1, "test": 5, "split": "template", "held_out_templates": ["norm__synthetic_tpl"],
+        "config": {"model_name": "SYNTHETIC-model", "lora_r": 16, "lora_alpha": 32, "learning_rate": 2e-4,
+                   "num_epochs": 3, "per_device_train_batch_size": 1, "gradient_accumulation_steps": 8},
+        "created_at": "2099-01-01T00:00:00+00:00"}))
+    if with_state:
+        for step, loss in ((10, 9.9), (20, 0.5)):  # SYNTHETIC losses; the newest checkpoint must win
+            (run / f"checkpoint-{step}").mkdir()
+            (run / f"checkpoint-{step}" / "trainer_state.json").write_text(json.dumps({
+                "epoch": step / 10, "global_step": step,
+                "log_history": [{"loss": loss + 1, "step": step}, {"eval_loss": loss + 0.1, "step": step},
+                                {"train_loss": loss, "train_runtime": 3600.0 * step / 10, "step": step}]}))
+        (run / "training_metrics.json").write_text(json.dumps({"peak_memory_gb": 7.5}))
+
+
+def test_training_fragment_from_trainer_state(tmp_path):
+    _write_synthetic_training_run(tmp_path, with_state=True)
+    art = load_artifacts(tmp_path)
+    assert art.training.trainer_state_source.endswith("checkpoint-20/trainer_state.json")
+    tex = fragments(art)["table_training"]
+    for expected in ("Final train loss & 0.5000", "Final validation loss & 0.6000", "Training wall-clock & 2.00 h",
+                     "Peak GPU memory & 7.5 GB", "Epochs completed & 2", "Train / val / test entries & 9 / 1 / 5",
+                     "norm\\_\\_synthetic\\_tpl"):
+        assert expected in tex, expected
+
+
+def test_training_fragment_without_trainer_state_has_no_loss_rows(tmp_path):
+    _write_synthetic_training_run(tmp_path, with_state=False)
+    tex = fragments(load_artifacts(tmp_path))["table_training"]
+    assert "Epochs (configured) & 3" in tex
+    assert "loss" not in tex.lower() and "wall-clock" not in tex and "memory" not in tex
+
+
+def test_no_training_artifacts_no_training_fragment(tmp_path, monkeypatch):
+    _write_synthetic_eval(tmp_path, monkeypatch, "finetuned", BASE_OUTCOMES, adapter="a")
+    art = load_artifacts(tmp_path)
+    assert "table_training" not in fragments(art)
+    assert any("Training loss and wall-clock are not in the artifacts" in line for line in limitations(art))
+
+
+# --------------------------------------------------------------------------- matplotlib missing
+
+
+def test_report_works_without_matplotlib(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "matplotlib", None)  # makes `import matplotlib` raise ImportError
+    outputs = tmp_path / "outputs"
+    _write_synthetic_eval(outputs, monkeypatch, "baseline", BASE_OUTCOMES)
+    made, skipped = make_figures(load_artifacts(outputs), tmp_path / "unused")
+    assert made == [] and len(skipped) == 3
+    assert all("evaluation/report/requirements.txt" in why for _, why in skipped)
+    build_report(outputs, tmp_path / "report")
+    md = (tmp_path / "report" / "results.md").read_text()
+    assert "correctness_by_category: not drawn (matplotlib is not installed" in md
+    assert not (tmp_path / "report" / "figures").exists()
+    assert (tmp_path / "report" / "table_categories.tex").exists()  # tables still written
