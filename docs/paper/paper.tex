@@ -1,0 +1,544 @@
+% KernelForge -- arXiv paper skeleton (target: January 2027).
+%
+% HOW TO READ THIS FILE
+%   * Every \todo{...} is something only the GPU run (or the owner) can fill in.
+%     docs/paper/CHECKLIST.md lists them in order and says which claims depend on which result.
+%   * Every claim about the repo was checked against the code on 2026-11-15; the file it comes
+%     from is given in a "% src:" comment next to it. If the code changes, re-check the claim.
+%   * Every claim about other work is limited to what docs/paper/SOURCES.md records.
+%   * Build: pdflatex paper && bibtex paper && pdflatex paper && pdflatex paper
+
+\documentclass[11pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+
+% A visible placeholder for anything that needs a result or an owner decision.
+% Search the PDF for "TODO" before posting; there must be none left.
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO:} #1\textbf{]}}}
+% Small helper for code identifiers.
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{KernelForge: A Data-Efficient, Explainable Triton Kernel Generator\\for LLM-Serving Operators}
+\author{\todo{author name, affiliation}}
+\date{\todo{posting date}}
+
+\begin{document}
+\maketitle
+
+% =====================================================================================
+\begin{abstract}
+Large language models can draft GPU kernels, but recent systems that do this well rely on
+large training budgets, often reinforcement learning (RL) on 8B--32B models, and report a
+kernel and a benchmark number without saying why the kernel is faster.
+We study a deliberately small setting: supervised QLoRA fine-tuning of a
+1.5B-parameter code model on a few hundred harness-verified examples, on a single 16\,GB
+GPU, with no RL. The scope is narrow on purpose. It covers five operator families that matter
+for LLM inference serving: quantized matmul, prefill attention, KV-cache decode, normalization
+and rotary embeddings. The model outputs a Triton kernel together with a one-to-three-sentence
+explanation of the optimization.
+Every training example, every evaluation score, and every kernel shown in our demo is gated by
+the same subprocess verification harness. It follows KernelBench's \code{Model}/\code{ModelNew}
+contract and checks correctness against the PyTorch reference and measures speedup.
+We evaluate on held-out templates, so no test operator appears in training at any shape.
+On this split, fine-tuning changes kernel correctness from \todo{X\%} to \todo{Y\%}
+\todo{and mean speedup of correct kernels from A$\times$ to B$\times$}. Training-free best-of-4
+sampling with one round of harness-feedback repair reaches \todo{Z\%}. On a manual 0/1/2
+rubric, \todo{N} of \todo{M} sampled explanations name the specific technique.
+\todo{One sentence on the weakest category, stated plainly.}
+We do not claim to match larger RL-trained systems. We report what this budget achieves and
+where it fails.
+\end{abstract}
+
+% =====================================================================================
+\section{Introduction}
+
+A few operators account for much of the GPU time in LLM serving: weight-quantized
+matrix multiplication, attention during prefill, attention against the KV cache during decode,
+normalization layers, and rotary position embeddings. Hand-written Triton~\cite{tillet2019triton}
+kernels for operators like these give real gains. Liger Kernel~\cite{hsu2024liger} reports
+about 20\% higher training throughput and about 60\% lower memory from fusion and chunking,
+and FlashAttention~\cite{dao2022flashattention,dao2024flashattention2} restructures attention around
+on-chip memory. Writing such kernels takes expert time, which makes them an appealing
+target for LLM code generation.
+
+Recent work has made LLM kernel generation measurable and competitive.
+KernelBench~\cite{ouyang2025kernelbench} and TritonBench~\cite{li2025tritonbench} provide benchmarks.
+KernelLLM~\cite{fisches2025kernelllm} fine-tunes an 8B model on roughly 25k PyTorch--Triton pairs.
+Kevin~\cite{baronio2025kevin}, AutoTriton~\cite{li2025autotriton}, TritonRL~\cite{woo2025tritonrl} and
+Dr.~Kernel~\cite{liu2026drkernel} train 8B--32B models with reinforcement learning, usually after a
+supervised stage. These systems are better resourced than this project, and we do not try to
+beat them on broad coverage or raw speedup.
+
+We ask a narrower question instead: \emph{with a small curated supervised dataset, a 1.5B model,
+no RL, and one free-tier 16\,GB GPU, how good can a kernel generator get on a narrow,
+serving-relevant set of operators, and can it say why its kernel is faster?}
+
+\paragraph{Contributions.}
+\begin{enumerate}
+  \item \textbf{A harness-gated dataset for serving operators.} We built 15 hand-written Triton
+        templates across five categories, instantiated at 20 shapes each (300 candidates). An
+        example enters the dataset only if a subprocess harness confirms that it matches the
+        PyTorch reference (\S\ref{sec:dataset}).
+  \item \textbf{An explanation output and its evaluation.} The training target contains a short
+        rationale next to the kernel. We score generated explanations with a manual rubric
+        (\S\ref{sec:explanations}). None of the works we reviewed evaluates a
+        natural-language explanation as an output \todo{re-check against full papers before posting; see UNVERIFIED.md}.
+  \item \textbf{One verification function everywhere.} The same function filters training data,
+        scores the baseline and the fine-tuned model, and drives an inference-time best-of-$N$ +
+        repair search. So ``correct'' means the same thing in every number we report
+        (\S\ref{sec:harness}, \S\ref{sec:search}).
+  \item \textbf{An honest small-budget reference point.} We report category-level results on a
+        held-out-template split, including failures and weak categories (\S\ref{sec:results}).
+\end{enumerate}
+
+% =====================================================================================
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Benchmarks.}
+KernelBench~\cite{ouyang2025kernelbench} collects 250 PyTorch workloads. It asks a model for a
+faster \code{ModelNew} that matches a reference \code{Model}, and it introduces $\mathrm{fast}_p$,
+the fraction of generated kernels that are correct \emph{and} faster than the reference by more
+than a factor $p$. Its authors find that frontier reasoning models match the PyTorch baseline in
+under 20\% of cases out of the box, and that execution and profiling feedback helps. We adopt
+its \code{Model}/\code{ModelNew} contract unchanged. TritonBench~\cite{li2025tritonbench} targets
+Triton specifically, with 184 real-world GitHub operators (TritonBench-G) and a PyTorch-aligned
+set (TritonBench-T). The best execution accuracy it reports is 23.91\% on G and 53.01\% on T, and
+the best speedups among correct operators are 1.56$\times$ and 1.91$\times$. Both benchmarks cover
+general operators. We cover five serving-operator families only, so our numbers are \emph{not}
+comparable to either benchmark's leaderboard.
+
+\paragraph{Supervised kernel generators.}
+KernelLLM~\cite{fisches2025kernelllm} is the closest prior work to our setup. It is an 8B model
+based on Llama~3.1 Instruct, fine-tuned with supervised learning on about 25k PyTorch--Triton
+pairs plus synthetic samples, using 16 GPUs for about 12 hours. It reports 20.2 pass@1 on
+KernelBench-Triton Level~1. Our setting differs in four ways: about two orders of magnitude
+less data (\todo{final verified count} examples versus about 25k), a model about five times
+smaller, a serving-operator scope instead of general PyTorch modules, and an explanation output.
+
+\paragraph{Reinforcement-learning kernel generators.}
+Kevin~\cite{baronio2025kevin} trains QwQ-32B with multi-turn RL to write and refine
+\emph{CUDA} kernels. On its evaluation it raises correctness from 56\% to 82\% and mean speedup
+from 0.53$\times$ to 1.10$\times$, and it finds that serial refinement scales better than
+parallel sampling. AutoTriton~\cite{li2025autotriton} (8B) and TritonRL~\cite{woo2025tritonrl}
+(8B) both run supervised fine-tuning followed by RL with execution-based rewards. TritonRL
+adds layered verification and a hierarchical reward to counter reward hacking.
+Dr.~Kernel~\cite{liu2026drkernel} (14B) trains with multi-turn RL in a distributed GPU environment
+with reward-hacking checks. We use no RL. Our repair loop (\S\ref{sec:search}) borrows Kevin's
+multi-turn feedback idea but runs it only at inference time, with an untrained base model or
+an SFT adapter. We do not claim it reaches what trained refinement reaches.
+
+\paragraph{Training-free agents.}
+GEAK~\cite{wang2025geak} generates Triton kernels for AMD GPUs with an agent loop of
+generation, evaluation, reflection and optimization. Sakana AI's agentic pipeline~\cite{lange2025robustkbench}
+translates PyTorch to CUDA with evolutionary search and LLM-based verifiers. It also argues
+that existing kernel benchmarks have exploitable loopholes, which is one reason we keep a
+single conservative harness (\S\ref{sec:harness}). Both rely on frontier models at test time.
+Our search uses a 1.5B model and a budget of at most four samples and two repair rounds. More
+generally, feeding execution results back to a code model goes back to Self-Debugging~\cite{chen2023selfdebug}
+and Reflexion~\cite{shinn2023reflexion}.
+
+\paragraph{Kernels we draw on.}
+Our attention templates follow FlashAttention~\cite{dao2022flashattention,dao2024flashattention2}:
+query-block programs, KV tiles, and online softmax~\cite{milakov2018online}. Our decode templates
+use a tiled online-softmax loop over the KV cache. Unlike Flash-Decoding~\cite{dao2023flashdecoding},
+they do \emph{not} split the KV sequence across programs. GQA~\cite{ainslie2023gqa},
+RMSNorm~\cite{zhang2019rmsnorm} and rotary embeddings~\cite{su2021roformer} define the reference
+operators.
+
+\paragraph{Positioning.}
+Compared with the systems above, this work (i)~has a narrower scope (five serving-operator families);
+(ii)~uses no RL; (iii)~uses supervised QLoRA~\cite{dettmers2023qlora} on a 1.5B model;
+(iv)~uses a few hundred examples, every one of which passed the harness; and (v)~generates and evaluates an
+explanation. These are differences in setting, not claims of superiority.
+
+% =====================================================================================
+\section{Method}
+\label{sec:method}
+
+\subsection{Task}
+The input is a PyTorch reference implementation of a serving operator plus a one-paragraph
+description. The output is (a)~a self-contained Python module that defines Triton kernels and a
+\code{ModelNew} class, and (b)~a 1--3 sentence explanation of the optimization technique and why
+it helps at serving scale. % src: kernelforge/prompts.py OUTPUT_FORMAT_INSTRUCTION
+The model must answer in two labelled sections, \code{kernel:} and \code{explanation:}, which a
+parser extracts. % src: kernelforge/parsing.py
+The prompt also states the contract: import only \code{torch}, \code{triton},
+\code{triton.language} and \code{math}; give \code{ModelNew} the same constructor and \code{forward}
+signature as \code{Model}; allocate outputs on the input's device; do not redefine
+\code{get\_inputs}/\code{get\_init\_inputs}. % src: kernelforge/prompts.py KERNEL_CONTRACT
+
+\subsection{Operator categories}
+We fixed five categories with three templates each (Table~\ref{tab:categories}). All references
+are fp16. % src: data/templates/*.py (all entries dtype float16)
+The choice is driven by serving, not training. Decode attention and quantized matmul dominate
+token-generation cost, and norms and RoPE run in every layer of every forward pass.
+\todo{optional: cite a serving-cost profile if you want to make this quantitative; none is cited now.}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Category & Templates \\
+\midrule
+\code{quantized\_matmul} & W8A16 per-tensor scale; W8A16 per-channel scale; W8A8 \\
+\code{attention} (prefill) & causal self-attention; non-causal cross-attention; GQA causal \\
+\code{kv\_cache} (decode) & decode attention (MHA); decode attention (GQA); KV-cache write \\
+\code{norm} & RMSNorm; LayerNorm; fused residual-add + RMSNorm \\
+\code{rope} & rotate-half; interleaved pairs; fused Q+K \\
+\bottomrule
+\end{tabular}
+\caption{The 15 templates. Each is instantiated at 20 shapes, giving 300 candidates.}
+\label{tab:categories}
+\end{table}
+
+\subsection{Template library and harness-gated dataset}
+\label{sec:dataset}
+Writing 300 genuinely different correct kernels by hand is not feasible for one person, so each
+category has three hand-written templates crossed with a grid of 20 shape configurations.
+% src: data/templates/__init__.py GENERATORS; data/build_dataset.py
+Every entry stores the reference, the kernel, the explanation, the dtype, a tolerance
+($\mathrm{atol}=\mathrm{rtol}=10^{-2}$ for fp16), the test shapes, and a verification record.
+% src: data/SCHEMA.md; data/templates/common.py FP16_TOLERANCE
+Each candidate is run through the harness on the GPU. Only passing entries enter the dataset, and
+the rest are kept with their failure reason. Out-of-memory failures are counted separately from
+incorrect kernels, so a memory limit on the 16\,GB GPU is not mistaken for a broken template.
+% src: data/build_dataset.py; MASTER_PLAN.md Part III
+
+Before any GPU time, every template was run on a small shape through Triton's CPU interpreter
+in a Linux container. All 15 pass. % src: data/raw/interpret_report.json (15/15)
+This check found real bugs, including attention references that failed on a mixed-dtype matmul
+and a W8A8 reference that used an int32 matmul. It checks correctness only and gives no timing.
+None of the results below rely on it.
+
+Two properties of this dataset matter for interpreting the results:
+\begin{itemize}
+  \item \textbf{Within a template, entries differ only in shape constants.} The kernel logic is the
+        same, so the effective number of distinct kernels is 15, not 300.
+  \item \textbf{The explanation is fixed per template.} Every template except the KV-cache write
+        has a single explanation string shared by all 20 shapes, and the KV-cache write has four.
+        % src: computed from data/templates generators on 2026-11-15
+        The training set therefore contains about a dozen distinct explanations. Our explanation
+        evaluation (\S\ref{sec:explanations}) is designed around this. It scores explanations on
+        held-out templates, where copying a training explanation would be visibly wrong.
+\end{itemize}
+
+\subsection{Verification harness}
+\label{sec:harness}
+The harness follows KernelBench's contract~\cite{ouyang2025kernelbench}. The reference module defines
+\code{Model}, \code{get\_inputs()} and \code{get\_init\_inputs()}, and the candidate defines
+\code{ModelNew} with the same signatures. % src: verification/verify_kernel.py verify_model_kernel
+Both are written to temporary files and executed in a separate Python subprocess with a
+wall-clock timeout. A hang becomes \code{timeout} and a hard crash becomes \code{crash}, so neither
+takes down the calling loop. % src: verification/verify_kernel.py, sandbox_runner.py
+Inside the subprocess:
+\begin{itemize}
+  \item The RNG is seeded immediately before \emph{each} of \code{Model(*init)} and
+        \code{ModelNew(*init)}, so operators with random internal state (e.g.\ quantized weights)
+        compare against identical state.
+  \item Reference and candidate get separately constructed input tensors from the same seed. This
+        catches a candidate that mutates its inputs in place.
+  \item Outputs (including tuples) are cast to fp32 and compared with
+        \code{torch.allclose} at the entry's tolerance, with \code{equal\_nan=False}.
+  \item On a GPU, each side is timed with CUDA events after untimed warm-up iterations, and the
+        median is reported. Speedup is $t_{\mathrm{ref}}/t_{\mathrm{cand}}$, where the
+        reference is PyTorch eager. Dataset building uses 10 warm-up and 30 timed iterations, and
+        evaluation uses 5 and 20. % src: data/build_dataset.py, evaluation/baseline_eval.py defaults
+  \item A result \emph{passes} only if it ran (\code{status} \code{ok}) and is correct.
+\end{itemize}
+When outputs differ, the harness describes the difference (shape, output count, NaN count, or the
+number of elements outside tolerance and the location of the largest error). The repair loop
+feeds this description back to the model.
+
+\paragraph{Interpreter mode versus GPU mode.}
+With \code{interpret=True}, the subprocess runs with \code{TRITON\_INTERPRET=1} on CPU tensors. It
+returns correctness only, marked as interpreted, with no timings. We use it for local
+development and the hosted demo. \emph{All numbers in this paper come from GPU mode} \todo{confirm
+when filling results}.
+
+\paragraph{Scope of the sandbox.}
+The subprocess has rlimits and a scrubbed environment, and the public demo adds an AST import
+policy. It is not a security boundary in the sense of a VM or seccomp. % src: DOCUMENTATION.md "Safety scope"
+This matters for a public demo, not for the results.
+
+\subsection{Train/validation/test split by template}
+A random shape-level split would put the same kernel, with different constants, in both train and
+test, and test accuracy would then measure memorization. We instead hold out one \emph{whole
+template} per category for test. From the remaining templates, 10\% of entries go to validation.
+% src: kernelforge/dataset.py split_by_template (seed 42)
+If all 300 candidates pass on the GPU, seed 42 holds out GQA causal prefill attention, GQA decode
+attention, fused residual-add + RMSNorm, W8A16 per-channel matmul and interleaved RoPE, and the
+split is 180/20/100. \todo{replace with the actual held-out templates and counts from
+\code{split\_info.json}; the split is computed on the verified set, so failures can change it.}
+
+Each held-out template has a close sibling in training: GQA versus MHA/causal attention,
+per-channel versus per-tensor scaling, RMSNorm with versus without a fused residual. The test set
+therefore measures generalization to \emph{variants} of seen operator families, not to new
+families. We state this as a property of the benchmark, not a weakness we hide.
+
+\subsection{Training format}
+Each example is a chat transcript: a fixed system prompt, a user turn with the description and
+reference followed by the output contract, and an assistant turn with
+\code{kernel:}\,\dots\,\code{explanation:}\,\dots. It is rendered with the base model's chat template.
+% src: training/finetune.py _format_chat_example; kernelforge/prompts.py
+The loss is the standard causal-LM loss over the whole rendered sequence, with no masking of the
+prompt tokens. % src: training/finetune.py (DataCollatorForLanguageModeling / SFTTrainer text field)
+\todo{owner decision: keep, or switch to completion-only loss and re-run; state which.}
+
+\subsection{Inference: verifier-guided search and repair}
+\label{sec:search}
+The search is pure orchestration around the harness. % src: kernelforge/search.py
+\begin{enumerate}
+  \item \textbf{Sample.} Draw $N\in\{1,\dots,4\}$ completions in one batched generation. With
+        $N>1$ the temperature is raised to at least 0.7, so the samples differ.
+  \item \textbf{Verify.} Parse each completion and run each parseable kernel through the harness.
+        Identical kernels are verified once.
+  \item \textbf{Select.} Among passing candidates, pick the one with the highest measured speedup.
+  \item \textbf{Repair.} If none pass, take the most useful failure (wrong numerics, then a harness
+        error, then unparseable output) and send it back to the model as the next turn: the original
+        prompt, that attempt, and the harness feedback (the mismatch description or the last 25
+        traceback lines). Do this for up to two rounds. Only the latest attempt is kept in context.
+\end{enumerate}
+For general-purpose (non-fine-tuned) models, the demo can add a solved example from a
+\emph{different} template in the same category, a short list of Triton~3.x pitfalls, and
+pattern-matched repair hints. % src: kernelforge/search.py, kernelforge/prompts.py TRITON_NOTES, repair_hints
+\todo{state exactly which of these were on for each row of Table~\ref{tab:search}. The current
+evaluation scripts use a zero-shot prompt with no example and no notes.}
+
+% =====================================================================================
+\section{Experimental Setup}
+\label{sec:setup}
+
+\paragraph{Model.} Qwen2.5-Coder-1.5B-Instruct~\cite{hui2024qwen25coder}.
+% src: training/configs/qwen2.5-coder-1.5b.json
+
+\paragraph{Fine-tuning.} QLoRA~\cite{dettmers2023qlora}: the base model is loaded in 4-bit NF4 with
+double quantization and fp16 compute. LoRA~\cite{hu2022lora} adapters have rank $r=16$,
+$\alpha=32$, dropout 0.05, on the \code{q,k,v,o,gate,up,down} projections. Training uses
+learning rate $2\times10^{-4}$, 3 epochs, per-device batch size 1 with 8 gradient-accumulation
+steps (effective batch 8), warm-up ratio 0.05, weight decay 0.01, maximum sequence length 8192,
+seed 42 and fp16 mixed precision. % src: training/configs/finetune_default.json; training/finetune.py
+The preferred backend is Unsloth~\cite{unsloth2023}. Where it conflicts with the preinstalled
+PyTorch, we fall back to transformers + PEFT + bitsandbytes with the same hyperparameters and the
+\code{paged\_adamw\_8bit} optimizer. \todo{which backend actually ran; optimizer if Unsloth.}
+
+\paragraph{Hardware.} One NVIDIA T4 (16\,GB) in a free Kaggle session, for dataset verification,
+training and evaluation. \todo{driver/CUDA/PyTorch/Triton versions from the session's env
+report; wall-clock time for each stage; peak memory during training.}
+
+\paragraph{Decoding.} Temperature 0.2, top-$p$ 0.95, one sample per prompt for pass@1, and a cap of
+\todo{1536} new tokens. % src: training/configs/qwen2.5-coder-1.5b.json; scripts/gpu_session.py --max-new-tokens
+\todo{check the cap does not truncate the longest reference kernels (about 4.3k characters). If
+it does, raise it and re-run.}
+
+\paragraph{Metrics.} For each category we report:
+\begin{itemize}
+  \item \textbf{\% parsed:} the fraction of outputs from which a kernel could be extracted.
+  \item \textbf{\% correct:} the fraction of \emph{all} test prompts whose kernel passed the harness.
+  \item \textbf{Mean speedup:} the arithmetic mean of $t_{\mathrm{ref}}/t_{\mathrm{cand}}$ over
+        \emph{passing} kernels only. % src: evaluation/common.py CategoryMetrics.avg_speedup
+        Because it is conditional on correctness, a model that solves only easy cases can show a higher
+        mean speedup. We therefore also report $\mathrm{fast}_1$ (correct \emph{and} faster than eager),
+        following KernelBench~\cite{ouyang2025kernelbench}. \todo{fast\_1 and geometric mean are not computed
+        by the current scripts; add them or drop this sentence.}
+\end{itemize}
+Test prompts in a category share one held-out template, so the 20 shapes are not independent
+samples. We report counts next to percentages and give Wilson 95\% intervals.
+\todo{n per category: the default session evaluates 25 prompts in total (5 per category). Decide
+whether to evaluate all held-out prompts.}
+
+\paragraph{Baselines.} The same base model without an adapter, with the same prompt, decoding
+and harness. \todo{optional: a second base model (e.g.\ DeepSeek-Coder or StarCoder2) if time allows.}
+
+% =====================================================================================
+\section{Results}
+\label{sec:results}
+
+\todo{Write this section only after the tables are filled. Lead with the weakest category.}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Category & Generated & GPU-verified & Incorrect & OOM & Other error \\
+\midrule
+Quantized matmul & 60 & \todo{} & \todo{} & \todo{} & \todo{} \\
+Attention        & 60 & \todo{} & \todo{} & \todo{} & \todo{} \\
+KV-cache         & 60 & \todo{} & \todo{} & \todo{} & \todo{} \\
+Norm             & 60 & \todo{} & \todo{} & \todo{} & \todo{} \\
+RoPE             & 60 & \todo{} & \todo{} & \todo{} & \todo{} \\
+\midrule
+Total            & 300 & \todo{} & \todo{} & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\caption{Dataset construction on one T4. Source: \code{data/raw/generation\_report.json}.
+\todo{add median speedup of the hand-written templates per category; this is the ceiling the
+model is trained toward.}}
+\label{tab:dataset}
+\end{table}
+
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+ & \multicolumn{2}{c}{Base} & \multicolumn{2}{c}{Fine-tuned} & FT best-of-4 + repair & \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-6}
+Category & \% correct & mean speedup & \% correct & mean speedup & \% correct & $n$ \\
+\midrule
+Quantized matmul & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+Attention        & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+KV-cache         & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+Norm             & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+RoPE             & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\caption{Held-out-template test set, GPU harness. Mean speedup is over passing kernels only
+(``--'' if none passed). \todo{add \% parsed and Wilson intervals, or put them in an appendix table.}}
+\label{tab:main}
+\end{table}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Model & pass@1 & best-of-4 & best-of-4 + 1 repair \\
+\midrule
+Base       & \todo{} & \todo{} & \todo{} \\
+Fine-tuned & \todo{} & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\caption{Training-free search, \% correct over all test prompts. Extra cost per prompt:
+\todo{mean generated tokens and harness runs per column}. \todo{the evaluation scripts do not run
+the search yet; see CHECKLIST.md.}}
+\label{tab:search}
+\end{table}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+ & Train loss (final) & Val loss (best) & Wall clock & Peak GPU memory \\
+\midrule
+QLoRA run & \todo{} & \todo{} & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\caption{Training run. Source: training logs in the session output archive.}
+\label{tab:training}
+\end{table}
+
+\paragraph{Failure modes.} \todo{Categorize failing outputs: unparseable, harness error (e.g.\
+compile or shape error), wrong numerics, timeout. Give counts per model. Show 3--5 concrete examples,
+good and bad, in an appendix.}
+
+% =====================================================================================
+\section{Explanation Evaluation}
+\label{sec:explanations}
+
+Explanation quality has no reliable automatic metric, so we score it by hand.
+\todo{20--30} outputs are sampled at random (seed \todo{}) from each evaluation report. Each
+is shown next to the reference explanation for its template and scored with a three-level rubric.
+% src: evaluation/explanation_review.py (default --sample 25)
+\begin{itemize}
+  \item[\textbf{2}] correctly identifies the specific optimization technique;
+  \item[\textbf{1}] partially correct, or generic but pointing the right way;
+  \item[\textbf{0}] wrong, missing, or pure boilerplate.
+\end{itemize}
+We also check whether an explanation describes what the generated kernel \emph{actually does}, not
+only what the reference does. \todo{decide whether to score this as a separate yes/no column.}
+Because training explanations are fixed per template (\S\ref{sec:dataset}), we also flag
+explanations copied verbatim, or nearly so, from a training template. On a held-out template such a
+copy usually describes the wrong operator.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Model & Score 2 & Score 1 & Score 0 & Copied from a training template \\
+\midrule
+Base       & \todo{} & \todo{} & \todo{} & -- \\
+Fine-tuned & \todo{} & \todo{} & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\caption{Manual explanation rubric on \todo{n} samples per model.}
+\label{tab:rubric}
+\end{table}
+
+\paragraph{Rater.} \todo{One rater (the author), not blinded to model identity, or blinded by
+shuffling base and fine-tuned outputs? State which. A second rater on a subset would allow an
+agreement figure.}
+
+% =====================================================================================
+\section{Limitations}
+\label{sec:limitations}
+\begin{itemize}
+  \item \textbf{Scale.} A 1.5B model and a dataset of a few hundred entries built from 15
+        templates, compared with 8B--32B systems trained on tens of thousands of examples or with RL.
+  \item \textbf{Coverage.} Five narrow operator families, fp16 only, with no backward passes. The test
+        set holds out variants of seen families, not new families.
+  \item \textbf{Low diversity.} Shape variants of one template share their kernel logic and their
+        explanation, so per-category results rest on one held-out operator each.
+  \item \textbf{No RL.} The search improves results at inference time only, at the cost of extra
+        generations and harness runs per request.
+  \item \textbf{Explanations are scored by hand.} The rubric is coarse, the rater is the author
+        \todo{adjust if blinded or double-rated}, and there is no automated metric.
+  \item \textbf{Hardware.} All timings come from one T4. Speedups over PyTorch eager on a Turing GPU
+        may not transfer to newer GPUs. Timings are medians of 20--30 runs on a shared cloud VM.
+  \item \textbf{Interpreter.} The CPU interpreter checks correctness on small shapes only, and we never
+        report it as GPU verification.
+  \item \textbf{Sandbox.} Subprocess isolation with rlimits is suitable for research and a short-lived
+        demo, not for running untrusted code in production.
+  \item \textbf{Baseline strength.} \todo{if the base model is evaluated zero-shot, say that a few-shot
+        prompt might narrow the gap, and report it if run.}
+\end{itemize}
+
+% =====================================================================================
+\section{Future Work}
+\begin{itemize}
+  \item \textbf{Rejection-sampling fine-tuning.} Run the search over the training prompts, keep
+        kernels that pass and beat a speedup threshold, and fine-tune on them. This is a lightweight
+        step toward learning from the verifier without full RL.
+  \item \textbf{Autotuning.} Teach \code{@triton.autotune} configurations instead of fixed block sizes.
+  \item \textbf{More fused operators.} Fusion is where most speedups come from, and more templates
+        per category would raise diversity.
+  \item \textbf{Split-KV decode.} Add a Flash-Decoding-style~\cite{dao2023flashdecoding} decode template
+        for long contexts.
+  \item \textbf{Serving the generator.} Merge the adapter, quantize it, and serve it with a production
+        inference engine.
+\end{itemize}
+
+% =====================================================================================
+\section{Reproducibility}
+Code, templates, the harness and all scripts are at \todo{repository URL and commit hash}.
+The whole GPU pipeline (environment report, harness tests on the GPU, dataset build, baseline,
+fine-tuning and fine-tuned evaluation) runs from one notebook
+(\code{notebooks/kaggle\_gpu\_session.ipynb}, which calls \code{scripts/gpu\_session.py}) on a free
+Kaggle T4 and writes every artifact to one archive. % src: scripts/gpu_session.py
+We release \todo{the verified dataset, the adapter, the evaluation reports, the rubric scores and
+the session archive}. The CPU interpreter check can be reproduced without a GPU:
+\begin{verbatim}
+docker build -f docker/verify.Dockerfile -t kernelforge-verify .
+docker run --rm -v "$PWD":/work kernelforge-verify \
+    python data/build_dataset.py --interpret --smoke --jobs 8
+\end{verbatim}
+Seeds: 42 for the split and for training. \todo{report the run-to-run variance of speedups if the
+timing step is repeated; otherwise state that it was not measured.}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
