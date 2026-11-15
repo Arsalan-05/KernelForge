@@ -3,24 +3,34 @@
 matplotlib is optional (pip install -r evaluation/report/requirements.txt):
 without it the report still writes every table and lists the figures as skipped.
 
-Colours: base = blue, fine-tuned = orange (slots 1-2 of a colour-vision-
-deficiency-checked categorical palette), with a hatch on the fine-tuned series
-so the two never rely on colour alone (greyscale print, CVD). Text is ink
-grey, never the series colour. Every figure is skipped, with a reason, when
-the data it needs doesn't exist; nothing is drawn from placeholders.
+Colours (slots of a colour-vision-deficiency-checked categorical palette, each
+with its own hatch and marker so no series relies on colour alone):
+base zero-shot = blue, base few-shot = aqua, fine-tuned = orange. Text is ink
+grey, never a series colour. Every figure is skipped, with a reason, when the
+data it needs doesn't exist; nothing is drawn from placeholders.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from evaluation.report.artifacts import CATEGORIES, CATEGORY_LABELS, Artifacts, EvalRun, mode_label
-from evaluation.report.render import SEARCH_MODES
+from evaluation.report.artifacts import CATEGORIES, CATEGORY_LABELS, Artifacts, EvalRun, merge, mode_label
+from evaluation.report.render import search_groups, sorted_runs
 
-SERIES = {"base": ("#2a78d6", ""), "ft": ("#eb6834", "//")}  # colour, hatch
-MODE_COLOURS = ["#2a78d6", "#eb6834", "#1baf7a"]  # pass@1, best-of-4, + repair
 INK, INK_MUTED, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
-NAMES = {"base": "Base", "ft": "Fine-tuned"}
+# Search-mode bars: pass@1 (same prompts), best-of-4, + repair, then any other mode.
+MODE_STYLES = [("#2a78d6", ""), ("#eb6834", "//"), ("#1baf7a", ".."), ("#eda100", "xx"), ("#e87ba4", "\\\\")]
+
+
+def _series_style(run: EvalRun) -> tuple[str, str, str]:
+    """(colour, hatch, marker), fixed per model + prompt mode so a colour always means the same series."""
+    if run.model == "ft":
+        return ("#eda100", "xx", "^") if run.prompt_mode == "few_shot" else ("#eb6834", "//", "D")
+    return ("#1baf7a", "..", "s") if run.prompt_mode == "few_shot" else ("#2a78d6", "", "o")
+
+
+def _pass1_runs(art: Artifacts) -> list[EvalRun]:
+    return [r for r in sorted_runs(art) if not r.is_search]
 
 
 def _pyplot():
@@ -49,56 +59,60 @@ def _pct_and_err(p):
 
 
 def correctness_by_category(art: Artifacts, path: Path) -> str:
-    runs = {m: art.run(m) for m in ("base", "ft") if art.run(m)}
+    runs = _pass1_runs(art)
     plt = _pyplot()
     keys = [*CATEGORIES, "all"]
-    fig, ax = plt.subplots(figsize=(8, 4.2))
+    fig, ax = plt.subplots(figsize=(8 + 1.5 * max(0, len(runs) - 2), 4.2))  # wider for >2 series
     width = 0.8 / len(runs)
     ns = {k: [] for k in keys}  # n per bar, shown on a second tick-label line
-    for i, (model, run) in enumerate(runs.items()):
-        colour, hatch = SERIES[model]
+    for i, run in enumerate(runs):
+        colour, hatch, _ = _series_style(run)
         props = [(run.overall() if k == "all" else run.categories.get(k)) for k in keys]
         heights, errs = zip(*[_pct_and_err(p.proportion) if p else (float("nan"), (0, 0)) for p in props])
         xs = [j + (i - (len(runs) - 1) / 2) * width for j in range(len(keys))]
-        ax.bar(xs, heights, width * 0.94, color=colour, hatch=hatch, label=f"{NAMES[model]} pass@1",
+        ax.bar(xs, heights, width * 0.94, color=colour, hatch=hatch, label=run.label,
                yerr=list(zip(*errs)), error_kw={"ecolor": INK_MUTED, "elinewidth": 1, "capsize": 3})
         for k, p in zip(keys, props):
             ns[k].append(str(p.n if p else 0))
     ax.set_xticks(range(len(keys)))
-    ax.set_xticklabels([f"{'All' if k == 'all' else CATEGORY_LABELS[k]}\nn = {' | '.join(ns[k])}" for k in keys])
+    sep = " | " if len(runs) <= 2 else "|"
+    ax.set_xticklabels([f"{'All' if k == 'all' else CATEGORY_LABELS[k]}\nn = {sep.join(ns[k])}" for k in keys],
+                       fontsize=9 if len(runs) <= 2 else 8)
     ax.set_ylim(0, 118)  # headroom above 100% so the one-row legend never covers a whisker
     ax.set_yticks(range(0, 101, 20))
     ax.set_ylabel("% correct (whiskers: Wilson 95% CI)")
-    if len(runs) == 2:
-        ax.set_xlabel("n per bar: base | fine-tuned", color=INK_MUTED, fontsize=8)
-    ax.set_title("Correctness by category on held-out templates", loc="left")
-    ax.legend(loc="upper right", ncol=2)
+    if len(runs) > 1:
+        ax.set_xlabel("n per bar, in legend order", color=INK_MUTED, fontsize=8)
+    ax.set_title("Correctness by category on held-out templates (pass@1)", loc="left")
+    ax.legend(loc="upper right", ncol=len(runs), fontsize=8)
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
-    return "% correct per category, base vs fine-tuned (pass@1), with Wilson 95% intervals and n per bar."
+    return ("% correct per category for each pass@1 run (base zero-/few-shot kept separate, fine-tuned), "
+            "with Wilson 95% intervals and n per bar.")
 
 
 def speedup_distribution(art: Artifacts, path: Path) -> str:
     # Interpreter runs have no timings; leave them out rather than plot an empty series.
-    runs = {m: art.run(m) for m in ("base", "ft") if art.run(m) and _has_speedups(art.run(m))}
+    runs = [r for r in _pass1_runs(art) if _has_speedups(r) and not r.from_summary]
     plt = _pyplot()
     from matplotlib.ticker import FixedLocator, FuncFormatter, NullLocator
     fig, ax = plt.subplots(figsize=(8, 4.2))
-    offsets = {"base": -0.15, "ft": 0.15} if len(runs) == 2 else {m: 0.0 for m in runs}
-    markers = {"base": "o", "ft": "D"}  # shape as a second channel besides colour
-    for model, run in runs.items():
-        colour, _ = SERIES[model]
+    step = 0.6 / max(len(runs), 1)
+    for i, run in enumerate(runs):
+        colour, _, marker = _series_style(run)
+        offset = (i - (len(runs) - 1) / 2) * step
         xs, ys = [], []
         for j, cat in enumerate(CATEGORIES):
-            values = run.categories.get(cat).speedups if cat in run.categories else []
+            values = run.categories[cat].speedups if cat in run.categories else []
             # Deterministic small jitter so overlapping points stay visible.
-            xs += [j + offsets[model] + ((k % 5) - 2) * 0.025 for k in range(len(values))]
+            xs += [j + offset + ((k % 5) - 2) * 0.02 for k in range(len(values))]
             ys += values
-        ax.scatter(xs, ys, s=36, color=colour, marker=markers[model], edgecolors=SURFACE, linewidths=1.2,
-                   label=f"{NAMES[model]} (n={len(ys)} correct kernels)", zorder=3)
+        ax.scatter(xs, ys, s=36, color=colour, marker=marker, edgecolors=SURFACE, linewidths=1.2,
+                   label=f"{run.label} (n={len(ys)} correct kernels)", zorder=3)
     ax.axhline(1.0, color=INK_MUTED, linestyle="--", linewidth=1, zorder=2)
-    ax.text(len(CATEGORIES) - 0.5, 1.0, " PyTorch reference (1×)", va="bottom", ha="right", fontsize=8, color=INK_MUTED)
+    ax.text(len(CATEGORIES) - 0.5, 1.0, " PyTorch reference (1×)", va="bottom", ha="right", fontsize=8,
+            color=INK_MUTED)
     ax.set_yscale("log")
     ticks = [2.0 ** e for e in range(-6, 7)]  # 1/64x .. 64x; only those in range are drawn
     ax.yaxis.set_major_locator(FixedLocator(ticks))
@@ -109,7 +123,7 @@ def speedup_distribution(art: Artifacts, path: Path) -> str:
     ax.set_xlim(-0.5, len(CATEGORIES) - 0.5)
     ax.set_ylabel("Speedup vs PyTorch reference (log scale)")
     ax.set_title("Speedup of correct kernels (pass@1)", loc="left")
-    ax.legend(loc="best")
+    ax.legend(loc="best", fontsize=8)
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
@@ -117,34 +131,51 @@ def speedup_distribution(art: Artifacts, path: Path) -> str:
 
 
 def search_gain(art: Artifacts, path: Path) -> str:
-    models = [m for m in ("base", "ft") if any(art.run(m, nc, rr) for nc, rr in SEARCH_MODES)]
+    """One cluster per search group: pass@1 on exactly the search prompts, then each search mode."""
+    groups = [g for g in search_groups(art) if g.ids is not None]
+    modes = [(1, 0)] + sorted({(r.num_candidates, r.repair_rounds) for g in groups for r in g.runs})
     plt = _pyplot()
-    fig, ax = plt.subplots(figsize=(6.5, 4.2))
-    width = 0.8 / len(SEARCH_MODES)
-    ns = {m: [] for m in models}
-    for i, (nc, rr) in enumerate(SEARCH_MODES):
+    fig, ax = plt.subplots(figsize=(max(6.5, 2.6 * len(groups) + 2), 4.2))
+    width = 0.8 / len(modes)
+    ns = {i: [] for i in range(len(groups))}
+    for m_i, mode in enumerate(modes):
         heights, errs = [], []
-        for model in models:
-            run = art.run(model, nc, rr)
-            h, e = _pct_and_err(run.overall().proportion) if run else (float("nan"), (0.0, 0.0))
+        for g_i, g in enumerate(groups):
+            if mode == (1, 0):
+                subset = g.pass1_same_prompts()
+                p = merge(subset.values()).proportion if subset is not None else None
+            else:
+                run = next((r for r in g.runs if (r.num_candidates, r.repair_rounds) == mode), None)
+                if run is None:
+                    p = None
+                elif g.incomplete_pass1:  # pass@1 missed some prompts: plot both on the shared ones only
+                    p = merge(run.subset(g.shared_ids).values()).proportion
+                else:
+                    p = run.overall().proportion
+            h, e = _pct_and_err(p) if p is not None else (float("nan"), (0.0, 0.0))
             heights.append(h)
             errs.append(e)
-            ns[model].append(str(run.overall().n) if run else "not run")
-        xs = [j + (i - 1) * width for j in range(len(models))]
-        ax.bar(xs, heights, width * 0.94, color=MODE_COLOURS[i], hatch=["", "//", ".."][i], label=mode_label(nc, rr),
+            ns[g_i].append(str(p.n) if p is not None else "–")
+        colour, hatch = MODE_STYLES[m_i % len(MODE_STYLES)]
+        label = "pass@1 (same prompts)" if mode == (1, 0) else mode_label(*mode)
+        xs = [j + (m_i - (len(modes) - 1) / 2) * width for j in range(len(groups))]
+        ax.bar(xs, heights, width * 0.94, color=colour, hatch=hatch, label=label,
                yerr=list(zip(*errs)), error_kw={"ecolor": INK_MUTED, "elinewidth": 1, "capsize": 3})
-    ax.set_xticks(range(len(models)))
-    ax.set_xticklabels([f"{NAMES[m]}\nn = {' | '.join(ns[m])}" for m in models])
+    ax.set_xticks(range(len(groups)))
+    ax.set_xticklabels([f"{g.label}, {len(g.shared_ids if g.incomplete_pass1 else g.ids)} same prompts"
+                        f"\nn = {' | '.join(ns[i])}"
+                        for i, g in enumerate(groups)])
     ax.set_xlabel("n per bar, in legend order", color=INK_MUTED, fontsize=8)
     ax.set_ylim(0, 118)
     ax.set_yticks(range(0, 101, 20))
     ax.set_ylabel("% correct, all categories (Wilson 95% CI)")
-    ax.set_title("What inference-time search buys", loc="left")
-    ax.legend(loc="upper left", ncol=3, fontsize=9)
+    ax.set_title("What inference-time search buys (same prompts)", loc="left")
+    ax.legend(loc="upper left", ncol=len(modes), fontsize=8)
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
-    return "Overall % correct for pass@1, best-of-4 and best-of-4 + 1 repair, with Wilson 95% intervals."
+    return ("Overall % correct on the search prompts only: pass@1 recomputed on those prompts, best-of-N and "
+            "best-of-N + repair, with Wilson 95% intervals.")
 
 
 def _has_speedups(run: EvalRun) -> bool:
@@ -162,14 +193,14 @@ def make_figures(art: Artifacts, out_dir: Path) -> tuple[list[tuple[str, str]], 
     fig_dir = out_dir / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
     made, skipped = [], []
-    pass1 = [r for r in (art.run("base"), art.run("ft")) if r]
-    n_modes = sum(1 for m in ("base", "ft") for nc, rr in SEARCH_MODES if art.run(m, nc, rr))
+    pass1 = _pass1_runs(art)
     plan = [
         ("correctness_by_category", correctness_by_category, bool(pass1), "no pass@1 evaluation results"),
         ("speedup_distribution", speedup_distribution,
-         any(_has_speedups(r) for r in pass1) and not any(r.from_summary for r in pass1),
+         any(_has_speedups(r) and not r.from_summary for r in pass1),
          "no per-kernel speedups (no correct kernels, interpreter-only, or summary-only reports)"),
-        ("search_gain", search_gain, n_modes >= 2, "fewer than two search modes have results"),
+        ("search_gain", search_gain, any(g.ids is not None for g in search_groups(art)),
+         "no search runs with per-entry results (nothing to compare on the same prompts)"),
     ]
     for name, draw, ok, why in plan:
         if not ok:

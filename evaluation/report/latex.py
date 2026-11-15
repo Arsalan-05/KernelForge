@@ -20,7 +20,8 @@ from __future__ import annotations
 import re
 
 from evaluation.report.artifacts import Artifacts
-from evaluation.report.render import dataset_table, phase5_table, rubric_table, search_table, training_table
+from evaluation.report.render import (dataset_table, phase5_table, rubric_table, search_table, sorted_runs,
+                                      training_table)
 
 FRAGMENT_NAMES = ("table_dataset", "table_categories", "table_search", "table_training", "table_rubric")
 PACKAGES_NOTE = "% Needs \\usepackage{booktabs} and \\usepackage{graphicx} in the preamble."
@@ -39,7 +40,7 @@ def _tex(cell: str) -> str:
     cell = re.sub(r"(?<!\\)%", r"\\%", cell)
     if "$" not in cell:
         cell = re.sub(r"(?<!\\)_", r"\\_", cell)
-    return cell.replace("×", "$\\times$").replace("–", "--")
+    return cell.replace("×", "$\\times$").replace("–", "--").replace("‡", "$^\\ddagger$")
 
 
 def _table(rows: list[list[str]], caption: str, label: str, label_cols: int = 1,
@@ -74,18 +75,24 @@ def fragments(art: Artifacts) -> dict[str, str]:
                   f"template (bottom). OOM = out of GPU memory. Median speedup over passing kernels.{smoke}",
             "tab:dataset", midrules_after=(len(by_cat) - 1,))
 
-    # Categories: at least one of the runs the Phase 5 table is built from.
-    if art.run("base") or art.run("ft") or art.run("ft", 4, 1):
+    # Categories: at least one of the runs the Phase 5 table is built from
+    # (a pass@1 run, or a fine-tuned best-of-4 + repair run).
+    runs = sorted_runs(art)
+    if any(not r.is_search or (r.model, r.num_candidates, r.repair_rounds) == ("ft", 4, 1) for r in runs):
         out["table_categories"] = _table(
             phase5_table(art, latex=True),
-            f"Per-category results on held-out templates. {CELL_NOTE} {SPEEDUP_NOTE}", "tab:categories")
+            f"Per-category results on held-out templates. {CELL_NOTE} {SPEEDUP_NOTE} "
+            "$^\\ddagger$ on the search subset only (search\\_limit prompts); compare with pass@1 on the same "
+            "prompts in Table~\\ref{tab:search}. Zero-shot and few-shot base runs are separate columns.",
+            "tab:categories")
 
     # Search: needs at least one search run beyond plain pass@1, else it isn't a search result.
-    if any(art.run(m, nc, rr) for m in ("base", "ft") for nc, rr in ((4, 0), (4, 1))):
+    search = search_table(art, latex=True)
+    if search:
         out["table_search"] = _table(
-            search_table(art, latex=True),
-            f"Inference-time search: \\% correct for pass@1, best-of-4 and best-of-4 + 1 repair. {CELL_NOTE}",
-            "tab:search", label_cols=2)
+            search, "Inference-time search on the same prompts: pass@1 recomputed on exactly the prompts the "
+                    f"search runs scored (a subset of the held-out set), then best-of-N and best-of-N + repair. "
+                    f"{CELL_NOTE}", "tab:search", label_cols=3)
 
     training = training_table(art)
     if training:
