@@ -707,6 +707,27 @@ to download:
   `kernelforge_outputs` zip or folder.
 - Notebook parameters: `BUDGET_HOURS = 11` (keep it below Kaggle's session
   limit) and `RESUME_FROM = ""`.
+- **Evals use every held-out prompt by default** (100 with the default
+  template split; previously 25, so one success moved a category by 20
+  points). `--eval-limit N` / notebook `EVAL_LIMIT = N` caps it, and `None`
+  means all. Each eval stage records `prompts_evaluated`, `held_out_total`
+  and `full_held_out_set` in `session.json`. Evaluating everything makes
+  the eval stages slower, so they now get a 1 h floor and a 5 h cap. These
+  are guesses, not T4 measurements.
+- **Generation cap: 2048 tokens** (was 1536). `scripts/check_token_lengths.py`
+  tokenizes every template target (kernel + explanation, exact training chat
+  format) with the Qwen2.5-Coder tokenizer. The longest target is 1302
+  tokens (`attention__gqa_causal_prefill`), 85% of the old cap; per-category
+  maxima are 644 (norm) to 1302 (attention), and none exceed 1536. 2048
+  leaves room for a slightly wordier model output.
+- **Zip contents:** `data/verified/dataset.jsonl`, all of `data/raw/`
+  (reports, rejected entries, progress logs), all of `evaluation/results/`
+  plus any `*review*.json` under `evaluation/` (scored explanation
+  reviews), and each `training/checkpoints/run_*/`'s small files
+  (`split_info.json`, `held_out_test.jsonl`, logs). Intermediate
+  `checkpoint-*/` folders contribute only `trainer_state.json`, and the
+  adapter is included for the latest run only. `session.json` lists every
+  file in the zip (`zip_files`), and a zip over 2 GB prints a warning.
 
 **Limitation:** `evaluation/baseline_eval.py` and `training/finetune.py`
 have no clean time limit yet. If the budget runs out during one of them,
