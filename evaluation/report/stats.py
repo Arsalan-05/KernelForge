@@ -67,6 +67,13 @@ def mean(values: Sequence[float]) -> Optional[float]:
     return sum(vals) / len(vals) if vals else None
 
 
+def geomean(values: Sequence[float]) -> Optional[float]:
+    """Geometric mean of positive finite values. The usual average for ratios such as
+    speedups: a 2x and a 0.5x kernel average to 1x, not 1.25x."""
+    vals = [v for v in finite(values) if v > 0]
+    return math.exp(sum(math.log(v) for v in vals) / len(vals)) if vals else None
+
+
 def median(values: Sequence[float]) -> Optional[float]:
     vals = sorted(finite(values))
     if not vals:

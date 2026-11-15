@@ -1,18 +1,23 @@
-"""Turn parsed artifacts into Markdown, LaTeX, a README snippet and a JSON summary.
+"""Turn parsed artifacts into table rows, Markdown, a README snippet and a JSON summary.
+(LaTeX lives in latex.py and reuses the row builders here.)
 
 Cell conventions (same in every format):
     "not run"      the stage that produces this cell has no artifact
     "no samples"   the run exists but evaluated nothing in this category
     40% (2/5) [12-77]   % correct, k/n, Wilson 95% interval in percent
-    1.23x (n=2)    mean speedup over the n correct kernels
+    1.23x (n=2)    mean (or geometric mean) speedup over the n correct, finitely timed kernels
     dagger         n < 20: too few samples to compare on
+
+Three speedup views, because each hides something:
+    mean     arithmetic mean over correct kernels; matches evaluation/common.py
+    geomean  geometric mean over the same kernels; the right average for ratios
+    fast_1   correct AND faster than the reference, over ALL attempts (KernelBench);
+             the only one that also penalises failed attempts
 """
 
 from __future__ import annotations
 
 from typing import Optional
-
-import re
 
 from evaluation.report.artifacts import (CATEGORIES, CATEGORY_LABELS, Artifacts, CategoryResult, EvalRun,
                                          mode_label)
@@ -23,11 +28,16 @@ NO_SAMPLES = "no samples"
 DAGGER = "†"
 
 # The Phase 5 table in MASTER_PLAN.md: (header, model, num_candidates, repair_rounds, metric)
+# plus the geometric-mean and fast_1 speedup views next to each arithmetic mean.
 PHASE5_COLUMNS = [
     ("Base % correct", "base", 1, 0, "correct"),
-    ("Base avg speedup", "base", 1, 0, "speedup"),
+    ("Base mean speedup", "base", 1, 0, "mean"),
+    ("Base geomean speedup", "base", 1, 0, "geomean"),
+    ("Base fast_1", "base", 1, 0, "fast_1"),
     ("FT % correct", "ft", 1, 0, "correct"),
-    ("FT avg speedup", "ft", 1, 0, "speedup"),
+    ("FT mean speedup", "ft", 1, 0, "mean"),
+    ("FT geomean speedup", "ft", 1, 0, "geomean"),
+    ("FT fast_1", "ft", 1, 0, "fast_1"),
     ("FT best-of-4 + repair % correct", "ft", 4, 1, "correct"),
 ]
 
@@ -57,23 +67,40 @@ def prop_cell(p: Proportion, latex: bool = False) -> str:
     return f"{p.fraction * 100:.0f}{pct} ({p.successes}/{p.n}) [{lo * 100:.0f}{dash}{hi * 100:.0f}]{mark}"
 
 
-def speedup_cell(run: EvalRun, result: CategoryResult, latex: bool = False) -> str:
+def speedup_cell(run: EvalRun, result: CategoryResult, latex: bool = False, kind: str = "mean") -> str:
+    """kind = "mean" (arithmetic) or "geomean"; both over correct kernels with a finite speedup."""
     if result.n == 0:
         return NO_SAMPLES
     if run.interpreted:
         return "n/a (interpreter)"
-    avg = result.avg_speedup
-    if result.speedup_n == 0 or avg is None:
-        return "-- (0 correct)" if latex else "– (0 correct)"
+    if kind == "geomean" and run.from_summary:
+        return "n/a (summary-only report)"
+    value = result.avg_speedup if kind == "mean" else result.geomean_speedup
+    if result.speedup_n == 0 or value is None:
+        return "-- (none timed)" if latex else "– (none timed)"
     times = "$\\times$" if latex else "×"
     mark = ("$^\\dagger$" if latex else DAGGER) if result.speedup_n < SMALL_N else ""
-    return f"{avg:.2f}{times} (n={result.speedup_n}){mark}"
+    return f"{value:.2f}{times} (n={result.speedup_n}){mark}"
+
+
+def fast1_cell(run: EvalRun, result: CategoryResult, latex: bool = False) -> str:
+    if result.n == 0:
+        return NO_SAMPLES
+    if run.interpreted:
+        return "n/a (interpreter)"
+    if result.fast_1 is None:
+        return "n/a (summary-only report)"
+    return prop_cell(result.fast_1, latex)
 
 
 def _cell(run: Optional[EvalRun], result: Optional[CategoryResult], metric: str, latex: bool) -> str:
     if run is None or result is None:
         return NOT_RUN
-    return prop_cell(result.proportion, latex) if metric == "correct" else speedup_cell(run, result, latex)
+    if metric == "correct":
+        return prop_cell(result.proportion, latex)
+    if metric == "fast_1":
+        return fast1_cell(run, result, latex)
+    return speedup_cell(run, result, latex, kind=metric)
 
 
 def _row_label(key: str) -> str:
@@ -121,6 +148,61 @@ def dataset_table(art: Artifacts, by: str = "category") -> list[list[str]]:
     return rows
 
 
+def training_table(art: Artifacts) -> list[list[str]]:
+    """(Metric, Value) rows for the newest training run, only for values that exist. [] if none."""
+    t = art.training
+    if t is None:
+        return []
+    rows = []
+    split = t.split_info or {}
+    cfg = split.get("config") or {}
+    state = t.trainer_state or {}
+    if cfg.get("model_name"):
+        rows.append(["Base model", str(cfg["model_name"])])
+    if split.get("split"):
+        rows.append(["Split", f"{split['split']}"])
+    if all(k in split for k in ("train", "val", "test")):
+        rows.append(["Train / val / test entries", f"{split['train']} / {split['val']} / {split['test']}"])
+    if split.get("held_out_templates"):
+        rows.append(["Held-out templates", ", ".join(split["held_out_templates"])])
+    if "lora_r" in cfg and "lora_alpha" in cfg:
+        rows.append(["LoRA r / alpha (configured)", f"{cfg['lora_r']} / {cfg['lora_alpha']}"])
+    if "learning_rate" in cfg:
+        rows.append(["Learning rate (configured)", f"{cfg['learning_rate']:g}"])
+    if "per_device_train_batch_size" in cfg and "gradient_accumulation_steps" in cfg:
+        rows.append(["Effective batch (configured)",
+                     str(cfg["per_device_train_batch_size"] * cfg["gradient_accumulation_steps"])])
+    # Epochs/steps actually run come from the trainer, not the config (the CPU fallback runs 1 epoch).
+    if state.get("epoch") is not None:
+        rows.append(["Epochs completed", f"{float(state['epoch']):g}"])
+    elif "num_epochs" in cfg:
+        rows.append(["Epochs (configured)", str(cfg["num_epochs"])])
+    if state.get("global_step") is not None:
+        rows.append(["Optimizer steps", str(state["global_step"])])
+    if t.final_train_loss is not None:
+        rows.append(["Final train loss", f"{t.final_train_loss:.4f}"])
+    if t.final_eval_loss is not None:
+        rows.append(["Final validation loss", f"{t.final_eval_loss:.4f}"])
+    if t.wall_clock_s is not None:
+        rows.append(["Training wall-clock", f"{t.wall_clock_s / 3600:.2f} h"])
+    if t.peak_memory_gb is not None:
+        rows.append(["Peak GPU memory", f"{t.peak_memory_gb:.1f} GB"])
+    return [["Metric", "Value"]] + rows if rows else []
+
+
+def rubric_table(art: Artifacts, latex: bool = False) -> list[list[str]]:
+    """One row per explanation review that has at least one scored item. [] if none."""
+    scored = [r for r in art.reviews if r.scores]
+    if not scored:
+        return []
+    rows = [["Model", "Scored", "Mean score (0-2)", "Scores 2 / 1 / 0", "Share scoring 2"]]
+    names = {"base": "Base", "ft": "Fine-tuned", "unknown": "Unknown model"}
+    for r in scored:
+        rows.append([names[r.model], f"{len(r.scores)}/{r.n_items}", f"{r.mean_score:.2f}",
+                     " / ".join(str(r.scores.count(s)) for s in (2, 1, 0)), prop_cell(r.top_score, latex)])
+    return rows
+
+
 def markdown_table(rows: list[list[str]]) -> str:
     if not rows:
         return ""
@@ -132,9 +214,10 @@ def markdown_table(rows: list[list[str]]) -> str:
 TABLE_NOTES = (
     f"Percentages are % correct with k/n and a Wilson 95% interval in brackets. "
     f"{DAGGER} = fewer than {SMALL_N} samples: treat as indicative only. "
-    "Speedup is the arithmetic mean of (PyTorch reference time / kernel time) over the correct kernels "
-    "only, so base and fine-tuned speedups can average over different kernels. "
-    "\"not run\" = no artifact for that stage."
+    "Speedup = PyTorch reference time / kernel time. *Mean* is the arithmetic mean and *geomean* the geometric "
+    "mean, both over correct kernels with a finite speedup only (n in brackets), so base and fine-tuned can "
+    "average over different kernels. *fast_1* = attempts that are correct AND faster than the reference, "
+    "out of all attempts, with a Wilson 95% interval. \"not run\" = no artifact for that stage."
 )
 
 
@@ -159,7 +242,8 @@ def stage_status(art: Artifacts) -> list[tuple[str, str]]:
         out.append(("Dataset build (GPU)", why_missing("dataset")))
     for model, session_key, title in (("base", "baseline", "Base model"), ("ft", "eval", "Fine-tuned model")):
         if model == "ft":
-            out.append(("Fine-tune (split_info.json)", "present" if art.split_info else why_missing("finetune")))
+            out.append(("Fine-tune (training/run_*)", f"present: {art.training.name}" if art.training
+                        else "present (split_info.json)" if art.split_info else why_missing("finetune")))
         for nc, rr in SEARCH_MODES:
             run = art.run(model, nc, rr)
             name = f"{title}, {mode_label(nc, rr)}"
@@ -222,9 +306,17 @@ def limitations(art: Artifacts) -> list[str]:
     if any(r.from_summary for r in runs):
         out.append("Some reports had no per-entry results; their numbers come from the report's own per-category "
                    "summary and the speedup distribution figure omits them.")
+    if any(not r.interpreted for r in runs):
+        out.append("Speedup is reported three ways. The arithmetic mean (matches evaluation/common.py) and the "
+                   "geometric mean are over correct kernels only, so they say nothing about how often the model "
+                   "fails; fast_1 (correct and faster than the PyTorch reference, over all attempts) does.")
     inf = sum(c.infinite_speedups for r in runs for c in r.categories.values())
     if inf:
-        out.append(f"{inf} correct kernel(s) were timed at 0 s (speedup = inf) and are left out of speedup means.")
+        out.append(f"{inf} correct kernel(s) were timed at 0 s (speedup = inf). They are left out of the mean, "
+                   "the geometric mean and fast_1, and counted separately in summary.json.")
+    if art.run("ft") and not (art.training and art.training.trainer_state):
+        out.append("Training loss and wall-clock are not in the artifacts (scripts/gpu_session.py collects "
+                   "split_info.json and the adapter, not trainer_state.json), so they are not reported.")
 
     if art.dataset:
         oom = sum(c.oom for c in art.dataset.per_category.values())
@@ -315,6 +407,8 @@ def results_markdown(art: Artifacts, figures: list[tuple[str, str]], skipped_fig
         parts += [markdown_table(dataset_table(art, "category")), "", markdown_table(dataset_table(art, "template")), ""]
     else:
         parts += ["No dataset report found.", ""]
+    parts += ["## Training", ""]
+    parts += [markdown_table(training_table(art)) if training_table(art) else "No training artifacts found.", ""]
     parts += ["## Explanation review", "", *_review_lines(art), "", "## Figures", ""]
     parts += [f"![{caption}]({path})\n\n*{caption}*\n" for path, caption in figures]
     parts += [f"- {name}: not drawn ({why})" for name, why in skipped_figures]
@@ -347,33 +441,6 @@ def readme_snippet(art: Artifacts) -> str:
     return "\n".join(lines)
 
 
-def _tex(cell: str) -> str:
-    """Escape the characters our cells can contain; cells built with latex=True are already escaped."""
-    return re.sub(r"(?<!\\)%", r"\\%", cell).replace("×", "$\\times$").replace("–", "--")
-
-
-def _latex_tabular(rows: list[list[str]], caption: str, label: str, label_cols: int = 1) -> str:
-    rows = [[_tex(c) for c in row] for row in rows]
-    cols = "l" * label_cols + "r" * (len(rows[0]) - label_cols)
-    body = [" & ".join(rows[0]) + " \\\\", "\\midrule"] + [" & ".join(r) + " \\\\" for r in rows[1:]]
-    return "\n".join([
-        "\\begin{table}[t]", "\\centering", "\\small", f"\\begin{{tabular}}{{{cols}}}", "\\toprule",
-        *body, "\\bottomrule", "\\end{tabular}", f"\\caption{{{caption}}}", f"\\label{{{label}}}", "\\end{table}",
-    ])
-
-
-def latex_fragments(art: Artifacts) -> str:
-    """booktabs table fragments for a paper (needs \\usepackage{booktabs})."""
-    note = ("Cells: \\% correct (k/n) [Wilson 95\\% interval]; $^\\dagger$ $n<20$. Speedup: mean over correct "
-            "kernels vs.\\ the PyTorch reference. ``not run'': no artifact.")
-    return "\n\n".join([
-        "% Generated by python -m evaluation.report -- do not edit by hand; regenerate instead.",
-        _latex_tabular(phase5_table(art, latex=True), "Per-category results on held-out templates. " + note, "tab:category-results"),
-        _latex_tabular(search_table(art, latex=True), "Inference-time search: pass@1 vs.\\ best-of-4 vs.\\ best-of-4 + 1 repair. " + note,
-                       "tab:search", label_cols=2),
-    ]) + "\n"
-
-
 def summary_json(art: Artifacts) -> dict:
     """Machine-readable version of every computed number (for checking by hand or other tools)."""
     def cat(run: EvalRun, c: CategoryResult) -> dict:
@@ -381,8 +448,19 @@ def summary_json(art: Artifacts) -> dict:
         return {"n": c.n, "correct": c.correct, "pct_correct": None if p.fraction is None else p.fraction * 100,
                 "wilson95_pct": None if p.interval is None else [p.interval[0] * 100, p.interval[1] * 100],
                 "small_n": p.small, "speedup_n": 0 if run.interpreted else c.speedup_n,
-                "avg_speedup": None if run.interpreted else c.avg_speedup,
-                "median_speedup": None if run.interpreted else median(c.speedups)}
+                "avg_speedup": None if run.interpreted else c.avg_speedup,  # arithmetic mean, correct only
+                "geomean_speedup": None if run.interpreted else c.geomean_speedup,  # geometric mean, correct only
+                "median_speedup": None if run.interpreted else median(c.speedups),
+                "fast_1": prop(c.fast_1) if not run.interpreted else None,  # correct & >1x over all attempts
+                "infinite_speedups_excluded": c.infinite_speedups}
+
+    def prop(p: Optional[Proportion]) -> Optional[dict]:
+        if p is None or p.n == 0:
+            return None
+        return {"k": p.successes, "n": p.n, "pct": p.fraction * 100,
+                "wilson95_pct": [p.interval[0] * 100, p.interval[1] * 100], "small_n": p.small}
+
+    t = art.training
     return {
         "source": art.source,
         "stages": dict(stage_status(art)),
@@ -391,6 +469,10 @@ def summary_json(art: Artifacts) -> dict:
             "held_out_templates": r.held_out_templates,
             "per_category": {k: cat(r, v) for k, v in r.categories.items()},
             "all": cat(r, r.overall())} for r in art.runs.values()},
+        "training": None if t is None else {
+            "run": t.name, "trainer_state_source": t.trainer_state_source or None,
+            "final_train_loss": t.final_train_loss, "final_eval_loss": t.final_eval_loss,
+            "wall_clock_s": t.wall_clock_s, "peak_memory_gb": t.peak_memory_gb, "split_info": t.split_info},
         "explanation_reviews": [{"source": r.source, "model": r.model, "items": r.n_items, "scored": len(r.scores),
                                  "mean_score": r.mean_score} for r in art.reviews],
         "limitations": limitations(art),

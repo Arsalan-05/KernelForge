@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from evaluation.report.stats import Proportion, finite, mean
+from evaluation.report.stats import Proportion, finite, geomean, mean
 
 # Same order and names as kernelforge.dataset.CATEGORIES (a test checks they
 # match). Copied rather than imported so the report never needs torch.
@@ -74,6 +74,20 @@ class CategoryResult:
     @property
     def speedup_n(self) -> int:
         return len(self.speedups) if self.summary_passed is None else self.summary_passed
+
+    @property
+    def geomean_speedup(self) -> Optional[float]:
+        """None for summary-only reports: their per-kernel speedups are unknown."""
+        return geomean(self.speedups) if self.summary_passed is None else None
+
+    @property
+    def fast_1(self) -> Optional[Proportion]:
+        """fast_1 (KernelBench): attempts that are correct AND faster than the reference
+        (finite speedup > 1), out of ALL attempts n. Infinite speedups are not counted
+        as fast; they are reported separately. None for summary-only reports."""
+        if self.summary_passed is not None:
+            return None
+        return Proportion(sum(1 for s in self.speedups if s > 1.0), self.n)
 
 
 @dataclass
@@ -324,6 +338,78 @@ def parse_review(report: dict, source: str) -> ExplanationReview:
     return ExplanationReview(source, src, model, len(items), scores)
 
 
+# --------------------------------------------------------------------------- training runs
+
+
+@dataclass
+class TrainingRun:
+    """What one training/run_*/ folder left behind. Every field is optional because
+    scripts/gpu_session.py currently collects only split_info.json (and the adapter)."""
+
+    name: str
+    split_info: Optional[dict] = None
+    trainer_state: Optional[dict] = None  # HF Trainer checkpoint-*/trainer_state.json (newest checkpoint)
+    trainer_state_source: str = ""
+    trainer_state_step: float = -1  # checkpoint number of trainer_state (inf = run-level file)
+    metrics: Optional[dict] = None  # training_metrics.json, e.g. {"peak_memory_gb": 9.8, "wall_clock_s": 3600}
+
+    def _last_log(self, key: str) -> Optional[float]:
+        for entry in reversed((self.trainer_state or {}).get("log_history") or []):
+            if isinstance(entry, dict) and entry.get(key) is not None:
+                return float(entry[key])
+        return None
+
+    @property
+    def final_train_loss(self) -> Optional[float]:
+        # The summary entry Trainer appends at the end has "train_loss" (mean over the run);
+        # fall back to the last logged step "loss".
+        return self._last_log("train_loss") if self._last_log("train_loss") is not None else self._last_log("loss")
+
+    @property
+    def final_eval_loss(self) -> Optional[float]:
+        return self._last_log("eval_loss")
+
+    @property
+    def wall_clock_s(self) -> Optional[float]:
+        explicit = (self.metrics or {}).get("wall_clock_s")
+        return float(explicit) if explicit is not None else self._last_log("train_runtime")
+
+    @property
+    def peak_memory_gb(self) -> Optional[float]:
+        value = (self.metrics or {}).get("peak_memory_gb")
+        return float(value) if value is not None else None
+
+    @property
+    def has_data(self) -> bool:
+        return any(x is not None for x in (self.split_info, self.trainer_state, self.metrics))
+
+
+_TRAINING_PATH = re.compile(r"(?:^|/)training/(run_[^/]+)/(.+)$")
+_CHECKPOINT_STEP = re.compile(r"checkpoint-(\d+)/trainer_state\.json$")
+
+
+def _add_training_file(runs: dict[str, TrainingRun], path: str, data: dict) -> bool:
+    """File it under its training run if `path` is inside training/run_*/; True if used."""
+    m = _TRAINING_PATH.search(path)
+    if not m:
+        return False
+    run = runs.setdefault(m.group(1), TrainingRun(m.group(1)))
+    rel = m.group(2)
+    if rel == "split_info.json":
+        run.split_info = data
+    elif rel == "training_metrics.json":
+        run.metrics = data
+    elif rel.endswith("trainer_state.json"):
+        # Keep the newest: the highest checkpoint-N, and a run-level trainer_state.json beats any checkpoint.
+        m_step = _CHECKPOINT_STEP.search(rel)
+        step = int(m_step.group(1)) if m_step else float("inf")
+        if step >= run.trainer_state_step:
+            run.trainer_state, run.trainer_state_source, run.trainer_state_step = data, path, step
+    else:
+        return False
+    return True
+
+
 # --------------------------------------------------------------------------- loading
 
 
@@ -338,6 +424,7 @@ class Artifacts:
     reviews: list[ExplanationReview] = field(default_factory=list)
     session: Optional[dict] = None
     split_info: Optional[dict] = None
+    training: Optional[TrainingRun] = None  # newest training/run_*/ with any artifact
     problems: list[str] = field(default_factory=list)  # unreadable files
 
     def run(self, model: str, num_candidates: int = 1, repair_rounds: int = 0) -> Optional[EvalRun]:
@@ -385,11 +472,14 @@ def load_artifacts(src: Path | str) -> Artifacts:
     files, problems = _read_jsons(src)
     art = Artifacts(source=str(src), problems=problems)
     candidates: list[EvalRun] = []
+    training_runs: dict[str, TrainingRun] = {}
 
     for name, data in files.items():
         if not isinstance(data, dict):
             continue
         base = Path(name).name
+        if _add_training_file(training_runs, name, data):
+            continue
         if base == "session.json":
             art.session = data
         elif base == "generation_report.json":
@@ -408,6 +498,12 @@ def load_artifacts(src: Path | str) -> Artifacts:
                 art.excluded.append((name, why))
             else:
                 candidates.append(run)
+
+    # Run folders are named run_<UTC timestamp>, so the lexically largest is the newest.
+    with_data = [r for r in training_runs.values() if r.has_data]
+    if with_data:
+        art.training = max(with_data, key=lambda r: r.name)
+        art.split_info = art.training.split_info or art.split_info
 
     # If generation_report.json wasn't collected but session.json has a copy, use it.
     if art.dataset is None and art.session and isinstance(art.session.get("dataset_report"), dict):
