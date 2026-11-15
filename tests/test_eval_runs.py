@@ -27,7 +27,8 @@ class FakeGenerator:
 
     backend = "fake"
 
-    def __init__(self, entries, crash_after=None):
+    def __init__(self, entries, crash_after=None, config=None):
+        self.config = config
         self.by_reference = {e["pytorch_reference"]: e for e in entries}
         self.calls = []
         self.crash_after = crash_after
@@ -49,6 +50,11 @@ class FakeGenerator:
     def count_tokens(self, text):
         return len(text.split())
 
+    def effective_generation_settings(self, temperature=None, num_sequences=1):
+        from kernelforge.model import effective_settings, generation_kwargs
+
+        return effective_settings(generation_kwargs(self.config, temperature, num_sequences))
+
 
 @pytest.fixture(scope="module")
 def candidates():
@@ -66,7 +72,7 @@ def env(tmp_path, monkeypatch, candidates):
     made = []
 
     def factory(config, crash_after=None):
-        gen = FakeGenerator(candidates, crash_after)
+        gen = FakeGenerator(candidates, crash_after, config)
         made.append(gen)
         return gen
 
@@ -175,16 +181,32 @@ def test_search_sampling_is_seeded(env):
 
 # --- few-shot ----------------------------------------------------------------------
 
-def test_few_shot_examples_come_from_the_train_split_only(env, candidates):
+def test_few_shot_examples_come_from_train_and_another_category_by_default(env, candidates):
     report = _run(env, "--few-shot", "--num-candidates", "2", "--search-limit", "5")
     train, val, test = make_split(candidates, "template")
     train_ids, test_ids = {e["id"] for e in train}, {e["id"] for e in test}
     category = {e["id"]: e["category"] for e in candidates}
     rows = report["results"] + report["search"]["results"]
-    assert report["prompt_mode"] == "few_shot" and report["run_name"] == "baseline_few_shot"
+    assert report["prompt_mode"] == "few_shot" and report["few_shot_source"] == "other_category"
+    assert report["run_name"] == "baseline_few_shot_other_category"
     for row in rows:
         assert row["example_id"] in train_ids and row["example_id"] not in test_ids
-        assert category[row["example_id"]] == row["category"]
+        assert category[row["example_id"]] != row["category"]
+    assert len({row["example_id"] for row in rows}) > 1  # spread across families, not one fixed example
+
+
+def test_few_shot_same_category_source(env, candidates):
+    report = _run(env, "--few-shot", "--few-shot-source", "same_category", "--limit", "10")
+    train_ids = {e["id"] for e in make_split(candidates, "template")[0]}
+    category = {e["id"]: e["category"] for e in candidates}
+    assert report["few_shot_source"] == "same_category"
+    for row in report["results"]:
+        assert row["example_id"] in train_ids and category[row["example_id"]] == row["category"]
+
+
+def test_zero_shot_records_no_few_shot_source(env):
+    report = _run(env, "--limit", "2")
+    assert report["prompt_mode"] == "zero_shot" and report["few_shot_source"] is None
 
 
 def test_finetuned_comparison_ignores_few_shot_baselines(tmp_path):
@@ -309,3 +331,106 @@ def test_scoring_can_stop_and_resume(tmp_path, candidates):
     answers = ["2", "", "0", ""]
     er.score_review(review_path, ask=lambda prompt: answers.pop(0))
     assert [i["rubric_score"] for i in json.loads(review_path.read_text())["items"]] == [1, 2, 0]
+
+
+# --- recorded generation settings == what generate() actually used -----------------
+
+class _CharTokenizer:
+    """Character-level tokenizer with a ChatML-style chat template (synthetic)."""
+
+    chat_template = "chatml"
+    eos_token_id = 0
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+        text = "".join(f"<{m['role']}>{m['content']}" for m in messages)
+        return text + ("<assistant>" if add_generation_prompt else "")
+
+    def __call__(self, text, add_special_tokens=True):
+        return {"input_ids": [ord(c) for c in text]}
+
+    def decode(self, ids, skip_special_tokens=True):
+        return "".join(chr(i) for i in ids if i != self.eos_token_id)
+
+
+class _CapturingModel:
+    """Fake HF model: records generate() kwargs and returns a fixed parseable answer.
+    Its generation_config mimics Qwen2.5's bundled defaults (repetition_penalty 1.05, top_k 20)."""
+
+    device = "cpu"
+    ANSWER = "kernel:\n```python\nclass ModelNew:\n    pass\n```\n\nexplanation:\nSynthetic."
+
+    def __init__(self):
+        from transformers import GenerationConfig
+
+        self.generation_config = GenerationConfig(do_sample=True, temperature=0.7, top_p=0.8, top_k=20,
+                                                  repetition_penalty=1.05)
+        self.calls = []
+
+    def generate(self, input_ids, attention_mask=None, streamer=None, stopping_criteria=None, **kwargs):
+        import torch
+
+        self.calls.append(kwargs)
+        answer = [ord(c) for c in self.ANSWER]
+        n = kwargs.get("num_return_sequences", 1)
+        if streamer is not None:  # stream_chat path (search)
+            streamer.put(input_ids)
+            for token in answer + [0]:
+                streamer.put(torch.tensor([token] * n))
+            streamer.end()
+            return None
+        return torch.cat([input_ids, torch.tensor([answer])], dim=1)
+
+
+def _merged(model, kwargs):
+    import copy
+
+    cfg = copy.deepcopy(model.generation_config)
+    cfg.update(**kwargs)  # the merge transformers performs inside generate()
+    sampling = bool(cfg.do_sample)
+    return {"do_sample": sampling,
+            "temperature": cfg.temperature if sampling else None,
+            "top_k": cfg.top_k if sampling else None,
+            "top_p": cfg.top_p if sampling else None,
+            "repetition_penalty": cfg.repetition_penalty,
+            "max_new_tokens": cfg.max_new_tokens}
+
+
+def test_recorded_generation_settings_match_what_generate_used(env, candidates):
+    from kernelforge.model import KernelGenerator
+
+    built = []
+
+    def real_generator_with_fake_model(config):
+        gen = KernelGenerator(config)
+        gen._model, gen._tokenizer, gen._backend = _CapturingModel(), _CharTokenizer(), "fake"
+        built.append(gen)
+        return gen
+
+    env.monkeypatch.setattr(env.module, "KernelGenerator", real_generator_with_fake_model)
+    report = _run(env, "--limit", "2", "--search-limit", "1", "--num-candidates", "3", "--repair-rounds", "1")
+    model = built[-1]._model
+    pass1_calls = [c for c in model.calls if "num_return_sequences" not in c][:2]
+    round0_call = next(c for c in model.calls if c.get("num_return_sequences") == 3)
+
+    assert all(c["repetition_penalty"] == 1.0 for c in model.calls)  # overrides the bundled 1.05
+    assert report["repetition_penalty"] == 1.0
+    assert report["generation_settings"] == _merged(model, pass1_calls[0]) == _merged(model, pass1_calls[1])
+    assert report["generation_settings"]["do_sample"] is False
+    recorded = report["search"]["generation_settings"]
+    assert recorded["round0"] == _merged(model, round0_call)
+    assert recorded["round0"]["top_k"] == 20  # bundled value we don't override is still reported
+    # The answer parses, so search stops after round 0; check the repair settings
+    # against what a 1-sequence search call would pass.
+    repair_kwargs = built[-1]._generate_kwargs(report["search"]["repair_temperature"], 1)
+    assert recorded["repair"] == _merged(model, repair_kwargs)
+
+
+def test_eval_refuses_an_unpinned_repetition_penalty(env, candidates):
+    from types import SimpleNamespace as NS
+
+    from kernelforge.model import GenerationConfig
+
+    args = NS(limit=1, search_limit=0, num_candidates=1, repair_rounds=0)
+    with pytest.raises(ValueError, match="repetition_penalty"):
+        common.evaluate(args, candidates[:1], run_name="x", gen_config=GenerationConfig(), generator=None,
+                        prompt_mode="zero_shot")
