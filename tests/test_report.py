@@ -872,3 +872,91 @@ def test_table_rubric_conforms(tmp_path):
     assert rows[0] == ["Base", "n/r", "n/r", "n/r", "n/r"]  # no base review
     assert rows[1] == ["Fine-tuned", "2", "1", "3", "n/r"]
     assert sum(int(c) for c in rows[1][1:4]) == len(items)  # columns 2-4 add up to the sample size
+
+
+# --------------------------------------------------------------------------- B's final keys (SYNTHETIC fixtures)
+
+
+def test_explicit_generation_settings_win_over_top_level(tmp_path):
+    _write_report(tmp_path, "baseline_x", [_row_dict(0, "norm", True)], prompt_mode="zero_shot",
+                  repetition_penalty=1.05,  # stale top-level value
+                  generation_settings={"do_sample": False, "temperature": None, "top_k": None, "top_p": None,
+                                       "repetition_penalty": 1.0, "max_new_tokens": 2048})
+    run = load_artifacts(tmp_path).run("base")
+    assert run.settings["repetition_penalty"] == 1.0 and run.settings["do_sample"] is False
+
+
+def test_search_round0_and_repair_settings(tmp_path):
+    pass1 = [_row_dict(0, "norm", False)]
+    search = [_search_row(0, "norm", True, 0)]
+    path = _report_with_search(tmp_path, "baseline_x", pass1, search, prompt_mode="zero_shot",
+                               generation_settings={"do_sample": False, "repetition_penalty": 1.0})
+    report = json.loads(path.read_text())
+    report["search"]["generation_settings"] = {
+        "round0": {"do_sample": True, "temperature": 0.7, "top_k": 20, "top_p": 0.95, "repetition_penalty": 1.0},
+        "repair": {"do_sample": True, "temperature": 0.7, "top_k": 20, "top_p": 0.95, "repetition_penalty": 1.1}}
+    path.write_text(json.dumps(report))
+    art = load_artifacts(tmp_path)
+    s41 = art.run("base", 4, 1, "zero_shot")
+    assert s41.settings["top_k"] == 20 and s41.settings["seed"] == 0  # round 0 + the block's own seed
+    assert s41.repair_settings["repetition_penalty"] == 1.1
+    header, rows = settings_table(art)[0], {r[0]: r for r in settings_table(art)[1:]}
+    assert "repetition_penalty=1.1" in rows["Base zero-shot best-of-4 + repair"][header.index("repair-round settings")]
+    assert any("(repair rounds): 1.1" in w for w in coverage_warnings(art))  # differs from pass@1's 1.0
+
+
+def test_few_shot_sources_are_separate_runs(tmp_path):
+    rows = [_row_dict(0, "norm", True)]
+    _write_report(tmp_path, "baseline_few_shot_other_category_x", rows, prompt_mode="few_shot",
+                  few_shot_source="other_category")
+    _write_report(tmp_path, "baseline_few_shot_same_category_x", rows, prompt_mode="few_shot",
+                  few_shot_source="same_category")
+    art = load_artifacts(tmp_path)
+    assert art.prompt_modes("base") == ["few_shot_other_category", "few_shot_same_category"]
+    assert not art.superseded  # neither replaces the other
+    labels = [r.label for r in art.runs.values()]
+    assert "Base few-shot (other_category) pass@1" in labels and "Base few-shot (same_category) pass@1" in labels
+
+
+def test_few_shot_source_never_guessed(tmp_path):
+    # Explicit key wins even if example_id would say otherwise.
+    shown_same = [{**_row_dict(0, "norm", True), "example_id": "norm__train_tpl__s0"}]
+    _write_report(tmp_path, "baseline_few_shot_other_category_x", shown_same, prompt_mode="few_shot",
+                  few_shot_source="other_category")
+    assert load_artifacts(tmp_path).run("base").few_shot_source == "other_category"
+    # No key and no example_id: not recorded, never "same_category".
+    other = tmp_path / "b"
+    _write_report(other, "baseline_few_shot_x", [_row_dict(0, "norm", True)], prompt_mode="few_shot")
+    art = load_artifacts(other)
+    assert art.run("base").few_shot_source is None
+    assert settings_table(art)[1][2] == "not recorded"
+    # Fallback from example_id, labelled as derived.
+    third = tmp_path / "c"
+    _write_report(third, "baseline_few_shot_x", [{**_row_dict(0, "norm", True), "example_id": "rope__t__s0"}],
+                  prompt_mode="few_shot")
+    assert load_artifacts(third).run("base").few_shot_source == "other_category (from example_id)"
+
+
+def test_few_shot_log_names(tmp_path):
+    rows = [{**_row_dict(0, "norm", True), "phase": "pass@1"}]
+    meta = {"run_name": "baseline_few_shot_other_category", "prompt_mode": "few_shot",
+            "few_shot_source": "other_category"}
+    _write_log(tmp_path, "baseline_few_shot_other_category.jsonl", meta, rows)
+    _write_log(tmp_path, "baseline_few_shot_other_category.20990101T000000Z.jsonl", meta, rows)  # moved aside
+    art = load_artifacts(tmp_path)
+    assert art.run("base", 1, 0, "few_shot_other_category").incremental
+    assert "moved aside" in dict(art.excluded)[
+        "evaluation/results/baseline_few_shot_other_category.20990101T000000Z.jsonl"]
+
+
+def test_table_training_peak_memory_present_and_absent(tmp_path):
+    _write_training_run(tmp_path, "run_20990101T000000Z")  # SYNTHETIC, no peak_memory_gb
+    rows = _fragment_rows(fragments(load_artifacts(tmp_path))["table_training"], 5)
+    assert rows[0][4] == "n/r"
+    info = tmp_path / "training" / "run_20990101T000000Z" / "split_info.json"
+    info.write_text(json.dumps({**json.loads(info.read_text()), "peak_memory_gb": 11.24}))
+    art = load_artifacts(tmp_path)
+    rows = _fragment_rows(fragments(art)["table_training"], 5)
+    assert rows[0][4] == "11.2 GB"
+    assert dict((r[0], r[1]) for r in training_table(art)[1:])["Peak GPU memory"] == "11.2 GB"
+    assert not any("Peak GPU memory" in line for line in limitations(art))

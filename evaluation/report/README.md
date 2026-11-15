@@ -27,7 +27,8 @@ Without matplotlib the report still runs. Every table is written, and
 
 The formats below are what `scripts/gpu_session.py`, `data/build_dataset.py`
 (agent/a) and `evaluation/common.py`, `training/finetune.py`,
-`evaluation/explanation_review.py` (agent/b) write.
+`evaluation/explanation_review.py` (agent/b) write. agent/b's report keys are
+specified in its `docs/handoff/B_integration_notes.md`.
 
 | Artifact (path inside the zip) | Used for |
 |---|---|
@@ -37,8 +38,8 @@ The formats below are what `scripts/gpu_session.py`, `data/build_dataset.py`
 | `data/raw/interpret_report.json` | interpreter-only dataset check (Markdown only, never Table 1) |
 | `data/raw/progress_<mode>.jsonl` | "build did not finish" warning when there is no report for that mode |
 | `evaluation/results/<run>_<timestamp>.json` | eval report: pass@1 rows in `results`, the search in an embedded `search` block |
-| `evaluation/results/baseline.jsonl`, `baseline_few_shot.jsonl`, `finetuned.jsonl` | incremental logs, used when a run was killed before writing its report |
-| `training/run_*/split_info.json` | split, config, `partial`, `stopped_at_step`, `steps_planned`, `dry_run` |
+| `evaluation/results/baseline.jsonl`, `baseline_few_shot_<source>.jsonl`, `finetuned.jsonl` | incremental logs, used when a run was killed before writing its report |
+| `training/run_*/split_info.json` | split, config, `partial`, `stopped_at_step`, `steps_planned`, `dry_run`, optional `peak_memory_gb` |
 | `training/run_*/train_log.json` | Trainer `log_history`: losses, `train_runtime` |
 | `training/run_*/trainer_state.json`, `checkpoint-*/trainer_state.json` | `global_step`, `epoch`, `log_history` |
 | `<review>.json` (has `rubric` and `items`) + `<review>.key.json` | explanation rubric scores |
@@ -58,7 +59,8 @@ The formats below are what `scripts/gpu_session.py`, `data/build_dataset.py`
 - Fallback for the older format: a report whose `search` dict has no `results`,
   or a `run_name` like `baseline_best4_repair1`, is read as a search run on its own.
 
-**Incremental logs** are read from the three names above only:
+**Incremental logs** are read from the names above only (`<source>` is
+`other_category` or `same_category`):
 
 - A `{"type": "meta", …}` line holds the run settings. Then come
   `{"type": "row", "phase": "pass@1" | "search", "id", …}` rows; any line without
@@ -76,9 +78,10 @@ The formats below are what `scripts/gpu_session.py`, `data/build_dataset.py`
 - Wall-clock is the Trainer's `train_runtime`. If that's missing, it is the
   session's `finetune` stage seconds, which also include model loading; the
   report says which source was used.
-- **No script records peak GPU memory.** It is always reported as `n/r`. The
-  session's `gpu_memory_gb` is the card's total memory, not a peak, so it is not
-  used.
+- **Peak GPU memory** comes from an optional `peak_memory_gb` key in
+  `split_info.json` (a planned `training/finetune.py` change). Without it, the
+  value is `n/r`. The session's `gpu_memory_gb` is the card's total memory, not a
+  peak, so it is never used.
 - Runs whose `split_info.json` says `dry_run: true` are excluded.
 
 **Reviews.**
@@ -111,14 +114,26 @@ The formats below are what `scripts/gpu_session.py`, `data/build_dataset.py`
 - decoding, do_sample, temperature, top_k, top_p, repetition_penalty and max_new_tokens;
 - for search runs: seed and the sampling temperatures.
 
-Values are read from the report's top level, or from a nested
-`generation_settings`, `effective_generation_settings`, `generation`, `sampling`
-or `decoding` dict. Anything missing shows "not recorded".
+**Where the values come from:**
 
-Few-shot source: the report's `few_shot_source` if present. Otherwise it is
-derived from each row's `example_id`: whether the example's category matches the
-prompt's, labelled "(from example_id)". If the runs being compared record
-different `repetition_penalty` values, a WARNING is raised.
+- pass@1: the report's `generation_settings` dict, which wins over top-level keys of the same name.
+- Search: `search.generation_settings.round0`, plus the block's `seed` and temperatures.
+- Repair rounds: `search.generation_settings.repair`, shown in their own column.
+- Anything missing shows "not recorded".
+
+**Few-shot source:**
+
+- The report's `few_shot_source` key if present.
+- A few-shot run that records its source is keyed by it, so `other_category` and
+  `same_category` runs are separate runs that never supersede each other.
+- Only if the key is missing is the source derived from each row's `example_id`,
+  by comparing the example's category with the prompt's; it is then labelled
+  "(from example_id)".
+- With neither, it shows "not recorded". A run is never called `same_category`
+  without that evidence.
+
+If the runs being compared record different `repetition_penalty` values
+(including the repair rounds), a WARNING is raised.
 
 ## LaTeX fragments (docs/paper/RESULTS_INTERFACE.md)
 
@@ -134,7 +149,7 @@ The fragments follow the interface agreed with the paper exactly:
 | `table_dataset.tex` | 6 | 5 categories, `\midrule`, `Total` | GPU `generation_report.json` (timeout + error + crash → "Other error") |
 | `table_categories.tex` | 7 | 5 categories | zero-shot base and FT pass@1, FT best-of-4 + repair, n |
 | `table_search.tex` | 4 | `Base`, `Fine-tuned` | pass@1, best-of-4, best-of-4 + repair, **all on the same prompts** |
-| `table_training.tex` | 5 | one per training run, newest last (`QLoRA run`, or `QLoRA run 1` … `QLoRA run k (reported)`) | train_log / trainer_state; memory always `n/r` |
+| `table_training.tex` | 5 | one per training run, newest last (`QLoRA run`, or `QLoRA run 1` … `QLoRA run k (reported)`) | train_log / trainer_state; memory from `split_info.json` `peak_memory_gb`, else `n/r` |
 | `table_rubric.tex` | 5 | `Base`, `Fine-tuned` | review scores; "copied" is `--` for Base, `n/r` for FT |
 
 A fragment is written only when its data exists, and stale ones are deleted on
@@ -164,12 +179,10 @@ fast_1, few-shot base runs and outcomes.
 - **Token-limit truncations**: rows with `hit_token_limit: true`, and the share of
   failures they explain.
 
-## Still assumed (to confirm with agent/b)
+## Still assumed
 
-- The report key that will carry the effective generation settings and the
-  few-shot source. agent/b's `effective_settings()` exists but isn't written to the
-  report yet. The tool accepts top-level keys or the nested dicts listed above.
 - That search rows always carry `selected_round`, and that round 0 stops whenever a
   candidate passes. The best-of-4 column depends on this; without `selected_round`
   it is `n/r`.
 - That the paper's Base and FT rows mean the zero-shot runs.
+- The name of the future peak-memory key: `split_info.json` → `peak_memory_gb` (GB).
