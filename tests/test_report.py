@@ -13,6 +13,7 @@ instead of silently breaking the report.
 from __future__ import annotations
 
 import json
+import re
 import math
 import sys
 import zipfile
@@ -250,14 +251,6 @@ def test_interpreter_runs_report_no_speedup(tmp_path, monkeypatch):
     assert any("Interpreter-only" in line for line in limitations(art))
 
 
-def test_latex_fragments_are_escaped_and_wrapped(tmp_path, monkeypatch):
-    _write_synthetic_eval(tmp_path, monkeypatch, "baseline", BASE_OUTCOMES)
-    tex = combined(fragments(load_artifacts(tmp_path)))
-    assert "Base \\% correct" in tex and "2.00$\\times$" in tex and "Base fast\\_1" in tex
-    assert "\\resizebox{\\columnwidth}{!}{%" in tex and "\\begin{tabular}{l" + "r" * 9 + "}" in tex
-    assert "booktabs" in tex and "graphicx" in tex  # packages are stated
-    body = [line for line in tex.splitlines() if not line.startswith("%")]  # TeX comments may hold a bare %
-    assert all("%" not in line.replace("\\%", "").rstrip("%") for line in body)
 
 
 def test_limitations_flag_small_n_and_split(tmp_path, monkeypatch):
@@ -380,50 +373,12 @@ def test_stale_fragment_is_removed_when_its_data_is_gone(tmp_path, monkeypatch):
     assert not (out / "table_search.tex").exists()
 
 
-def test_rubric_fragment_needs_scored_items(tmp_path):
-    review = {"source_report": "baseline_x.json", "rubric": {}, "items": [{"rubric_score": None}]}
-    (tmp_path / "review.json").write_text(json.dumps(review))  # SYNTHETIC, unscored
-    assert "table_rubric" not in fragments(load_artifacts(tmp_path))
-    review["items"] = [{"rubric_score": 2}, {"rubric_score": 0}]
-    (tmp_path / "review.json").write_text(json.dumps(review))
-    tex = fragments(load_artifacts(tmp_path))["table_rubric"]
-    assert "Base & 2/2 & 1.00 & 1 / 0 / 1" in tex
 
 
-def _write_synthetic_training_run(root: Path, *, with_state: bool) -> None:
-    run = root / "training" / "run_20990101T000000Z"
-    run.mkdir(parents=True)
-    (run / "split_info.json").write_text(json.dumps({  # SYNTHETIC split
-        "train": 9, "val": 1, "test": 5, "split": "template", "held_out_templates": ["norm__synthetic_tpl"],
-        "config": {"model_name": "SYNTHETIC-model", "lora_r": 16, "lora_alpha": 32, "learning_rate": 2e-4,
-                   "num_epochs": 3, "per_device_train_batch_size": 1, "gradient_accumulation_steps": 8},
-        "created_at": "2099-01-01T00:00:00+00:00"}))
-    if with_state:
-        for step, loss in ((10, 9.9), (20, 0.5)):  # SYNTHETIC losses; the newest checkpoint must win
-            (run / f"checkpoint-{step}").mkdir()
-            (run / f"checkpoint-{step}" / "trainer_state.json").write_text(json.dumps({
-                "epoch": step / 10, "global_step": step,
-                "log_history": [{"loss": loss + 1, "step": step}, {"eval_loss": loss + 0.1, "step": step},
-                                {"train_loss": loss, "train_runtime": 3600.0 * step / 10, "step": step}]}))
-        (run / "training_metrics.json").write_text(json.dumps({"peak_memory_gb": 7.5}))
 
 
-def test_training_fragment_from_trainer_state(tmp_path):
-    _write_synthetic_training_run(tmp_path, with_state=True)
-    art = load_artifacts(tmp_path)
-    assert art.training.trainer_state_source.endswith("checkpoint-20/trainer_state.json")
-    tex = fragments(art)["table_training"]
-    for expected in ("Final train loss & 0.5000", "Final validation loss & 0.6000", "Training wall-clock & 2.00 h",
-                     "Peak GPU memory & 7.5 GB", "Epochs completed & 2", "Train / val / test entries & 9 / 1 / 5",
-                     "norm\\_\\_synthetic\\_tpl"):
-        assert expected in tex, expected
 
 
-def test_training_fragment_without_trainer_state_has_no_loss_rows(tmp_path):
-    _write_synthetic_training_run(tmp_path, with_state=False)
-    tex = fragments(load_artifacts(tmp_path))["table_training"]
-    assert "Epochs (configured) & 3" in tex
-    assert "loss" not in tex.lower() and "wall-clock" not in tex and "memory" not in tex
 
 
 def test_no_training_artifacts_no_training_fragment(tmp_path, monkeypatch):
@@ -515,7 +470,7 @@ def test_coverage_warns_loudly_when_not_full_set(tmp_path):
          "eval_report": "baseline_20990101T000000Z.json", "prompts_evaluated": 5, "held_out_total": 100,
          "full_held_out_set": False}]))
     art = load_artifacts(tmp_path)
-    assert coverage_table(art)[1][1:4] == ["5", "100", "NO"]
+    assert coverage_table(art)[1][1:5] == ["5", "not recorded", "100", "NO"]
     assert any("NOT the full held-out set" in w for w in coverage_warnings(art))
     out = tmp_path / "out"
     build_report(tmp_path, out, figures=False)
@@ -531,26 +486,8 @@ def test_partial_report_is_flagged(tmp_path):
     assert any("marked partial" in w for w in coverage_warnings(art))
 
 
-def test_incremental_log_without_final_report_is_a_partial_run(tmp_path):
-    log = tmp_path / "evaluation" / "results" / "finetuned_20990101T000000Z.jsonl"
-    log.parent.mkdir(parents=True)
-    lines = [{"run_name": "finetuned", "adapter_path": "a", "prompt_mode": "zero_shot"},  # metadata line
-             _row_dict(0, "norm", True), _row_dict(1, "norm", False)]
-    log.write_text("\n".join(json.dumps(x) for x in lines) + "\n{truncated")  # killed mid-write
-    art = load_artifacts(tmp_path)
-    run = art.run("ft", 1, 0, "zero_shot")
-    assert run.incremental and run.partial and (run.overall().n, run.overall().correct) == (2, 1)
-    assert any("killed before writing its report" in w for w in coverage_warnings(art))
-    assert any("unreadable line" in p for p in art.problems)
 
 
-def test_incremental_log_is_ignored_when_final_report_exists(tmp_path):
-    _write_report(tmp_path, "baseline_20990101T000000Z", [_row_dict(i, "norm", True) for i in range(3)])
-    log = tmp_path / "evaluation" / "results" / "baseline_20990101T000000Z.jsonl"
-    log.write_text(json.dumps(_row_dict(0, "norm", False)) + "\n")
-    art = load_artifacts(tmp_path)
-    assert art.run("base").overall().n == 3 and not art.run("base").incremental
-    assert str(log.relative_to(tmp_path)) in art.superseded
 
 
 def test_dryrun_files_are_skipped(tmp_path):
@@ -627,17 +564,6 @@ def test_search_prompts_missing_from_pass1_are_reported(tmp_path):
     assert any("pass@1 scored only 2 of the 3 search prompts" in w for w in coverage_warnings(art))
 
 
-def test_training_metrics_memory_and_wall_clock(tmp_path):
-    run = tmp_path / "training" / "checkpoints" / "run_20990101T000000Z"
-    run.mkdir(parents=True)
-    (run / "training_metrics.json").write_text(json.dumps(  # SYNTHETIC
-        {"wall_clock_s": 5400, "peak_memory_bytes": 9.5e9, "steps": 66}))
-    (run / "train_log.json").write_text(json.dumps([{"loss": 1.2, "step": 10}, {"train_loss": 0.8, "step": 66}]))
-    art = load_artifacts(tmp_path)
-    rows = dict((r[0], r[1]) for r in training_table(art)[1:])
-    assert rows["Training wall-clock"] == "1.50 h" and rows["Peak GPU memory"] == "9.5 GB"
-    assert rows["Optimizer steps"] == "66" and rows["Final train loss"] == "0.8000"
-    assert "Peak GPU memory & 9.5 GB" in fragments(art)["table_training"]
 
 
 def test_partial_dataset_build_and_orphan_progress_log(tmp_path):
@@ -662,3 +588,287 @@ def test_wrong_types_never_crash_or_invent_numbers(tmp_path):
     run = load_artifacts(tmp_path).run("base")
     assert (run.overall().n, run.overall().correct) == (1, 0) and run.max_new_tokens is None
     assert run.token_limit() is None and run.key == ("base", 1, 0, "unspecified")
+
+
+# --------------------------------------------------------------------------- agent/b formats (SYNTHETIC fixtures)
+
+from evaluation.report.latex import build_fragments  # noqa: E402
+from evaluation.report.render import settings_table  # noqa: E402
+
+CATS5 = ("quantized_matmul", "attention", "kv_cache", "norm", "rope")
+LABELS5 = ["Quantized matmul", "Attention", "KV-cache", "Norm", "RoPE"]
+
+
+def _search_row(i: int, category: str, correct: bool, selected_round: int) -> dict:
+    row = _row_dict(i, category, correct)
+    row.update(phase="search", selected_round=selected_round, num_candidates=4)
+    return row
+
+
+def _report_with_search(root: Path, name: str, pass1: list[dict], search_rows: list[dict], **top) -> Path:
+    """A SYNTHETIC report in agent/b's format: pass@1 rows in "results", search embedded."""
+    search = {"num_candidates": 4, "repair_rounds": 1, "search_limit": len(search_rows),
+              "prompts_planned": len(search_rows), "prompts_scored": len(search_rows), "seed": 0,
+              "round0_temperature": 0.7, "repair_temperature": 0.7, "per_category": {}, "outcomes": {},
+              "results": search_rows}
+    return _write_report(root, name, pass1, search=search, prompts_planned=len(pass1),
+                         prompts_scored=len(pass1), **top)
+
+
+def test_embedded_search_block_and_round0_best_of_n(tmp_path):
+    pass1 = [_row_dict(i, "norm", False) for i in range(6)]  # SYNTHETIC: pass@1 0/6
+    search = [_search_row(0, "norm", True, 0), _search_row(1, "norm", True, 1),
+              _search_row(2, "norm", False, 1)]  # 1 passed in round 0, 1 after repair, 1 never
+    _report_with_search(tmp_path, "baseline_20990101T000000Z", pass1, search, prompt_mode="zero_shot")
+    art = load_artifacts(tmp_path)
+    p1, s41, s4 = (art.run("base", nc, rr, "zero_shot") for nc, rr in ((1, 0), (4, 1), (4, 0)))
+    assert (p1.overall().n, s41.overall().n) == (6, 3)
+    assert s41.overall().correct == 2 and s41.search_limit == 3 and s41.settings["seed"] == 0
+    assert s4.derived_from and s4.overall().correct == 1  # only the round-0 pass counts for best-of-4
+    assert "seed" not in p1.settings  # search-only settings don't leak onto greedy pass@1
+
+
+def test_no_round0_derivation_without_selected_round(tmp_path):
+    rows = [_row_dict(0, "norm", True)]  # no selected_round
+    _report_with_search(tmp_path, "baseline_x", [_row_dict(0, "norm", False)], rows)
+    assert load_artifacts(tmp_path).run("base", 4, 0) is None
+
+
+def _write_log(root: Path, name: str, meta: dict, rows: list[dict]) -> Path:
+    path = root / "evaluation" / "results" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [{"type": "meta", **meta}] + [{"type": "row", **r} for r in rows]
+    path.write_text("\n".join(json.dumps(x) for x in lines) + "\n{cut off")
+    return path
+
+
+def test_incremental_log_in_agent_b_format_splits_phases(tmp_path):
+    meta = {"run_name": "finetuned", "adapter_path": "a", "prompt_mode": "zero_shot", "num_candidates": 4,
+            "repair_rounds": 1, "search_limit": 2, "seed": 0}
+    rows = [{**_row_dict(0, "norm", True), "phase": "pass@1"}, {**_row_dict(1, "norm", False), "phase": "pass@1"},
+            _search_row(0, "norm", True, 0)]
+    _write_log(tmp_path, "finetuned.jsonl", meta, rows)  # SYNTHETIC, killed mid-search
+    art = load_artifacts(tmp_path)
+    p1, s41 = art.run("ft", 1, 0, "zero_shot"), art.run("ft", 4, 1, "zero_shot")
+    assert p1.incremental and p1.partial and (p1.overall().n, p1.overall().correct) == (2, 1)
+    assert s41.incremental and s41.overall().n == 1
+    assert any("killed before writing its report" in w for w in coverage_warnings(art))
+
+
+def test_only_the_three_log_names_count(tmp_path):
+    rows = [{**_row_dict(0, "norm", True), "phase": "pass@1"}]
+    _write_log(tmp_path, "baseline.20990101T000000Z.jsonl", {"run_name": "baseline"}, rows)  # moved aside
+    _write_log(tmp_path, "dryrun_baseline.jsonl", {"run_name": "dryrun_baseline"}, rows)
+    art = load_artifacts(tmp_path)
+    assert art.runs == {}
+    reasons = dict(art.excluded)
+    assert "moved aside" in reasons["evaluation/results/baseline.20990101T000000Z.jsonl"]
+    assert "dry run" in reasons["evaluation/results/dryrun_baseline.jsonl"]
+
+
+def test_final_report_beats_its_log_unless_the_log_has_more(tmp_path):
+    rows = [_row_dict(i, "norm", True) for i in range(3)]
+    _write_report(tmp_path, "baseline_20990101T000000Z", rows[:2])
+    log = _write_log(tmp_path, "baseline.jsonl", {"run_name": "baseline"},
+                     [{**r, "phase": "pass@1"} for r in rows[:2]])
+    art = load_artifacts(tmp_path)
+    assert not art.run("base").incremental and art.run("base").overall().n == 2
+    assert str(log.relative_to(tmp_path)) in art.superseded
+    _write_log(tmp_path, "baseline.jsonl", {"run_name": "baseline"}, [{**r, "phase": "pass@1"} for r in rows])
+    art = load_artifacts(tmp_path)  # resumed and killed again: the log is a strict superset
+    assert art.run("base").incremental and art.run("base").overall().n == 3
+
+
+def _write_training_run(root: Path, name: str, *, partial=False, runtime=True, val=2) -> None:
+    run = root / "training" / name
+    run.mkdir(parents=True)
+    (run / "split_info.json").write_text(json.dumps({  # SYNTHETIC
+        "train": 9, "val": val, "test": 5, "split": "template", "partial": partial,
+        "stopped_at_step": 40 if partial else None, "steps_planned": 66, "dry_run": False,
+        "config": {"model_name": "SYNTHETIC-model"}}))
+    log = [{"loss": 1.25, "step": 10}, {"eval_loss": 0.9, "step": 20}, {"loss": 0.7504, "step": 30},
+           {"eval_loss": 0.95, "step": 40}]
+    if runtime:
+        log.append({"train_runtime": 3720.0, "train_loss": 0.9, "step": 40})
+    (run / "train_log.json").write_text(json.dumps(log))
+
+
+def test_training_from_train_log_and_split_info(tmp_path):
+    _write_training_run(tmp_path, "run_20990101T000000Z", partial=True)
+    art = load_artifacts(tmp_path)
+    t = art.training
+    assert (t.final_step_loss, t.best_eval_loss, t.wall_clock) == (0.7504, 0.9, (3720.0, "Trainer train_runtime"))
+    rows = dict((r[0], r[1]) for r in training_table(art)[1:])
+    assert rows["Status"].startswith("PARTIAL: stopped at step 40 of 66")
+    assert rows["Peak GPU memory"].startswith("n/r")
+    assert any("Training run run_20990101T000000Z is PARTIAL" in w for w in coverage_warnings(art))
+
+
+def test_training_wall_clock_falls_back_to_session_stage(tmp_path):
+    _write_training_run(tmp_path, "run_20990101T000000Z", runtime=False)
+    (tmp_path / "stage_status.json").write_text(json.dumps([{"stage": "finetune", "status": "ok", "seconds": 4000}]))
+    assert load_artifacts(tmp_path).training.wall_clock == (4000.0, "session finetune stage (includes model loading)")
+
+
+def test_dry_run_training_is_excluded(tmp_path):
+    run = tmp_path / "training" / "run_20990101T000000Z"
+    run.mkdir(parents=True)
+    (run / "split_info.json").write_text(json.dumps({"dry_run": True}))
+    art = load_artifacts(tmp_path)
+    assert art.training is None and "dry-run training" in art.excluded[0][1]
+
+
+def test_run_settings_and_repetition_penalty_warning(tmp_path):
+    rows = [_row_dict(0, "norm", True)]
+    _write_report(tmp_path, "baseline_a", rows, prompt_mode="zero_shot",
+                  generation_settings={"do_sample": False, "repetition_penalty": 1.0, "max_new_tokens": 2048})
+    few = [{**_row_dict(0, "norm", True), "example_id": "norm__other_tpl__s0"}]
+    _write_report(tmp_path, "baseline_few_shot_b", few, prompt_mode="few_shot", repetition_penalty=1.05)
+    art = load_artifacts(tmp_path)
+    table = {r[0]: r for r in settings_table(art)}
+    header = settings_table(art)[0]
+    zero, fewrow = table["Base zero-shot pass@1"], table["Base few-shot pass@1"]
+    assert zero[header.index("repetition_penalty")] == "1.0" and zero[header.index("do_sample")] == "False"
+    assert zero[header.index("top_k")] == "not recorded"
+    assert fewrow[header.index("Few-shot source")] == "same_category (from example_id)"
+    assert any("DIFFERENT repetition_penalty" in w for w in coverage_warnings(art))
+
+
+def test_same_repetition_penalty_no_warning_and_recorded_source_wins(tmp_path):
+    _write_report(tmp_path, "baseline_a", [_row_dict(0, "norm", True)], prompt_mode="few_shot",
+                  repetition_penalty=1.0, few_shot_source="other_category")
+    _write_report(tmp_path, "finetuned_b", [_row_dict(0, "norm", True)], adapter_path="a", repetition_penalty=1.0)
+    art = load_artifacts(tmp_path)
+    assert not any("repetition_penalty" in w for w in coverage_warnings(art))
+    assert art.run("base").few_shot_source == "other_category"
+
+
+def test_reviews_in_agent_b_format(tmp_path):
+    src_base = {"report": "baseline_x.json", "run_name": "baseline", "prompt_mode": "zero_shot"}
+    src_ft = {"report": "finetuned_x.json", "run_name": "finetuned", "adapter_path": "a", "prompt_mode": "zero_shot"}
+    review = {"rubric": {}, "blind": False, "items": [  # SYNTHETIC scores
+        {"sample_id": "s001", "category": "norm", "rubric_score": 2, "source": src_base},
+        {"sample_id": "s002", "category": "norm", "rubric_score": 1, "source": src_ft},
+        {"sample_id": "s003", "category": "norm", "rubric_score": None, "source": src_ft}]}
+    (tmp_path / "review.json").write_text(json.dumps(review))
+    blind = {"rubric": {}, "blind": True, "items": [{"sample_id": "s001", "category": "norm", "rubric_score": 0}]}
+    (tmp_path / "blind.json").write_text(json.dumps(blind))
+    (tmp_path / "blind.key.json").write_text(json.dumps({"s001": src_ft}))
+    (tmp_path / "nokey.json").write_text(json.dumps(blind))
+    reviews = {(r.source, r.model): r for r in load_artifacts(tmp_path).reviews}
+    assert reviews[("review.json", "base")].scores == [2]
+    assert reviews[("review.json", "ft")].scores == [1] and reviews[("review.json", "ft")].n_items == 2
+    assert reviews[("blind.json", "ft")].scores == [0]
+    assert reviews[("nokey.json", "unknown")].scores == [0]
+
+
+# --------------------------------------------------------------------------- fragment conformance (RESULTS_INTERFACE.md)
+
+
+def _fragment_rows(text: str, cells: int) -> list[list[str]]:
+    """Check the interface's line rules and return the body rows as cell lists."""
+    lines = text.splitlines()
+    assert lines[0].startswith("% generated ") and " from " in lines[0]  # provenance comment first
+    assert text.endswith("\\\\\n") and text.isascii()
+    for banned in ("\\begin{tabular}", "\\toprule", "\\bottomrule", "\\caption", "\\label"):
+        assert banned not in text
+    rows = []
+    for line in lines:
+        if line.startswith("%") or line == "\\midrule":
+            continue
+        assert line.endswith(" \\\\"), line
+        row = [c.strip() for c in line[: -len(" \\\\")].split(" & ")]
+        assert len(row) == cells and all(row), line  # exact cell count, no empty cell
+        rows.append(row)
+    return rows
+
+
+def _number_cell(cell: str, decimals: int) -> bool:
+    return cell in ("--", "n/r") or re.fullmatch(rf"\d+\.\d{{{decimals}}}", cell) is not None
+
+
+def _dataset_report(root: Path, per_category: dict) -> None:
+    raw = root / "data" / "raw"
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / "generation_report.json").write_text(json.dumps({"device": "cuda", "per_category": per_category}))
+
+
+def test_table_dataset_conforms(tmp_path):
+    per_category = {c: {"generated": 60, "verified": 50 - i, "rejected": 10 + i,  # SYNTHETIC
+                        "rejection_reasons": {"incorrect": 4, "oom": 3 + i, "timeout": 2, "error": 1}}
+                    for i, c in enumerate(CATS5)}
+    _dataset_report(tmp_path, per_category)
+    text = fragments(load_artifacts(tmp_path))["table_dataset"]
+    rows = _fragment_rows(text, 6)
+    assert [r[0] for r in rows] == LABELS5 + ["Total"]
+    assert text.splitlines()[-2] == "\\midrule"
+    for row in rows:  # columns 3-6 add up to column 2
+        assert sum(int(c) for c in row[2:]) == int(row[1])
+    assert rows[-1][1:] == [str(sum(int(r[k]) for r in rows[:5])) for k in range(1, 6)]
+    assert rows[0][5] == "3"  # timeout + error fold into "Other error"
+
+
+def test_table_dataset_refused_when_columns_do_not_add_up(tmp_path):
+    _dataset_report(tmp_path, {"norm": {"generated": 61, "verified": 60, "rejection_reasons": {}}})  # SYNTHETIC
+    frags, refused = build_fragments(load_artifacts(tmp_path))
+    assert "table_dataset" not in frags and "generated = 61" in refused[0]
+
+
+def _five_category_rows(correct_per_cat: int, n: int = 4, speedup=1.5) -> list[dict]:
+    return [_row_dict(i, c, i < correct_per_cat, speedup=speedup) for c in CATS5 for i in range(n)]
+
+
+def test_table_categories_conforms(tmp_path):
+    _write_report(tmp_path, "baseline_x", _five_category_rows(0), prompt_mode="zero_shot")  # SYNTHETIC
+    _write_report(tmp_path, "finetuned_x", _five_category_rows(2, speedup=1.234), adapter_path="a",
+                  prompt_mode="zero_shot")
+    _write_report(tmp_path, "baseline_few", _five_category_rows(4), prompt_mode="few_shot")  # not in the paper
+    rows = _fragment_rows(fragments(load_artifacts(tmp_path))["table_categories"], 7)
+    assert [r[0] for r in rows] == LABELS5
+    assert rows[0] == ["Quantized matmul", "0.0", "--", "50.0", "1.23$\\times$", "n/r", "4"]
+    for row in rows:
+        assert _number_cell(row[1], 1) and _number_cell(row[3], 1) and _number_cell(row[5], 1)
+        assert row[2] == "--" or re.fullmatch(r"\d+\.\d\d\$\\times\$", row[2])
+        assert row[6].isdigit()
+
+
+def test_table_categories_refused_on_different_prompt_counts(tmp_path):
+    _write_report(tmp_path, "baseline_x", _five_category_rows(1, n=4))  # SYNTHETIC
+    _write_report(tmp_path, "finetuned_x", _five_category_rows(1, n=3), adapter_path="a")
+    frags, refused = build_fragments(load_artifacts(tmp_path))
+    assert "table_categories" not in frags and "different prompt counts" in refused[0]
+
+
+def test_table_search_conforms(tmp_path):
+    pass1 = [_row_dict(i, "norm", i >= 2) for i in range(6)]  # SYNTHETIC: wrong on the first 2 prompts
+    search = [_search_row(0, "norm", True, 0), _search_row(1, "norm", True, 1)]
+    _report_with_search(tmp_path, "baseline_x", pass1, search, prompt_mode="zero_shot")
+    _write_report(tmp_path, "finetuned_x", [_row_dict(i, "norm", True) for i in range(6)], adapter_path="a",
+                  prompt_mode="zero_shot")
+    text = fragments(load_artifacts(tmp_path))["table_search"]
+    rows = _fragment_rows(text, 4)
+    assert [r[0] for r in rows] == ["Base", "Fine-tuned"]
+    assert rows[0] == ["Base", "0.0", "50.0", "100.0"]  # pass@1 on the SAME 2 prompts, not 4/6
+    assert rows[1] == ["Fine-tuned", "100.0", "n/r", "n/r"]
+    assert "same 2 prompts" in text and "pass@1 is over all 6 prompts" in text
+
+
+def test_table_training_conforms(tmp_path):
+    _write_training_run(tmp_path, "run_20990101T000000Z")
+    _write_training_run(tmp_path, "run_20990102T000000Z", runtime=False, val=0)  # SYNTHETIC
+    rows = _fragment_rows(fragments(load_artifacts(tmp_path))["table_training"], 5)
+    assert [r[0] for r in rows] == ["QLoRA run 1", "QLoRA run 2 (reported)"]
+    assert rows[0] == ["QLoRA run 1", "0.750", "0.900", "1:02", "n/r"]
+    assert rows[1][3] == "n/r" and rows[1][4] == "n/r"  # no runtime, no session record; memory never logged
+
+
+def test_table_rubric_conforms(tmp_path):
+    src = {"run_name": "finetuned", "adapter_path": "a", "prompt_mode": "zero_shot"}
+    items = [{"sample_id": f"s{i}", "category": "norm", "rubric_score": s, "source": src}
+             for i, s in enumerate([2, 2, 1, 0, 0, 0])]  # SYNTHETIC
+    (tmp_path / "review.json").write_text(json.dumps({"rubric": {}, "items": items}))
+    rows = _fragment_rows(fragments(load_artifacts(tmp_path))["table_rubric"], 5)
+    assert [r[0] for r in rows] == ["Base", "Fine-tuned"]
+    assert rows[0] == ["Base", "n/r", "n/r", "n/r", "n/r"]  # no base review
+    assert rows[1] == ["Fine-tuned", "2", "1", "3", "n/r"]
+    assert sum(int(c) for c in rows[1][1:4]) == len(items)  # columns 2-4 add up to the sample size
