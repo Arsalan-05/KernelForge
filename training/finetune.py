@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -140,8 +141,28 @@ def load_transformers(config: dict):
     return model, tokenizer
 
 
+def make_time_limit_callback(deadline: float | None, adapter_dir: Path):
+    """TrainerCallback for --max-minutes: at the first optimizer step past the
+    deadline (time.monotonic()), save the adapter and stop training cleanly."""
+    from transformers import TrainerCallback
+
+    class TimeLimitCallback(TrainerCallback):
+        stopped_at_step: int | None = None
+
+        def on_step_end(self, args, state, control, model=None, **kwargs):
+            if deadline is not None and self.stopped_at_step is None and time.monotonic() >= deadline:
+                model.save_pretrained(str(adapter_dir))
+                self.stopped_at_step = state.global_step
+                control.should_training_stop = True
+                print(f"--max-minutes reached at step {state.global_step}/{state.max_steps}; "
+                      f"adapter saved to {adapter_dir}")
+            return control
+
+    return TimeLimitCallback()
+
+
 def train(config: dict, backend: str, train_entries: list[dict], val_entries: list[dict],
-          output_dir: Path, max_steps: int = -1) -> dict:
+          output_dir: Path, max_steps: int = -1, deadline: float | None = None) -> dict:
     """Load the model, train with assistant-only loss, save the adapter. Returns run stats."""
     import torch
     from datasets import Dataset
@@ -190,6 +211,8 @@ def train(config: dict, backend: str, train_entries: list[dict], val_entries: li
         report_to="none",
         use_cpu=not cuda,
     )
+    adapter_dir = output_dir / "adapter"
+    time_limit = make_time_limit_callback(deadline, adapter_dir)
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -197,14 +220,22 @@ def train(config: dict, backend: str, train_entries: list[dict], val_entries: li
         eval_dataset=Dataset.from_list(val_feats) if val_feats else None,
         # Pads input_ids with pad_token_id and labels with -100 (only matters for batch > 1).
         data_collator=DataCollatorForSeq2Seq(tokenizer, padding=True, label_pad_token_id=IGNORE_INDEX),
+        callbacks=[time_limit],
     )
-    trainer.train()
+    try:
+        trainer.train()
+    finally:
+        # Loss history goes in the run folder itself (not only in checkpoint-*),
+        # and is written even if training crashes (e.g. out of memory).
+        (output_dir / "train_log.json").write_text(json.dumps(trainer.state.log_history, indent=2))
+        trainer.save_state()  # -> <run>/trainer_state.json
 
-    adapter_dir = output_dir / "adapter"
     model.save_pretrained(str(adapter_dir))
     tokenizer.save_pretrained(str(adapter_dir))
-    (output_dir / "train_log.json").write_text(json.dumps(trainer.state.log_history, indent=2))
     return {
+        "partial": time_limit.stopped_at_step is not None,
+        "stopped_at_step": time_limit.stopped_at_step,
+        "steps_planned": trainer.state.max_steps,
         "backend": backend,
         "dropped_too_long": dropped_train + dropped_val,
         "supervised_token_fraction": supervised / total,
@@ -242,10 +273,14 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--backend", choices=["auto", "unsloth", "transformers"], default="auto",
                         help="auto = Unsloth if it imports cleanly, else transformers + PEFT")
+    parser.add_argument("--max-minutes", type=float, default=None,
+                        help="Stop training at the first optimizer step after this long (counted from "
+                             "script start), save the adapter, and mark the run partial")
     parser.add_argument("--dry-run", action="store_true",
                         help="CPU plumbing check: tiny random model, 8 train examples, 2 steps")
     args = parser.parse_args()
 
+    deadline = None if args.max_minutes is None else time.monotonic() + args.max_minutes * 60
     config = _load_config(args.config)
     entries, source = load_eval_entries(args.dataset, dry_run=args.dry_run)
     if not entries:
@@ -299,9 +334,12 @@ def main() -> None:
     print(f"Data: {source}. Training on {len(train_set)} examples, validating on {len(val_set)}, "
           f"held-out test: {len(test_set)}; backend: {backend}")
     print(f"Checkpoints -> {output_dir}")
-    split_info.update(train(config, backend, train_set, val_set, output_dir, max_steps=max_steps))
+    split_info.update(train(config, backend, train_set, val_set, output_dir, max_steps=max_steps,
+                            deadline=deadline))
     (output_dir / "split_info.json").write_text(json.dumps(split_info, indent=2))
-    print(f"Training complete ({backend} backend). Adapter -> {output_dir / 'adapter'}")
+    status = (f"stopped early at step {split_info['stopped_at_step']}/{split_info['steps_planned']} (PARTIAL)"
+              if split_info["partial"] else "complete")
+    print(f"Training {status} ({backend} backend). Adapter -> {output_dir / 'adapter'}")
 
 
 if __name__ == "__main__":
