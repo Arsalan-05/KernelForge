@@ -205,3 +205,109 @@ def test_restore_progress_reports_missing_log(tmp_path):
     empty = tmp_path / "empty_outputs"
     empty.mkdir()
     assert gs.restore_progress(empty, root=tmp_path / "repo") is False
+
+
+# ---------------------------------------------------------------- zip contents
+
+def test_collect_includes_raw_results_reviews_and_run_files_but_not_checkpoints(tmp_path):
+    root = _fake_root(tmp_path)
+    (root / "data/raw/generation_report.json").write_text("{}")
+    (root / "evaluation/results").mkdir(parents=True)
+    (root / "evaluation/results/baseline_20261115T000000Z.json").write_text("{}")
+    (root / "evaluation/reviews").mkdir()
+    (root / "evaluation/reviews/explanation_review_scored.json").write_text("{}")
+    old = root / "training/checkpoints/run_old"
+    new = root / "training/checkpoints/run_new"
+    for run in (old, new):
+        (run / "adapter").mkdir(parents=True)
+        (run / "adapter/adapter_model.safetensors").write_text("synthetic weights")
+        (run / "split_info.json").write_text("{}")
+        (run / "checkpoint-30").mkdir()
+        (run / "checkpoint-30/optimizer.pt").write_text("synthetic optimizer state")
+        (run / "checkpoint-30/trainer_state.json").write_text("{}")
+    import os
+    os.utime(old, (1, 1))  # make run_new the latest run
+
+    out = tmp_path / "out"
+    copied = set(gs.collect(out, root=root))
+
+    assert {"data/raw/generation_report.json", gs.CUDA_PROGRESS,
+            "evaluation/results/baseline_20261115T000000Z.json",
+            "evaluation/reviews/explanation_review_scored.json",
+            "training/run_old/split_info.json", "training/run_new/split_info.json",
+            "training/run_new/checkpoint-30/trainer_state.json",
+            "training/run_new/adapter/adapter_model.safetensors"} <= copied
+    assert not any(c.endswith("optimizer.pt") for c in copied)       # no checkpoint weights
+    assert "training/run_old/adapter/adapter_model.safetensors" not in copied  # adapter: latest run only
+
+
+def test_session_json_records_the_zip_file_list(tmp_path):
+    root = _fake_root(tmp_path)
+    out = tmp_path / "kernelforge_outputs"
+    out.mkdir()
+    archive = gs.snapshot(out, {"env": {}}, [], root=root)
+    session = json.loads((out / "session.json").read_text())
+    assert session["zip_files"] == sorted(zipfile.ZipFile(archive).namelist())
+
+
+def test_large_zip_prints_a_warning(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(gs, "ZIP_WARN_BYTES", 0)
+    out = tmp_path / "kernelforge_outputs"
+    out.mkdir()
+    (out / "x.txt").write_text("synthetic")
+    gs.zip_outputs(out)
+    assert "WARNING" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- eval size
+
+def test_eval_summary_flags_full_and_partial_held_out_sets(tmp_path):
+    report = tmp_path / "baseline_x.json"
+    report.write_text(json.dumps({"results": [{}] * 100}))
+    full = gs.eval_summary(report, held_out_total=100, eval_limit=None)
+    assert full["prompts_evaluated"] == 100 and full["full_held_out_set"] is True
+
+    report.write_text(json.dumps({"results": [{}] * 25}))
+    capped = gs.eval_summary(report, held_out_total=100, eval_limit=25)
+    assert capped["prompts_evaluated"] == 25 and capped["full_held_out_set"] is False
+
+    missing = gs.eval_summary(None, held_out_total=100, eval_limit=None)
+    assert missing["prompts_evaluated"] is None and missing["full_held_out_set"] is False
+
+
+def test_new_report_ignores_reports_from_before_the_stage(tmp_path):
+    old = tmp_path / "baseline_old.json"
+    old.write_text("{}")
+    before = {old}
+    assert gs._new_report("baseline", before, results_dir=tmp_path) is None
+    new = tmp_path / "baseline_new.json"
+    new.write_text("{}")
+    (tmp_path / "finetuned_new.json").write_text("{}")
+    assert gs._new_report("baseline", before, results_dir=tmp_path) == new
+
+
+def _capture_baseline_cmd(monkeypatch, tmp_path, argv):
+    """Run the baseline stage with run_command stubbed out; return the command it would run."""
+    import argparse
+    seen = {}
+    monkeypatch.setattr(gs, "run_command", lambda name, cmd, *a, **k: seen.setdefault("cmd", cmd) and {})
+    monkeypatch.setattr(gs, "held_out_count", lambda: 100)
+    monkeypatch.setattr(gs, "_new_report", lambda prefix, before: None)
+    args = argparse.Namespace(eval_limit=None, resume=False)
+    for k, v in argv.items():
+        setattr(args, k, v)
+    session = {"env": {"cuda_available": True}}
+    (stage,) = gs.build_stages(args, ["baseline"], tmp_path, tmp_path / "cfg.json", session, tick=lambda: None)
+    record = stage.run(60)
+    return seen["cmd"], record
+
+
+def test_default_eval_uses_all_held_out_prompts(monkeypatch, tmp_path):
+    cmd, record = _capture_baseline_cmd(monkeypatch, tmp_path, {})
+    assert "--limit" not in cmd
+    assert record["eval_limit"] is None and record["held_out_total"] == 100
+
+
+def test_eval_limit_is_passed_through(monkeypatch, tmp_path):
+    cmd, record = _capture_baseline_cmd(monkeypatch, tmp_path, {"eval_limit": 25})
+    assert cmd[-2:] == ["--limit", "25"] and record["eval_limit"] == 25

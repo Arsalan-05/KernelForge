@@ -23,6 +23,9 @@ Built so one "Run All" always leaves something usable to download:
     zip is always written before the platform kills the session.
   * --resume / --resume-from: the dataset stage continues from the progress log
     of an earlier run instead of starting over.
+  * Evals cover the whole held-out set by default (--eval-limit N to cap it);
+    session.json records how many prompts each eval used and whether that was
+    the full held-out set.
 
     python scripts/gpu_session.py                      # dataset + baseline
     python scripts/gpu_session.py --finetune           # + QLoRA + fine-tuned eval
@@ -58,6 +61,12 @@ CUDA_PROGRESS = "data/raw/progress_cuda.jsonl"  # written by build_dataset.py --
 FINAL_RESERVE_S = 300
 # How often a long stage refreshes the zip while it is still running.
 SNAPSHOT_EVERY_S = 600
+# Generation cap for the evals. scripts/check_token_lengths.py measured the
+# longest reference target (kernel + explanation) at 1302 Qwen2.5-Coder tokens,
+# 85% of the old 1536 cap; 2048 leaves ~57% headroom over it.
+DEFAULT_MAX_NEW_TOKENS = 2048
+# Zips above this get a warning: slow to download, and close to upload limits.
+ZIP_WARN_BYTES = 2 * 1024**3
 
 
 class StageFailed(Exception):
@@ -230,36 +239,55 @@ def _has_lines(path: Path) -> bool:
 # Artifacts
 # --------------------------------------------------------------------------- #
 
+def _copy(src: Path, dst: Path, copied: list[str], out: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    copied.append(str(dst.relative_to(out)))
+
+
+def _copy_tree(src_dir: Path, dst_dir: Path, copied: list[str], out: Path) -> None:
+    for src in sorted(src_dir.rglob("*")):
+        if src.is_file():
+            _copy(src, dst_dir / src.relative_to(src_dir), copied, out)
+
+
 def collect(out: Path, root: Path = ROOT) -> list[str]:
-    """Copy whatever artifacts exist right now into `out` (missing ones are skipped)."""
-    copied = []
-    for rel in ["data/verified/dataset.jsonl", "data/raw/generation_report.json", "data/raw/rejected.jsonl",
-                CUDA_PROGRESS]:
-        src = root / rel
-        if src.exists():
-            dst = out / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-            copied.append(rel)
-    for report in (root / "evaluation" / "results").glob("*.json"):
-        dst = out / "evaluation" / "results" / report.name
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(report, dst)
-        copied.append(str(dst.relative_to(out)))
+    """Copy whatever artifacts exist right now into `out` (missing ones are skipped).
+
+    data/verified/dataset.jsonl, all of data/raw/ (reports, rejected entries,
+    progress logs), all of evaluation/results/ plus any *review*.json under
+    evaluation/ (scored explanation reviews), and for every training run its
+    small files (split_info.json, held_out_test.jsonl, logs, ...). Intermediate
+    checkpoint-*/ folders are model weights, so only their trainer_state.json
+    (loss/eval history) is kept; the adapter is copied for the latest run only.
+    """
+    copied: list[str] = []
+    dataset = root / "data/verified/dataset.jsonl"
+    if dataset.exists():
+        _copy(dataset, out / "data/verified/dataset.jsonl", copied, out)
+    if (root / "data/raw").is_dir():
+        _copy_tree(root / "data/raw", out / "data/raw", copied, out)
+    if (root / "evaluation/results").is_dir():
+        _copy_tree(root / "evaluation/results", out / "evaluation/results", copied, out)
+    for review in sorted((root / "evaluation").glob("**/*review*.json")):
+        rel = review.relative_to(root)
+        if not str(rel).startswith("evaluation/results/"):  # already copied above
+            _copy(review, out / rel, copied, out)
+
     runs = sorted((root / "training" / "checkpoints").glob("run_*"), key=lambda p: p.stat().st_mtime)
-    if runs:
-        run = runs[-1]
-        for name in ("adapter", "split_info.json", "held_out_test.jsonl"):
-            src = run / name
-            dst = out / "training" / run.name / name
-            if src.is_dir():
-                shutil.copytree(src, dst, dirs_exist_ok=True)
-            elif src.exists():
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
-            else:
+    for run in runs:
+        dst_run = out / "training" / run.name
+        for src in sorted(run.rglob("*")):
+            if not src.is_file():
                 continue
-            copied.append(str(dst.relative_to(out)))
+            parts = src.relative_to(run).parts
+            if parts[0].startswith("checkpoint-"):
+                if parts[-1] == "trainer_state.json":
+                    _copy(src, dst_run / src.relative_to(run), copied, out)
+                continue
+            if parts[0] == "adapter" and run != runs[-1]:
+                continue
+            _copy(src, dst_run / src.relative_to(run), copied, out)
     return copied
 
 
@@ -272,6 +300,10 @@ def zip_outputs(out: Path) -> Path:
             if path.is_file():
                 zf.write(path, path.relative_to(out))
     os.replace(tmp, final)
+    size = final.stat().st_size
+    if size > ZIP_WARN_BYTES:
+        print(f"WARNING: {final.name} is {size / 1024**3:.1f} GB (over 2 GB); downloading it may be slow or fail.",
+              flush=True)
     return final
 
 
@@ -287,6 +319,9 @@ def snapshot(out: Path, session: dict, records: list[dict], root: Path = ROOT) -
     session["artifacts"] = collect(out, root)
     session["updated_at"] = datetime.now(timezone.utc).isoformat()
     (out / "stage_status.json").write_text(json.dumps(records, indent=2))
+    # Everything in `out` goes into the zip, session.json included (written next).
+    session["zip_files"] = sorted({str(p.relative_to(out)) for p in out.rglob("*") if p.is_file()}
+                                  | {"session.json"})
     (out / "session.json").write_text(json.dumps(session, indent=2))
     return zip_outputs(out)
 
@@ -311,6 +346,43 @@ def restore_progress(source: Path, root: Path = ROOT) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Eval accounting: how many prompts did each eval actually score?
+# --------------------------------------------------------------------------- #
+
+def held_out_count(dataset: Path = DATASET) -> Optional[int]:
+    """Size of the template-split held-out test set the evals draw from."""
+    sys.path.insert(0, str(ROOT))
+    from kernelforge.dataset import load_training_data, make_split
+
+    entries = load_training_data(dataset, fallback_to_examples=False)
+    return len(make_split(entries, "template")[2]) if entries else None
+
+
+def _count_lines(path: Path) -> Optional[int]:
+    return sum(1 for line in path.read_text().splitlines() if line.strip()) if path.exists() else None
+
+
+def eval_summary(report_path: Optional[Path], held_out_total: Optional[int], eval_limit: Optional[int]) -> dict:
+    """What session.json records for an eval stage."""
+    evaluated = None
+    if report_path is not None:
+        evaluated = len(json.loads(report_path.read_text()).get("results", []))
+    return {
+        "eval_report": report_path.name if report_path else None,
+        "eval_limit": eval_limit,  # None = no cap requested
+        "prompts_evaluated": evaluated,
+        "held_out_total": held_out_total,
+        "full_held_out_set": evaluated is not None and held_out_total is not None and evaluated == held_out_total,
+    }
+
+
+def _new_report(prefix: str, before: set[Path], results_dir: Path = ROOT / "evaluation/results") -> Optional[Path]:
+    """The eval report this stage wrote: a file matching <prefix>_*.json that wasn't there before."""
+    new = [p for p in results_dir.glob(f"{prefix}_*.json") if p not in before]
+    return max(new, key=lambda p: p.stat().st_mtime) if new else None
+
+
+# --------------------------------------------------------------------------- #
 # Wiring
 # --------------------------------------------------------------------------- #
 
@@ -331,6 +403,17 @@ def build_stages(args, names: list[str], logs: Path, eval_config: Path, session:
     def command(name, cmd_fn):
         return lambda timeout: run_command(name, cmd_fn(timeout), logs, timeout, on_tick=tick)
 
+    limit_flag = ["--limit", str(args.eval_limit)] if args.eval_limit else []  # no flag = all held-out prompts
+
+    def eval_stage(name, prefix, cmd_fn, held_out_fn):
+        def run(timeout):
+            results_dir = ROOT / "evaluation/results"
+            before = set(results_dir.glob(f"{prefix}_*.json"))
+            result = run_command(name, cmd_fn(timeout), logs, timeout, on_tick=tick)
+            result.update(eval_summary(_new_report(prefix, before), held_out_fn(), args.eval_limit))
+            return result
+        return run
+
     def env_stage(_timeout):
         if not session["env"].get("cuda_available"):
             raise StageFailed("no CUDA GPU visible. On Kaggle: Settings -> Accelerator -> GPU T4, then restart")
@@ -347,11 +430,16 @@ def build_stages(args, names: list[str], logs: Path, eval_config: Path, session:
     def finetuned_eval_cmd(_timeout):
         run = _latest("training/checkpoints/run_*")
         return [py, "evaluation/finetuned_eval.py", "--device", "cuda", "--config", str(eval_config),
-                "--adapter", str(run / "adapter"), "--checkpoint-run", str(run),
-                "--limit", str(args.baseline_limit)]
+                "--adapter", str(run / "adapter"), "--checkpoint-run", str(run)] + limit_flag
+
+    def finetuned_held_out():  # finetuned_eval.py reads the run's own held-out file
+        run = _latest("training/checkpoints/run_*")
+        return _count_lines(run / "held_out_test.jsonl") if run else None
 
     # min_seconds are rough floors so a stage isn't started with no chance to finish;
-    # they are guesses, not measured on a T4.
+    # they are guesses, not measured on a T4. The evals now cover the whole
+    # held-out set (100 prompts with the default split, up to 2048 new tokens
+    # each), so they get a 1 h floor and a 5 h cap.
     all_stages = {
         "env": Stage("env", env_stage, max_seconds=60),
         "harness": Stage("harness", command("harness", lambda t: [py, "-m", "pytest", "-q",
@@ -359,15 +447,15 @@ def build_stages(args, names: list[str], logs: Path, eval_config: Path, session:
                          max_seconds=900, min_seconds=120, skip_reason=no_gpu),
         "dataset": Stage("dataset", command("dataset", dataset_cmd),
                          max_seconds=4 * 3600, min_seconds=900, skip_reason=no_gpu),
-        "baseline": Stage("baseline", command("baseline", lambda t: [
+        "baseline": Stage("baseline", eval_stage("baseline", "baseline", lambda t: [
                               py, "evaluation/baseline_eval.py", "--device", "cuda", "--config", str(eval_config),
-                              "--limit", str(args.baseline_limit)]),
-                          max_seconds=3 * 3600, min_seconds=900, skip_reason=needs_dataset),
+                          ] + limit_flag, held_out_count),
+                          max_seconds=5 * 3600, min_seconds=3600, skip_reason=needs_dataset),
         "finetune": Stage("finetune", command("finetune", lambda t: [
                               py, "training/finetune.py", "--config", "training/configs/finetune_default.json"]),
                           max_seconds=4 * 3600, min_seconds=1800, skip_reason=needs_dataset),
-        "eval": Stage("eval", command("eval", finetuned_eval_cmd),
-                      max_seconds=3 * 3600, min_seconds=900, skip_reason=needs_adapter),
+        "eval": Stage("eval", eval_stage("eval", "finetuned", finetuned_eval_cmd, finetuned_held_out),
+                      max_seconds=5 * 3600, min_seconds=3600, skip_reason=needs_adapter),
     }
     return [all_stages[n] for n in names]
 
@@ -381,9 +469,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--stages", nargs="+", choices=ALL_STAGES, default=None)
     parser.add_argument("--finetune", action="store_true", help="also run QLoRA fine-tuning and its evaluation")
-    parser.add_argument("--baseline-limit", type=int, default=25,
-                        help="held-out examples for each eval (round-robin across categories)")
-    parser.add_argument("--max-new-tokens", type=int, default=1536, help="generation cap for evals")
+    parser.add_argument("--eval-limit", "--baseline-limit", dest="eval_limit", type=int, default=None,
+                        help="cap held-out prompts per eval (round-robin across categories); default: all")
+    parser.add_argument("--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS,
+                        help="generation cap for evals (see scripts/check_token_lengths.py)")
     parser.add_argument("--budget-hours", type=float, default=None,
                         help="wall-clock budget for the whole session; late stages are skipped, not killed")
     parser.add_argument("--resume", action="store_true",
@@ -399,7 +488,7 @@ def main() -> int:
     logs.mkdir(parents=True, exist_ok=True)
 
     session = {"started_at": datetime.now(timezone.utc).isoformat(), "budget_hours": args.budget_hours,
-               "env": env_info()}
+               "eval_limit": args.eval_limit, "max_new_tokens": args.max_new_tokens, "env": env_info()}
     print(json.dumps(session["env"], indent=2))
 
     if args.resume_from is not None:
