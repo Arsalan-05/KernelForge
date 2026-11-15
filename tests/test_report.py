@@ -24,7 +24,7 @@ import pytest
 import data.build_dataset as build_dataset
 import evaluation.common as common
 from evaluation.report.__main__ import build_report, main
-from evaluation.report.artifacts import CATEGORIES, CategoryResult, load_artifacts, parse_eval_report
+from evaluation.report.artifacts import Artifacts, CATEGORIES, CategoryResult, load_artifacts, parse_eval_report
 from evaluation.report.figures import make_figures
 from evaluation.report.latex import FRAGMENT_NAMES, combined, fragments
 from evaluation.report.render import (
@@ -152,11 +152,11 @@ def test_search_mode_from_key_or_run_name():
     report = {"run_name": "finetuned", "adapter_path": "x", "results": [
         {"id": "a", "category": "norm", "verification": {"status": "ok", "correct": True, "speedup": 1.0}}]}
     run, _ = parse_eval_report({**report, "search": {"num_candidates": 4, "repair_rounds": 1}}, "s.json")
-    assert run.key == ("ft", 4, 1) and run.mode_label == "best-of-4 + repair"
+    assert run.key == ("ft", 4, 1, "unspecified") and run.mode_label == "best-of-4 + repair"
     run, _ = parse_eval_report({**report, "run_name": "baseline_best4", "adapter_path": None}, "s.json")
-    assert run.key == ("base", 4, 0)
+    assert run.key == ("base", 4, 0, "unspecified")
     run, _ = parse_eval_report(report, "s.json")
-    assert run.key == ("ft", 1, 0) and run.mode_label == "pass@1"
+    assert run.key == ("ft", 1, 0, "unspecified") and run.mode_label == "pass@1"
 
 
 def test_summary_only_report_falls_back_to_per_category():
@@ -217,7 +217,7 @@ def test_session_status_explains_missing_stage(tmp_path):
     session = {"stages": {"baseline": {"status": "skipped (no verified dataset)"}}}
     (tmp_path / "session.json").write_text(json.dumps(session))
     status = dict(stage_status(load_artifacts(tmp_path)))
-    assert status["Base model, pass@1"] == "absent (session: skipped (no verified dataset))"
+    assert status["Base, pass@1"] == "absent (session: skipped (no verified dataset))"
 
 
 def test_prop_cell_formats_and_flags_small_n():
@@ -287,11 +287,11 @@ def test_build_report_from_zip_writes_all_files(tmp_path, monkeypatch):
             "table_search.tex", "table_dataset.tex"} <= names
     assert not {"table_training.tex", "table_rubric.tex"} & names  # no training run, no review
     md = (out / "results.md").read_text()
-    assert "Fine-tuned model, best-of-4 + repair | present" in md
-    assert "Fine-tuned model, pass@1 | absent" in md
+    assert "| Fine-tuned, best-of-4 + repair | present" in md
+    assert "| Fine-tuned, pass@1 | absent" in md
     summary = json.loads((out / "summary.json").read_text())
-    assert summary["runs"]["base/pass@1"]["all"]["correct"] == 3
-    assert math.isclose(summary["runs"]["base/pass@1"]["per_category"]["norm"]["avg_speedup"], 2.0)
+    assert summary["runs"]["base/unspecified/pass@1"]["all"]["correct"] == 3
+    assert math.isclose(summary["runs"]["base/unspecified/pass@1"]["per_category"]["norm"]["avg_speedup"], 2.0)
 
 
 def test_figures_are_drawn_when_matplotlib_present(tmp_path, monkeypatch):
@@ -302,8 +302,8 @@ def test_figures_are_drawn_when_matplotlib_present(tmp_path, monkeypatch):
     build_report(outputs, out)
     assert (out / "figures" / "correctness_by_category.png").stat().st_size > 0
     assert (out / "figures" / "speedup_distribution.png").stat().st_size > 0
-    assert not (out / "figures" / "search_gain.png").exists()  # only one search mode ran
-    assert "search_gain: not drawn (fewer than two search modes" in (out / "results.md").read_text()
+    assert not (out / "figures" / "search_gain.png").exists()  # no search run
+    assert "search_gain: not drawn (no search runs" in (out / "results.md").read_text()
 
 
 def test_cli_rejects_missing_source(tmp_path, capsys):
@@ -328,7 +328,7 @@ def test_summary_only_report_has_no_geomean_or_fast_1():
         "norm": {"total": 5, "correct": 2, "passed": 2, "avg_speedup": 1.25}}}
     run, _ = parse_eval_report(report, "SYNTHETIC.json")
     assert run.categories["norm"].geomean_speedup is None and run.categories["norm"].fast_1 is None
-    art = SimpleNamespace(run=lambda m, nc=1, rr=0: run if (m, nc, rr) == ("base", 1, 0) else None)
+    art = Artifacts(source="SYNTHETIC", runs={run.key: run})
     norm = {r[0]: r for r in phase5_table(art)}["Norm"]
     assert norm[2] == "1.25× (n=2)†" and norm[3] == norm[4] == "n/a (summary-only report)"
 
@@ -337,7 +337,7 @@ def test_summary_json_and_limitations_carry_new_metrics(tmp_path, monkeypatch):
     outputs = tmp_path / "outputs"
     _write_synthetic_eval(outputs, monkeypatch, "baseline", BASE_OUTCOMES)
     build_report(outputs, tmp_path / "report", figures=False)
-    norm = json.loads((tmp_path / "report" / "summary.json").read_text())["runs"]["base/pass@1"]["per_category"]
+    norm = json.loads((tmp_path / "report" / "summary.json").read_text())["runs"]["base/unspecified/pass@1"]["per_category"]
     assert norm["norm"]["geomean_speedup"] == pytest.approx(math.sqrt(1.5 * 2.5))
     assert (norm["norm"]["fast_1"]["k"], norm["norm"]["fast_1"]["n"]) == (2, 4)
     assert norm["rope"]["infinite_speedups_excluded"] == 1
@@ -430,7 +430,7 @@ def test_no_training_artifacts_no_training_fragment(tmp_path, monkeypatch):
     _write_synthetic_eval(tmp_path, monkeypatch, "finetuned", BASE_OUTCOMES, adapter="a")
     art = load_artifacts(tmp_path)
     assert "table_training" not in fragments(art)
-    assert any("Training loss and wall-clock are not in the artifacts" in line for line in limitations(art))
+    assert any("Training loss is not in the artifacts" in line for line in limitations(art))
 
 
 # --------------------------------------------------------------------------- matplotlib missing
@@ -448,3 +448,217 @@ def test_report_works_without_matplotlib(tmp_path, monkeypatch):
     assert "correctness_by_category: not drawn (matplotlib is not installed" in md
     assert not (tmp_path / "report" / "figures").exists()
     assert (tmp_path / "report" / "table_categories.tex").exists()  # tables still written
+
+
+# --------------------------------------------------------------------------- session outputs & new eval keys
+# Every fixture below is SYNTHETIC: made-up reports in the format the other sessions
+# are moving to, written directly (all keys optional) to exercise the report.
+
+from evaluation.report.render import (  # noqa: E402
+    coverage_table,
+    coverage_warnings,
+    search_table,
+    session_stage_table,
+    summary_json,
+    token_limit_table,
+    training_table,
+)
+
+
+def _row_dict(i: int, category: str, correct: bool, *, speedup=1.5, hit=None, prefix="s") -> dict:
+    v = {"status": "ok", "correct": correct, "speedup": speedup if correct else None, "interpreted": False}
+    row = {"id": f"{category}__synthetic_tpl__{prefix}{i}", "category": category, "verification": v,
+           "outcome": "correct" if correct else "incorrect", "generated_text": "SYNTHETIC",
+           "generated_explanation": "SYNTHETIC"}
+    if hit is not None:
+        row["hit_token_limit"] = hit
+    return row
+
+
+def _write_report(root: Path, name: str, rows: list[dict], **top) -> Path:
+    path = root / "evaluation" / "results" / f"{name}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    report = {"run_name": name.split("_2")[0], "model_name": "SYNTHETIC-model",
+              "generated_at": top.pop("generated_at", "2099-01-01T00:00:00"), "results": rows, **top}
+    path.write_text(json.dumps(report))
+    return path
+
+
+def test_stage_status_table_from_stage_status_json(tmp_path):
+    (tmp_path / "stage_status.json").write_text(json.dumps([  # SYNTHETIC session
+        {"stage": "env", "status": "ok", "seconds": 1.2, "error": None},
+        {"stage": "dataset", "status": "failed", "seconds": 3600.0, "error": "StageFailed: killed after 3600s"},
+        {"stage": "finetune", "status": "skipped", "seconds": 0.0, "error": "time budget: 10s left"},
+        {"stage": "baseline", "status": "ok", "seconds": 900.0, "error": None,
+         "prompts_evaluated": 25, "held_out_total": 100}]))
+    art = load_artifacts(tmp_path)
+    rows = {r[0]: r for r in session_stage_table(art)}
+    assert rows["dataset"][1:] == ["FAILED", "3600", "StageFailed: killed after 3600s"]
+    assert rows["finetune"][1] == "SKIPPED" and "time budget" in rows["finetune"][3]
+    assert rows["baseline"][3] == "prompts scored 25 of 100"
+    out = tmp_path / "out"
+    build_report(tmp_path, out, figures=False)
+    md = (out / "results.md").read_text()
+    assert md.index("## Session stages") < md.index("## Category results")
+
+
+def test_stage_status_falls_back_to_session_json(tmp_path):
+    (tmp_path / "session.json").write_text(json.dumps({"stages": {"dataset": {"status": "ok", "seconds": 5}}}))
+    assert session_stage_table(load_artifacts(tmp_path))[1][:3] == ["dataset", "ok", "5"]
+
+
+def test_coverage_warns_loudly_when_not_full_set(tmp_path):
+    rows = [_row_dict(i, "norm", i % 2 == 0) for i in range(5)]  # SYNTHETIC: 5 of 100 held-out
+    _write_report(tmp_path, "baseline_20990101T000000Z", rows, prompt_mode="zero_shot")
+    (tmp_path / "stage_status.json").write_text(json.dumps([
+        {"stage": "baseline", "status": "ok", "seconds": 1, "error": None,
+         "eval_report": "baseline_20990101T000000Z.json", "prompts_evaluated": 5, "held_out_total": 100,
+         "full_held_out_set": False}]))
+    art = load_artifacts(tmp_path)
+    assert coverage_table(art)[1][1:4] == ["5", "100", "NO"]
+    assert any("NOT the full held-out set" in w for w in coverage_warnings(art))
+    out = tmp_path / "out"
+    build_report(tmp_path, out, figures=False)
+    md = (out / "results.md").read_text()
+    assert md.index("WARNING: these results are incomplete") < md.index("## Session stages")
+    assert "Warning: incomplete results" in (out / "readme_results_snippet.md").read_text()
+
+
+def test_partial_report_is_flagged(tmp_path):
+    _write_report(tmp_path, "finetuned_x", [_row_dict(0, "rope", True)], adapter_path="a", partial=True)
+    art = load_artifacts(tmp_path)
+    assert art.run("ft").partial
+    assert any("marked partial" in w for w in coverage_warnings(art))
+
+
+def test_incremental_log_without_final_report_is_a_partial_run(tmp_path):
+    log = tmp_path / "evaluation" / "results" / "finetuned_20990101T000000Z.jsonl"
+    log.parent.mkdir(parents=True)
+    lines = [{"run_name": "finetuned", "adapter_path": "a", "prompt_mode": "zero_shot"},  # metadata line
+             _row_dict(0, "norm", True), _row_dict(1, "norm", False)]
+    log.write_text("\n".join(json.dumps(x) for x in lines) + "\n{truncated")  # killed mid-write
+    art = load_artifacts(tmp_path)
+    run = art.run("ft", 1, 0, "zero_shot")
+    assert run.incremental and run.partial and (run.overall().n, run.overall().correct) == (2, 1)
+    assert any("killed before writing its report" in w for w in coverage_warnings(art))
+    assert any("unreadable line" in p for p in art.problems)
+
+
+def test_incremental_log_is_ignored_when_final_report_exists(tmp_path):
+    _write_report(tmp_path, "baseline_20990101T000000Z", [_row_dict(i, "norm", True) for i in range(3)])
+    log = tmp_path / "evaluation" / "results" / "baseline_20990101T000000Z.jsonl"
+    log.write_text(json.dumps(_row_dict(0, "norm", False)) + "\n")
+    art = load_artifacts(tmp_path)
+    assert art.run("base").overall().n == 3 and not art.run("base").incremental
+    assert str(log.relative_to(tmp_path)) in art.superseded
+
+
+def test_dryrun_files_are_skipped(tmp_path):
+    _write_report(tmp_path, "dryrun_baseline_x", [_row_dict(0, "norm", True)])
+    art = load_artifacts(tmp_path)
+    assert art.runs == {} and "dryrun" in art.excluded[0][1]
+
+
+def test_zero_shot_and_few_shot_are_never_pooled(tmp_path):
+    _write_report(tmp_path, "baseline_zero", [_row_dict(i, "norm", i < 1) for i in range(4)],
+                  prompt_mode="zero_shot")  # SYNTHETIC 1/4
+    _write_report(tmp_path, "baseline_few", [_row_dict(i, "norm", i < 3) for i in range(4)],
+                  prompt_mode="few_shot")  # SYNTHETIC 3/4
+    art = load_artifacts(tmp_path)
+    assert art.run("base") is None  # ambiguous: never silently pick one
+    table = phase5_table(art)
+    header, norm = table[0], {r[0]: r for r in table}["Norm"]
+    zero, few = header.index("Base zero-shot % correct"), header.index("Base few-shot % correct")
+    assert norm[zero].startswith("25% (1/4)") and norm[few].startswith("75% (3/4)")
+    assert not any("(4/8)" in cell for row in table for cell in row)  # no pooled 4/8 anywhere
+    assert any("never averaged together" in line for line in limitations(art))
+
+
+def test_token_limit_truncations_and_share_of_failures(tmp_path):
+    rows = [_row_dict(0, "norm", True, hit=True), _row_dict(1, "norm", False, hit=True),
+            _row_dict(2, "norm", False, hit=False), _row_dict(3, "norm", False, hit=False)]  # SYNTHETIC
+    _write_report(tmp_path, "baseline_x", rows, max_new_tokens=2048)
+    art = load_artifacts(tmp_path)
+    row = token_limit_table(art)[1]
+    assert row[1:5] == ["2048", "4", "2", "3"]
+    assert row[5].startswith("1: 33% (1/3)")  # 1 of 3 failures was cut off
+    assert any("2 of 4 outputs were cut off at max_new_tokens=2048" in line for line in limitations(art))
+
+
+def test_token_limit_unknown_is_not_zero(tmp_path):
+    _write_report(tmp_path, "baseline_x", [_row_dict(0, "norm", False)])  # no hit_token_limit anywhere
+    assert token_limit_table(load_artifacts(tmp_path)) == []
+    _write_report(tmp_path, "baseline_x", [_row_dict(0, "norm", False)], hit_token_limit=1)  # count only
+    assert token_limit_table(load_artifacts(tmp_path))[1][5] == "not recorded per output"
+
+
+def test_search_compared_with_pass1_on_the_same_prompts(tmp_path):
+    # SYNTHETIC: pass@1 on 10 prompts (first 4 all wrong, last 6 all right = 60% overall);
+    # search on the first 4 only. The fair pass@1 is 0/4, not 6/10.
+    pass1 = [_row_dict(i, "norm", i >= 4) for i in range(10)]
+    search = [_row_dict(i, "norm", i < 3) for i in range(4)]
+    _write_report(tmp_path, "baseline_p1", pass1, prompt_mode="zero_shot")
+    _write_report(tmp_path, "baseline_s", search, prompt_mode="zero_shot",
+                  search={"num_candidates": 4, "repair_rounds": 1, "search_limit": 4, "prompts_scored": 4})
+    art = load_artifacts(tmp_path)
+    rows = search_table(art)
+    all_col = rows[0].index("All")
+    assert rows[1][1] == "same 4 (search_limit 4)" and rows[1][2] == "pass@1, same prompts"
+    assert rows[1][all_col].startswith("0% (0/4)")
+    assert rows[2][2] == "best-of-4 + repair" and rows[2][all_col].startswith("75% (3/4)")
+    assert not any("(6/10)" in cell for row in rows for cell in row)
+    text = " ".join(limitations(art))
+    assert "never with pass@1 on all prompts" in text
+    summary = json.loads(json.dumps(summary_json(art)))
+    comparison = summary["search_comparisons"][0]
+    assert comparison["pass1_same_prompts"]["n"] == 4 and comparison["search_runs"]["best-of-4 + repair"]["k"] == 3
+
+
+def test_search_prompts_missing_from_pass1_are_reported(tmp_path):
+    _write_report(tmp_path, "baseline_p1", [_row_dict(i, "norm", True) for i in range(2)])  # SYNTHETIC
+    _write_report(tmp_path, "baseline_s", [_row_dict(i, "norm", True) for i in range(3)],
+                  search={"num_candidates": 4, "repair_rounds": 0, "search_limit": 3})
+    art = load_artifacts(tmp_path)
+    rows = search_table(art)
+    assert rows[1][2] == "pass@1, same prompts (2 of 3 scored)"
+    # The like-for-like row: the search run restricted to the 2 prompts pass@1 also scored.
+    assert rows[3][1] == "shared 2" and rows[3][2] == "best-of-4, prompts pass@1 also scored"
+    assert rows[3][rows[0].index("All")].startswith("100% (2/2)")
+    assert any("pass@1 scored only 2 of the 3 search prompts" in w for w in coverage_warnings(art))
+
+
+def test_training_metrics_memory_and_wall_clock(tmp_path):
+    run = tmp_path / "training" / "checkpoints" / "run_20990101T000000Z"
+    run.mkdir(parents=True)
+    (run / "training_metrics.json").write_text(json.dumps(  # SYNTHETIC
+        {"wall_clock_s": 5400, "peak_memory_bytes": 9.5e9, "steps": 66}))
+    (run / "train_log.json").write_text(json.dumps([{"loss": 1.2, "step": 10}, {"train_loss": 0.8, "step": 66}]))
+    art = load_artifacts(tmp_path)
+    rows = dict((r[0], r[1]) for r in training_table(art)[1:])
+    assert rows["Training wall-clock"] == "1.50 h" and rows["Peak GPU memory"] == "9.5 GB"
+    assert rows["Optimizer steps"] == "66" and rows["Final train loss"] == "0.8000"
+    assert "Peak GPU memory & 9.5 GB" in fragments(art)["table_training"]
+
+
+def test_partial_dataset_build_and_orphan_progress_log(tmp_path):
+    raw = tmp_path / "data" / "raw"
+    raw.mkdir(parents=True)
+    (raw / "generation_report.json").write_text(json.dumps({  # SYNTHETIC
+        "device": "cuda", "partial": True, "run_stats": {"resumed": 3, "not_run": ["a", "b"]},
+        "per_category": {"norm": {"verified": 1, "rejection_reasons": {}}}, "per_template": {}}))
+    (raw / "progress_interpret.jsonl").write_text(json.dumps({"id": "x", "result": {"status": "ok", "correct": True}}))
+    warnings = coverage_warnings(load_artifacts(tmp_path))
+    assert "GPU dataset build is PARTIAL: 2 candidates were not verified." in warnings
+    assert any("Dataset build (interpret) did not finish" in w and "1 verifications (1 passed)" in w
+               for w in warnings)
+
+
+def test_wrong_types_never_crash_or_invent_numbers(tmp_path):
+    _write_report(tmp_path, "baseline_x", [{"id": "a", "category": "norm", "verification": "garbage",
+                                            "hit_token_limit": "yes"}, "not a row"],
+                  outcomes="nope", search="nope", max_new_tokens="lots", partial=None, prompt_mode=None)
+    out = tmp_path / "out"
+    build_report(tmp_path, out, figures=False)
+    run = load_artifacts(tmp_path).run("base")
+    assert (run.overall().n, run.overall().correct) == (1, 0) and run.max_new_tokens is None
+    assert run.token_limit() is None and run.key == ("base", 1, 0, "unspecified")
