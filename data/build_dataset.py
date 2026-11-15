@@ -140,6 +140,10 @@ def result_from_record(record: dict) -> VerifyResult:
 # Run loop
 # --------------------------------------------------------------------------- #
 
+def _empty_stats() -> dict:
+    return {"resumed": 0, "oom_retried": 0, "oom_recovered_on_retry": 0, "not_run": []}
+
+
 def run_entries(
     entries: list[dict],
     verify: Callable[[dict], VerifyResult],
@@ -284,7 +288,8 @@ def main() -> None:
         _write_dataset(results, args, stats)
 
 
-def _write_interpret_report(results, args, stats: dict) -> None:
+def _write_interpret_report(results, args, stats: Optional[dict] = None) -> None:
+    stats = stats or _empty_stats()
     per_template = {}
     for entry, result in results:
         per_template.setdefault(f"{entry['category']}/{_template_name(entry['id'])}", []).append({
@@ -315,7 +320,8 @@ def _write_interpret_report(results, args, stats: dict) -> None:
     sys.exit(0 if passed == report["total"] else 1)
 
 
-def _write_dataset(results, args, stats: dict) -> None:
+def _write_dataset(results, args, stats: Optional[dict] = None) -> None:
+    stats = stats or _empty_stats()
     VERIFIED_PATH.parent.mkdir(parents=True, exist_ok=True)
     REJECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
 
