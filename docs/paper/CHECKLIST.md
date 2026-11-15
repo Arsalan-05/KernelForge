@@ -62,7 +62,10 @@ decide before spending GPU hours.
 ## D. Pre-posting checks
 
 - [ ] `pdflatex paper && bibtex paper && pdflatex paper && pdflatex paper` builds with no undefined
-      references. (Not compiled yet: no TeX on the dev Mac. Overleaf works.)
+      references. (Not compiled yet: no TeX on the dev Mac. Overleaf works.) Build it twice: once with
+      no `docs/results/table_*.tex` fragments (red TODO rows) and once with them, per
+      `RESULTS_INTERFACE.md`. The fragment loading (`\IfFileExists` in the preamble + primitive
+      `\@@input` inside the tabular) has only been checked by a script, not by a real LaTeX run.
 - [ ] No `TODO` remains in the PDF.
 - [ ] Every number in the text matches its table, and every table cell matches an artifact.
 - [ ] Re-check arXiv versions of cited preprints. Several may have gained a venue by January 2027.

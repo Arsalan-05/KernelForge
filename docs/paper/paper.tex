@@ -26,6 +26,28 @@
 % Small helper for code identifiers.
 \newcommand{\code}[1]{\texttt{#1}}
 
+% ---- Results fragments ------------------------------------------------------------------
+% Each results table reads its body rows from docs/results/table_<name>.tex when that file
+% exists, and otherwise shows the red TODO rows written below. The format each fragment must
+% follow is specified in docs/paper/RESULTS_INTERFACE.md. Paths are relative to docs/paper/,
+% where pdflatex is run.
+%
+% Why the existence test runs here, in the preamble: \IfFileExists opens a file, which is not
+% expandable, so using it at the start of a table row would start a cell and break a
+% \midrule that follows. Inside the table we only use an \if switch plus TeX's primitive
+% \input (\@@input), both of which expand cleanly in a tabular.
+\newcommand{\resultsdir}{../results}
+\newif\ifhavedataset    \IfFileExists{\resultsdir/table_dataset.tex}{\havedatasettrue}{}
+\newif\ifhavecategories \IfFileExists{\resultsdir/table_categories.tex}{\havecategoriestrue}{}
+\newif\ifhavesearch     \IfFileExists{\resultsdir/table_search.tex}{\havesearchtrue}{}
+\newif\ifhavetraining   \IfFileExists{\resultsdir/table_training.tex}{\havetrainingtrue}{}
+\newif\ifhaverubric     \IfFileExists{\resultsdir/table_rubric.tex}{\haverubrictrue}{}
+% \resultrows{dataset} inserts the rows of ../results/table_dataset.tex. The trailing space
+% inside the definition ends the file name (a \relax would land before \bottomrule and break it).
+\makeatletter
+\newcommand{\resultrows}[1]{\@@input \resultsdir/table_#1.tex }
+\makeatother
+
 \title{KernelForge: A Data-Efficient, Explainable Triton Kernel Generator\\for LLM-Serving Operators}
 \author{\todo{author name, affiliation}}
 \date{\todo{posting date}}
@@ -372,6 +394,7 @@ and harness. \todo{optional: a second base model (e.g.\ DeepSeek-Coder or StarCo
 \toprule
 Category & Generated & GPU-verified & Incorrect & OOM & Other error \\
 \midrule
+\ifhavedataset \resultrows{dataset}\else
 Quantized matmul & 60 & \todo{} & \todo{} & \todo{} & \todo{} \\
 Attention        & 60 & \todo{} & \todo{} & \todo{} & \todo{} \\
 KV-cache         & 60 & \todo{} & \todo{} & \todo{} & \todo{} \\
@@ -379,6 +402,7 @@ Norm             & 60 & \todo{} & \todo{} & \todo{} & \todo{} \\
 RoPE             & 60 & \todo{} & \todo{} & \todo{} & \todo{} \\
 \midrule
 Total            & 300 & \todo{} & \todo{} & \todo{} & \todo{} \\
+\fi
 \bottomrule
 \end{tabular}
 \caption{Dataset construction on one T4. Source: \code{data/raw/generation\_report.json}.
@@ -397,11 +421,13 @@ model is trained toward.}}
 \cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-6}
 Category & \% correct & mean speedup & \% correct & mean speedup & \% correct & $n$ \\
 \midrule
+\ifhavecategories \resultrows{categories}\else
 Quantized matmul & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
 Attention        & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
 KV-cache         & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
 Norm             & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
 RoPE             & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+\fi
 \bottomrule
 \end{tabular}
 \caption{Held-out-template test set, GPU harness. Mean speedup is over passing kernels only
@@ -416,8 +442,10 @@ RoPE             & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
 \toprule
 Model & pass@1 & best-of-4 & best-of-4 + 1 repair \\
 \midrule
+\ifhavesearch \resultrows{search}\else
 Base       & \todo{} & \todo{} & \todo{} \\
 Fine-tuned & \todo{} & \todo{} & \todo{} \\
+\fi
 \bottomrule
 \end{tabular}
 \caption{Training-free search, \% correct over all test prompts. Extra cost per prompt:
@@ -433,7 +461,9 @@ the search yet; see CHECKLIST.md.}}
 \toprule
  & Train loss (final) & Val loss (best) & Wall clock & Peak GPU memory \\
 \midrule
+\ifhavetraining \resultrows{training}\else
 QLoRA run & \todo{} & \todo{} & \todo{} & \todo{} \\
+\fi
 \bottomrule
 \end{tabular}
 \caption{Training run. Source: training logs in the session output archive.}
@@ -470,8 +500,10 @@ copy usually describes the wrong operator.
 \toprule
 Model & Score 2 & Score 1 & Score 0 & Copied from a training template \\
 \midrule
+\ifhaverubric \resultrows{rubric}\else
 Base       & \todo{} & \todo{} & \todo{} & -- \\
 Fine-tuned & \todo{} & \todo{} & \todo{} & \todo{} \\
+\fi
 \bottomrule
 \end{tabular}
 \caption{Manual explanation rubric on \todo{n} samples per model.}
