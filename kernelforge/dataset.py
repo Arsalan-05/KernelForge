@@ -178,6 +178,27 @@ def make_split(entries: list[dict], strategy: str = "template", seed: int = 42, 
     raise ValueError(f"unknown split strategy {strategy!r}; use 'template' or 'random'")
 
 
+def few_shot_picker(train_entries: list[dict]):
+    """Returns example_for(entry): a solved TRAIN entry to show as a few-shot turn.
+
+    Pass only the train split, so a test answer can never leak into a prompt.
+    Picks the same category when possible (with the template split that is a
+    sibling template, never the held-out one), else any category; the choice
+    is deterministic (lowest id) so baseline reruns see identical prompts.
+    """
+    if not train_entries:
+        raise ValueError("few-shot needs a non-empty train split")
+    ordered = sorted(train_entries, key=lambda e: e["id"])
+    by_category: dict[str, dict] = {}
+    for entry in ordered:
+        by_category.setdefault(entry["category"], entry)
+
+    def example_for(entry: dict) -> dict:
+        return by_category.get(entry["category"], ordered[0])
+
+    return example_for
+
+
 def interleave_by_category(entries: list[dict]) -> list[dict]:
     """Round-robin across categories, so `--limit N` samples every category."""
     queues: dict[str, list[dict]] = {}

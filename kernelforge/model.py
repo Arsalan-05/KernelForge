@@ -153,21 +153,22 @@ class KernelGenerator:
 
     def _generate_kwargs(self, temperature: float | None = None) -> dict:
         temperature = self.config.temperature if temperature is None else temperature
-        return {
-            "max_new_tokens": self.config.max_new_tokens,
-            "temperature": temperature,
-            "top_p": self.config.top_p,
-            "do_sample": temperature > 0,
-            "pad_token_id": self._tokenizer.eos_token_id,
-        }
+        kwargs = {"max_new_tokens": self.config.max_new_tokens, "pad_token_id": self._tokenizer.eos_token_id}
+        if temperature > 0:
+            kwargs.update(do_sample=True, temperature=temperature, top_p=self.config.top_p)
+        else:
+            kwargs["do_sample"] = False  # greedy decoding: same prompt, same output (pass@1 eval)
+        return kwargs
 
-    def generate(self, description: str, pytorch_reference: str) -> str:
+    def generate(self, description: str, pytorch_reference: str, temperature: float | None = None,
+                 example: dict | None = None) -> str:
+        """One completion. temperature=0 decodes greedily; `example` adds a solved few-shot turn."""
         self.load()
         import torch
 
-        inputs = self._encode_prompt(description, pytorch_reference)
+        inputs = self._encode_messages(build_messages(description, pytorch_reference, example))
         with torch.no_grad():
-            output_ids = self._model.generate(**inputs, **self._generate_kwargs())
+            output_ids = self._model.generate(**inputs, **self._generate_kwargs(temperature))
 
         new_tokens = output_ids[0, inputs["input_ids"].shape[1] :]
         # Lets eval reports flag outputs cut off at the cap (likely parse/syntax failures).
