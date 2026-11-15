@@ -55,6 +55,33 @@ def load_training_data(
     return []
 
 
+def load_template_candidates() -> list[dict]:
+    """All 300 *unverified* template candidates (data/templates), for CPU dry runs only.
+
+    They have the same ids, categories and templates as the GPU-verified
+    dataset will, so a dry run exercises the real 180/20/100 template split
+    and real prompt lengths. Never report metrics computed on these.
+    """
+    from data.templates import GENERATORS  # needs the repo root on sys.path
+
+    return [entry for make in GENERATORS.values() for entry in make()]
+
+
+def load_eval_entries(path: Path | str | None, *, dry_run: bool) -> tuple[list[dict], str]:
+    """Entries for an eval or training script, plus a label saying where they came from.
+
+    Real runs use only the verified dataset: falling back to the 3 schema
+    examples on a GPU run would produce a misleading report. Dry runs fall
+    back to the unverified template candidates.
+    """
+    entries = load_dataset_jsonl(path, verified_only=True)
+    if entries:
+        return entries, "verified dataset"
+    if dry_run:
+        return load_template_candidates(), "UNVERIFIED template candidates (dry run only)"
+    return [], "none"
+
+
 def split_dataset(
     entries: list[dict],
     *,

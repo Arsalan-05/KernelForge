@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from kernelforge.prompts import SYSTEM_PROMPT, build_messages
+from kernelforge.prompts import build_messages
 
 
 @dataclass
@@ -20,6 +20,47 @@ class GenerationConfig:
     top_p: float = 0.95
     load_in_4bit: bool = True
     max_seq_length: int = 8192
+
+
+def unsloth_available() -> bool:
+    """True if Unsloth imports cleanly.
+
+    Unsloth can be installed yet fail at import (it patches torch/transformers
+    and checks the GPU), raising errors other than ImportError. Any failure
+    means: use the transformers + PEFT path instead.
+    """
+    try:
+        import unsloth  # noqa: F401
+    except Exception as exc:  # broad on purpose, see docstring
+        print(f"Unsloth unavailable ({type(exc).__name__}: {str(exc)[:200]}); using transformers + PEFT.")
+        return False
+    return True
+
+
+def has_chat_template(tokenizer) -> bool:
+    return bool(getattr(tokenizer, "chat_template", None))
+
+
+def render_prompt(tokenizer, messages: list[dict]) -> str:
+    """Prompt text up to where the assistant starts answering.
+
+    Training (training/finetune.py) builds its prompt with this same function,
+    so the fine-tuned model sees byte-identical prompts at train and test time.
+    """
+    if has_chat_template(tokenizer):
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    # Base models without a chat template (e.g. StarCoder2) get a plain transcript.
+    turns = "\n\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages[1:])
+    return f"{messages[0]['content']}\n\n{turns}\n\nAssistant:"
+
+
+def encode_text(tokenizer, text: str) -> list[int]:
+    """Token ids for already-rendered text.
+
+    Chat templates already insert BOS where the model needs it, so the
+    tokenizer must not add another (DeepSeek/Llama would get a double BOS).
+    """
+    return tokenizer(text, add_special_tokens=not has_chat_template(tokenizer))["input_ids"]
 
 
 class KernelGenerator:
@@ -35,10 +76,10 @@ class KernelGenerator:
         if self._model is not None:
             return
 
-        try:
+        if unsloth_available():
             self._load_unsloth()
             self._backend = "unsloth"
-        except ImportError:
+        else:
             self._load_transformers()
             self._backend = "transformers"
 
@@ -71,7 +112,8 @@ class KernelGenerator:
             tokenizer.pad_token = tokenizer.eos_token
 
         quant_config = None
-        if self.config.load_in_4bit:
+        # bitsandbytes 4-bit needs CUDA; on CPU (smoke runs) load full precision.
+        if self.config.load_in_4bit and torch.cuda.is_available():
             try:
                 quant_config = BitsAndBytesConfig(
                     load_in_4bit=True,
@@ -102,16 +144,11 @@ class KernelGenerator:
         return self._encode_messages(build_messages(description, pytorch_reference))
 
     def _encode_messages(self, messages: list[dict]) -> dict:
-        if hasattr(self._tokenizer, "apply_chat_template"):
-            prompt = self._tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-        else:
-            turns = "\n\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages[1:])
-            prompt = f"{SYSTEM_PROMPT}\n\n{turns}\n\nAssistant:"
+        import torch
 
-        inputs = self._tokenizer(prompt, return_tensors="pt")
-        return {k: v.to(self._model.device) for k, v in inputs.items()}
+        ids = encode_text(self._tokenizer, render_prompt(self._tokenizer, messages))
+        input_ids = torch.tensor([ids], device=self._model.device)
+        return {"input_ids": input_ids, "attention_mask": torch.ones_like(input_ids)}
 
     def _generate_kwargs(self, temperature: float | None = None) -> dict:
         temperature = self.config.temperature if temperature is None else temperature
