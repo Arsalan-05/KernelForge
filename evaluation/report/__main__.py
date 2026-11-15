@@ -4,9 +4,12 @@ Reads the artifacts of a GPU session (scripts/gpu_session.py) and writes:
 
     results.md                 full report: stages, tables, figures, limitations, sources
     readme_results_snippet.md  paste-ready "Results" section for README.md
-    tables.tex                 booktabs table fragments for a paper
+    table_*.tex                one LaTeX fragment per table, ONLY for tables whose data exists
+    tables.tex                 all fragments that exist, concatenated (absent if none)
     summary.json               every computed number, for checking
     figures/*.png              figures the data supports (needs matplotlib)
+
+See evaluation/report/README.md.
 """
 
 from __future__ import annotations
@@ -18,7 +21,8 @@ from pathlib import Path
 
 from evaluation.report.artifacts import load_artifacts
 from evaluation.report.figures import make_figures
-from evaluation.report.render import latex_fragments, readme_snippet, results_markdown, stage_status, summary_json
+from evaluation.report.latex import FRAGMENT_NAMES, combined, fragments
+from evaluation.report.render import readme_snippet, results_markdown, stage_status, summary_json
 
 
 def build_report(src: Path, out: Path, figures: bool = True) -> list[Path]:
@@ -29,9 +33,24 @@ def build_report(src: Path, out: Path, figures: bool = True) -> list[Path]:
     files = {
         "results.md": results_markdown(art, made, skipped),
         "readme_results_snippet.md": readme_snippet(art),
-        "tables.tex": latex_fragments(art),
         "summary.json": json.dumps(summary_json(art), indent=2) + "\n",
     }
+    frags = fragments(art)
+    files.update({f"{name}.tex": tex for name, tex in frags.items()})
+    if frags:
+        files["tables.tex"] = combined(frags)
+
+    # A fragment from an earlier run whose data is now absent must not survive: the paper
+    # would show it as a current result. Delete it so the paper falls back to its TODO box.
+    for name in (*FRAGMENT_NAMES, "tables"):
+        stale = out / f"{name}.tex"
+        if f"{name}.tex" not in files and stale.exists():
+            stale.unlink()
+            print(f"  removed stale {stale.name} (its data is not in this source)")
+    for name in FRAGMENT_NAMES:
+        if name not in frags:
+            print(f"  {name}.tex: not written (no data)")
+
     written = []
     for name, text in files.items():
         (out / name).write_text(text)
