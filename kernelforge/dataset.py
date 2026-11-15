@@ -178,23 +178,37 @@ def make_split(entries: list[dict], strategy: str = "template", seed: int = 42, 
     raise ValueError(f"unknown split strategy {strategy!r}; use 'template' or 'random'")
 
 
-def few_shot_picker(train_entries: list[dict]):
+def few_shot_picker(train_entries: list[dict], source: str = "other_category"):
     """Returns example_for(entry): a solved TRAIN entry to show as a few-shot turn.
 
     Pass only the train split, so a test answer can never leak into a prompt.
-    Picks the same category when possible (with the template split that is a
-    sibling template, never the held-out one), else any category; the choice
-    is deterministic (lowest id) so baseline reruns see identical prompts.
+    source="other_category" (default) picks from the next category in sorted
+    order, so the example shows the format and Triton style without solving a
+    close relative of the task. source="same_category" picks a sibling
+    template of the same family (with the template split, never the held-out
+    one), which is a much stronger hint. The choice is deterministic (lowest
+    id) so reruns see identical prompts.
     """
-    if not train_entries:
+    if source not in ("other_category", "same_category"):
+        raise ValueError(f"unknown few-shot source {source!r}")
+    first_by_category: dict[str, dict] = {}
+    for entry in sorted(train_entries, key=lambda e: e["id"]):
+        first_by_category.setdefault(entry["category"], entry)
+    categories = sorted(first_by_category)
+    if not categories:
         raise ValueError("few-shot needs a non-empty train split")
-    ordered = sorted(train_entries, key=lambda e: e["id"])
-    by_category: dict[str, dict] = {}
-    for entry in ordered:
-        by_category.setdefault(entry["category"], entry)
 
     def example_for(entry: dict) -> dict:
-        return by_category.get(entry["category"], ordered[0])
+        if source == "same_category":
+            if entry["category"] not in first_by_category:
+                raise ValueError(f"no train example in category {entry['category']!r}")
+            return first_by_category[entry["category"]]
+        others = [c for c in categories if c != entry["category"]]
+        if not others:
+            raise ValueError("other_category few-shot needs train entries from another category")
+        # Next category after this one, cycling; spreads examples across families.
+        later = [c for c in others if c > entry["category"]]
+        return first_by_category[(later or others)[0]]
 
     return example_for
 
