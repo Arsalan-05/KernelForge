@@ -1,32 +1,29 @@
 """Find and parse the artifacts a GPU session writes into kernelforge_outputs(.zip).
 
-Paths are matched by suffix, so the zip may or may not have a top-level folder:
+Paths are matched by suffix, so the zip may or may not have a top-level folder.
+Formats follow what agent/a (scripts/gpu_session.py, data/build_dataset.py) and
+agent/b (evaluation/common.py, training/finetune.py, evaluation/explanation_review.py)
+write; every key is optional and a missing key never becomes a number.
 
-    stage_status.json                     one record per stage: stage, status (ok/failed/skipped),
-                                          seconds, error; eval stages add eval_report,
-                                          prompts_evaluated, held_out_total, full_held_out_set
-    session.json                          env (GPU, versions), the same stage records as a dict,
-                                          dataset_report copy, zip_files
-    data/raw/generation_report.json       GPU dataset build (may be "partial": true + "run_stats")
-    data/raw/interpret_report.json        interpreter-only dataset check (same optional keys)
+    stage_status.json                     [{stage, status ok/failed/skipped, seconds, error,
+                                            eval stages: eval_report, prompts_evaluated,
+                                            held_out_total, full_held_out_set}]
+    session.json                          env, the same stage records as a dict, zip_files
+    data/raw/generation_report.json       GPU dataset build ("partial", "run_stats")
+    data/raw/interpret_report.json        interpreter-only dataset check
     data/raw/progress_<mode>.jsonl        one line per finished dataset verification
-    evaluation/results/<run>_*.json       eval report (evaluation/common.py::save_eval_report)
-    evaluation/results/<run>_*.jsonl      incremental eval log left by a run that was killed
-    training/**/run_*/split_info.json, train_log.json, trainer_state.json,
-                      checkpoint-*/trainer_state.json, training_metrics.json
-    any JSON with "rubric" + "items"      evaluation/explanation_review.py --output
+    evaluation/results/<run>_<ts>.json    eval report: pass@1 rows in "results", plus an
+                                          embedded "search" block with its own "results"
+    evaluation/results/baseline.jsonl, baseline_few_shot.jsonl, finetuned.jsonl
+                                          incremental log: {"type": "meta", ...} then
+                                          {"type": "row", "phase": "pass@1"|"search", "id", ...}
+    training/run_*/split_info.json        split, config, partial, stopped_at_step, steps_planned
+    training/run_*/train_log.json         Trainer log_history (list)
+    training/run_*/trainer_state.json, checkpoint-*/trainer_state.json
+    <review>.json + <review>.key.json     evaluation/explanation_review.py (key only when blind)
 
-Eval report keys used (ALL optional; a missing key never becomes a number):
-    run_name, model_name, adapter_path, device, generated_at, split, held_out_templates,
-    dry_run, skip_verification, partial, prompt_mode ("zero_shot" | "few_shot"),
-    data_source, backend, max_new_tokens, baseline_report, outcomes,
-    search {num_candidates, repair_rounds, search_limit, prompts_scored},
-    results[]: id, category, outcome, verification {status, correct, speedup, interpreted},
-               hit_token_limit, generated_explanation, generated_text
-    per_category (fallback when results[] is missing)
-
-A search run is its own report: its results[] are the winning candidates for the
-search_limit prompts it scored. Anything named dryrun_* is skipped.
+Nothing records peak GPU memory, so it is never reported (the paper's "n/r").
+Anything named dryrun_* is skipped.
 """
 
 from __future__ import annotations
@@ -34,7 +31,7 @@ from __future__ import annotations
 import json
 import re
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -51,7 +48,16 @@ CATEGORY_LABELS = {
     "rope": "RoPE",
 }
 PROMPT_LABELS = {"zero_shot": "zero-shot", "few_shot": "few-shot", "unspecified": ""}
-MODEL_LABELS = {"base": "Base", "ft": "Fine-tuned"}
+MODEL_LABELS = {"base": "Base", "ft": "Fine-tuned", "unknown": "Unknown model"}
+
+# evaluation/common.py writes its per-prompt log to evaluation/results/<run name>.jsonl.
+INCREMENTAL_LOG_NAMES = ("baseline.jsonl", "baseline_few_shot.jsonl", "finetuned.jsonl")
+
+# Generation settings shown in the run-settings table. Looked up at the report's
+# top level and in any of the nested dicts below (agent/b has not fixed a key yet).
+SETTING_KEYS = ("decoding", "do_sample", "temperature", "top_k", "top_p", "repetition_penalty",
+                "max_new_tokens", "seed", "round0_temperature", "repair_temperature", "few_shot_source")
+SETTING_DICTS = ("generation_settings", "effective_generation_settings", "generation", "sampling", "decoding")
 
 MAX_FILE_BYTES = 50 * 1024 * 1024  # skip anything larger; no report is close to this
 
@@ -69,6 +75,11 @@ def _float(value) -> Optional[float]:
         return None if value is None or isinstance(value, bool) else float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _category_of_id(entry_id: str) -> str:
+    """Category from a dataset id like "attention__causal_prefill__b2_s512"."""
+    return str(entry_id).split("__")[0]
 
 
 # --------------------------------------------------------------------------- evaluation runs
@@ -125,6 +136,8 @@ class EntryRow:
     infinite: bool = False  # correct, ran cleanly, timed at 0 s
     outcome: Optional[str] = None  # evaluation/common.py outcome label, if the report has it
     hit_token_limit: Optional[bool] = None  # None = not recorded
+    example_id: Optional[str] = None  # few-shot example shown with this prompt
+    selected_round: Optional[int] = None  # search rows: round of the selected candidate (0 = no repair)
 
 
 def aggregate(rows: Iterable[EntryRow]) -> dict[str, CategoryResult]:
@@ -191,12 +204,15 @@ class EvalRun:
     from_summary: bool = False  # per-entry results were missing
     partial: bool = False  # the report says so, or only an incremental log exists
     incremental: bool = False  # built from an incremental .jsonl, no final report
+    derived_from: Optional[str] = None  # best-of-N read from round 0 of a best-of-N + repair run
     search_limit: Optional[int] = None
+    prompts_planned: Optional[int] = None
     prompts_scored: Optional[int] = None
     data_source: Optional[str] = None
     backend: Optional[str] = None
     max_new_tokens: Optional[int] = None
     baseline_report: Optional[str] = None
+    settings: dict = field(default_factory=dict)  # generation settings recorded by the report
     reported_outcomes: dict[str, int] = field(default_factory=dict)  # top-level "outcomes"
     reported_hit_token_limit: Optional[int] = None  # top-level count, when rows don't say
     # Filled in from session records / split_info when available.
@@ -215,7 +231,8 @@ class EvalRun:
 
     @property
     def mode_label(self) -> str:
-        return mode_label(self.num_candidates, self.repair_rounds)
+        label = mode_label(self.num_candidates, self.repair_rounds)
+        return label + " (round 0 of the repair run)" if self.derived_from else label
 
     @property
     def group_label(self) -> str:
@@ -259,6 +276,23 @@ class EvalRun:
             failures=sum(1 for r in self.rows if not r.correct),
             failures_at_limit=sum(1 for r in recorded if r.hit_token_limit and not r.correct))
 
+    @property
+    def few_shot_source(self) -> Optional[str]:
+        """"same_category" / "other_category" as recorded, else derived from each row's
+        example_id (its category prefix vs the row's category). None if neither exists."""
+        recorded = self.settings.get("few_shot_source")
+        if recorded:
+            return str(recorded)
+        shown = [r for r in self.rows if r.example_id]
+        if not shown:
+            return None
+        same = sum(1 for r in shown if _category_of_id(r.example_id) == r.category)
+        if same == len(shown):
+            return "same_category (from example_id)"
+        if same == 0:
+            return "other_category (from example_id)"
+        return f"mixed: {same} same_category, {len(shown) - same} other_category (from example_id)"
+
 
 def mode_label(num_candidates: int, repair_rounds: int) -> str:
     if num_candidates <= 1 and repair_rounds == 0:
@@ -276,24 +310,20 @@ def group_label(model: str, prompt_mode: str) -> str:
     return f"{MODEL_LABELS.get(model, model)} {prompt}".strip()
 
 
-def _search_settings(report: dict) -> tuple[int, int]:
-    """(num_candidates, repair_rounds) for a report; (1, 0) means plain pass@1."""
-    search = report.get("search") if isinstance(report.get("search"), dict) else {}
-    nc = _int(search.get("num_candidates", report.get("num_candidates")))
-    rr = _int(search.get("repair_rounds", report.get("repair_rounds")))
-    name = str(report.get("run_name", ""))
-    if nc is None:
-        m = re.search(r"best(?:_?of)?_?(\d+)", name)
-        nc = int(m.group(1)) if m else 1
-    if rr is None:
-        m = re.search(r"repair_?(\d+)", name)
-        rr = int(m.group(1)) if m else (1 if "repair" in name else 0)
-    return nc, rr
+def _settings(block: dict) -> dict:
+    """Generation settings recorded at this level of a report (top level + nested dicts)."""
+    found = {}
+    for name in SETTING_DICTS:
+        nested = block.get(name)
+        if isinstance(nested, dict):
+            found.update({k: v for k, v in nested.items() if k in SETTING_KEYS})
+    found.update({k: block[k] for k in SETTING_KEYS if k in block and not isinstance(block[k], dict)})
+    return found
 
 
 def _row(r: dict) -> EntryRow:
     v = r.get("verification") if isinstance(r.get("verification"), dict) else {}
-    # Same definition as evaluation/common.py::aggregate_metrics:
+    # Same definition as evaluation/common.py::aggregate_rows:
     # "correct" = the harness compared outputs and they matched;
     # speedups only for kernels that also ran cleanly (status ok).
     correct = v.get("correct") is True or (not v and r.get("outcome") == "correct")
@@ -307,32 +337,41 @@ def _row(r: dict) -> EntryRow:
     hit = r.get("hit_token_limit")
     return EntryRow(id=str(r.get("id")), category=str(r.get("category") or "unknown"), correct=correct,
                     speedup=speedup, infinite=infinite, outcome=r.get("outcome"),
-                    hit_token_limit=hit if isinstance(hit, bool) else None)
+                    hit_token_limit=hit if isinstance(hit, bool) else None,
+                    example_id=r.get("example_id") if isinstance(r.get("example_id"), str) else None,
+                    selected_round=_int(r.get("selected_round")))
 
 
-def _new_run(meta: dict, source: str) -> EvalRun:
+def _new_run(meta: dict, source: str, num_candidates: int, repair_rounds: int) -> EvalRun:
     run_name = str(meta.get("run_name") or Path(source).stem)
     is_ft = run_name.startswith("finetuned") or bool(meta.get("adapter_path"))
-    nc, rr = _search_settings({**meta, "run_name": run_name})
-    search = meta.get("search") if isinstance(meta.get("search"), dict) else {}
     hit = meta.get("hit_token_limit")
+    outcomes = meta.get("outcomes")
     return EvalRun(
-        source=source, model="ft" if is_ft else "base", num_candidates=nc, repair_rounds=rr,
-        prompt_mode=str(meta.get("prompt_mode") or "unspecified"),
+        source=source, model="ft" if is_ft else "base", num_candidates=num_candidates,
+        repair_rounds=repair_rounds, prompt_mode=str(meta.get("prompt_mode") or "unspecified"),
         run_name=run_name, model_name=str(meta.get("model_name") or ""), adapter_path=meta.get("adapter_path"),
         device=str(meta.get("device") or ""), generated_at=str(meta.get("generated_at") or ""),
         split=meta.get("split"), held_out_templates=list(meta.get("held_out_templates") or []),
-        partial=bool(meta.get("partial")),
-        search_limit=_int(search.get("search_limit")), prompts_scored=_int(search.get("prompts_scored")),
+        partial=bool(meta.get("partial")), interpreted=bool(meta.get("interpret")),
+        prompts_planned=_int(meta.get("prompts_planned")), prompts_scored=_int(meta.get("prompts_scored")),
         data_source=meta.get("data_source"), backend=meta.get("backend"),
         max_new_tokens=_int(meta.get("max_new_tokens")), baseline_report=meta.get("baseline_report"),
-        reported_outcomes={k: v for k, v in (meta.get("outcomes") or {}).items() if _int(v) is not None}
-        if isinstance(meta.get("outcomes"), dict) else {},
+        # Search-only settings (seed, sampling temperatures) don't apply to greedy pass@1.
+        settings={k: v for k, v in _settings(meta).items()
+                  if (num_candidates, repair_rounds) != (1, 0)
+                  or k not in ("seed", "round0_temperature", "repair_temperature")},
+        reported_outcomes={k: _int(v) for k, v in outcomes.items() if _int(v) is not None}
+        if isinstance(outcomes, dict) else {},
         reported_hit_token_limit=_int(hit),
     )
 
 
-def _finish(run: EvalRun) -> EvalRun:
+def _finish(run: EvalRun, rows: list) -> EvalRun:
+    run.rows = [_row(r) for r in rows if isinstance(r, dict)]
+    run.interpreted = run.interpreted or any(
+        isinstance(r, dict) and isinstance(r.get("verification"), dict) and r["verification"].get("interpreted")
+        for r in rows)
     run.categories = aggregate(run.rows)
     if run.interpreted:
         # Interpreter timings are meaningless; never average them.
@@ -351,47 +390,131 @@ def _excluded_reason(meta: dict, source: str) -> Optional[str]:
     return None
 
 
-def parse_eval_report(report: dict, source: str) -> tuple[Optional[EvalRun], Optional[str]]:
-    """Turn one eval report JSON into an EvalRun, or return (None, why it was excluded)."""
+def _legacy_search_settings(report: dict) -> tuple[int, int]:
+    """(num_candidates, repair_rounds) of a report that IS a search run (the old separate-report
+    format: a "search" dict without its own results, or a run_name like baseline_best4_repair1)."""
+    search = report.get("search") if isinstance(report.get("search"), dict) else {}
+    nc = _int(search.get("num_candidates", report.get("num_candidates")))
+    rr = _int(search.get("repair_rounds", report.get("repair_rounds")))
+    name = str(report.get("run_name", ""))
+    if nc is None:
+        m = re.search(r"best(?:_?of)?_?(\d+)", name)
+        nc = int(m.group(1)) if m else 1
+    if rr is None:
+        m = re.search(r"repair_?(\d+)", name)
+        rr = int(m.group(1)) if m else (1 if "repair" in name else 0)
+    return nc, rr
+
+
+def _search_run(meta: dict, block: dict, rows: list, source: str) -> EvalRun:
+    """The search phase: rows are the selected candidate per prompt."""
+    nc = _int(block.get("num_candidates")) or 1
+    rr = _int(block.get("repair_rounds")) or 0
+    run = _new_run(meta, source, nc, rr)
+    run.search_limit = _int(block.get("search_limit"))
+    run.prompts_planned = _int(block.get("prompts_planned"))
+    run.prompts_scored = _int(block.get("prompts_scored"))
+    run.settings = _settings(block)  # the search samples; the pass@1 settings don't apply to it
+    outcomes = block.get("outcomes")
+    run.reported_outcomes = ({k: _int(v) for k, v in outcomes.items() if _int(v) is not None}
+                             if isinstance(outcomes, dict) else {})
+    run.reported_hit_token_limit = None
+    _finish(run, rows)
+    if run.prompts_planned is not None and len(run.rows) < run.prompts_planned:
+        run.partial = True
+    return run
+
+
+def round0_run(search: EvalRun) -> Optional[EvalRun]:
+    """best-of-N without repair, read off a best-of-N + repair run: the search stops at
+    round 0 when any candidate passes (kernelforge/search.py), so "correct with the
+    selected candidate from round 0" is exactly best-of-N. Needs selected_round on every row."""
+    if search.repair_rounds < 1 or search.num_candidates < 2 or not search.rows \
+            or any(r.selected_round is None for r in search.rows):
+        return None
+    rows = [replace(r, correct=r.correct and r.selected_round == 0,
+                    speedup=r.speedup if r.selected_round == 0 else None,
+                    infinite=r.infinite and r.selected_round == 0) for r in search.rows]
+    run = replace(search, repair_rounds=0, derived_from=search.source, rows=rows, settings=dict(search.settings),
+                  reported_outcomes={})
+    run.categories = aggregate(rows)
+    return run
+
+
+def parse_eval_report_runs(report: dict, source: str) -> tuple[list[EvalRun], Optional[str]]:
+    """Every run in one eval report: pass@1, the embedded search, and best-of-N derived from
+    the search's round 0. Returns ([], why) when the report is excluded."""
     why = _excluded_reason(report, source)
     if why:
-        return None, why
-    run = _new_run(report, source)
+        return [], why
+    search = report.get("search") if isinstance(report.get("search"), dict) else None
+    embedded = search is not None and isinstance(search.get("results"), list)
+    runs = []
+    # With an embedded search block the report's own rows are pass@1; otherwise the report
+    # may itself be a search run (old separate-report format, or a run_name like *_best4_repair1).
+    nc_rr = (1, 0) if embedded else _legacy_search_settings(report)
+    main = _new_run(report, source, *nc_rr)
+    if not embedded and search is not None:
+        main.search_limit = _int(search.get("search_limit"))
+        main.prompts_scored = _int(search.get("prompts_scored"))
     results = report.get("results")
     if isinstance(results, list) and results:
-        run.rows = [_row(r) for r in results if isinstance(r, dict)]
-        run.interpreted = any((r.get("verification") or {}).get("interpreted")
-                              for r in results if isinstance(r, dict) and isinstance(r.get("verification"), dict))
-        return _finish(run), None
-    if isinstance(report.get("per_category"), dict):
-        run.from_summary = True
+        runs.append(_finish(main, results))
+    elif isinstance(report.get("per_category"), dict):
+        main.from_summary = True
         for name, m in report["per_category"].items():
-            run.categories[name] = CategoryResult(
-                n=_int(m.get("total")) or 0, correct=_int(m.get("correct")) or 0,
-                summary_avg_speedup=_float(m.get("avg_speedup")), summary_passed=_int(m.get("passed")) or 0)
-        return run, None
-    return None, "no per-entry results and no per_category summary"
+            if isinstance(m, dict):
+                main.categories[name] = CategoryResult(
+                    n=_int(m.get("total")) or 0, correct=_int(m.get("correct")) or 0,
+                    summary_avg_speedup=_float(m.get("avg_speedup")), summary_passed=_int(m.get("passed")) or 0)
+        runs.append(main)
+    if embedded and search["results"]:
+        s = _search_run(report, search, search["results"], f"{source} (search)")
+        runs.append(s)
+        derived = round0_run(s)
+        if derived is not None:
+            runs.append(derived)
+    if not runs:
+        return [], "no per-entry results and no per_category summary"
+    return runs, None
 
 
-def parse_incremental_log(lines: list[dict], source: str) -> tuple[Optional[EvalRun], Optional[str]]:
-    """An eval's incremental .jsonl (no final report: the run was killed). Lines with an "id"
-    are result rows; any other line is run metadata (run_name, prompt_mode, search, ...)."""
+def parse_eval_report(report: dict, source: str) -> tuple[Optional[EvalRun], Optional[str]]:
+    """The report's main run (pass@1, or the search run of an old separate search report)."""
+    runs, why = parse_eval_report_runs(report, source)
+    return (runs[0], None) if runs else (None, why)
+
+
+def parse_incremental_log(lines: list[dict], source: str) -> tuple[list[EvalRun], Optional[str]]:
+    """evaluation/common.py ResultsLog: a {"type": "meta"} line, then {"type": "row",
+    "phase": "pass@1"|"search"} rows. Lines without "id" are treated as metadata."""
     meta: dict = {}
     for line in lines:
-        if "id" not in line:
-            meta.update(line)
+        if line.get("type") == "meta" or "id" not in line:
+            meta.update({k: v for k, v in line.items() if k != "type"})
     why = _excluded_reason(meta, source)
     if why:
-        return None, why
-    rows = [line for line in lines if "id" in line]
+        return [], why
+    rows = [line for line in lines if line.get("type") == "row" or ("id" in line and line.get("type") != "meta")]
     if not rows:
-        return None, "incremental log with no scored prompts"
-    run = _new_run(meta, source)
-    run.partial = run.incremental = True
-    run.rows = [_row(r) for r in rows]
-    run.interpreted = any((r.get("verification") or {}).get("interpreted")
-                          for r in rows if isinstance(r.get("verification"), dict))
-    return _finish(run), None
+        return [], "incremental log with no scored prompts"
+    runs = []
+    pass1 = [r for r in rows if r.get("phase", "pass@1") == "pass@1"]
+    search = [r for r in rows if r.get("phase") == "search"]
+    if pass1:
+        run = _finish(_new_run(meta, source, 1, 0), pass1)
+        runs.append(run)
+    if search:
+        block = {"num_candidates": meta.get("num_candidates"), "repair_rounds": meta.get("repair_rounds"),
+                 "search_limit": meta.get("search_limit"), "seed": meta.get("seed")}
+        run = _search_run(meta, block, search, f"{source} (search)")
+        runs.append(run)
+        derived = round0_run(run)
+        if derived is not None:
+            runs.append(derived)
+    for run in runs:
+        run.partial = run.incremental = True
+    return runs, None
 
 
 # --------------------------------------------------------------------------- dataset reports
@@ -407,6 +530,7 @@ class OutcomeCounts:
     timeout: int = 0
     other: int = 0  # harness error / crash / anything else
     median_speedup: Optional[float] = None
+    reported_generated: Optional[int] = None  # the report's own "generated" count, for the sum check
 
     @property
     def total(self) -> int:
@@ -429,6 +553,7 @@ class DatasetReport:
     per_template: dict[str, OutcomeCounts]
     partial: bool = False
     run_stats: dict = field(default_factory=dict)  # resumed, oom_retried, oom_recovered_on_retry, not_run
+    generated_at: str = ""
 
     @property
     def not_run(self) -> Optional[int]:
@@ -465,7 +590,8 @@ def parse_generation_report(report: dict, source: str) -> DatasetReport:
     """data/raw/generation_report.json (GPU build)."""
     per_category = {}
     for c, m in (report.get("per_category") or {}).items():
-        counts = OutcomeCounts(passed=_int(m.get("verified")) or 0, median_speedup=_float(m.get("median_speedup")))
+        counts = OutcomeCounts(passed=_int(m.get("verified")) or 0, median_speedup=_float(m.get("median_speedup")),
+                               reported_generated=_int(m.get("generated")))
         for reason, n in (m.get("rejection_reasons") or {}).items():
             counts.add_reason(reason, _int(n) or 0)
         per_category[c] = counts
@@ -476,7 +602,8 @@ def parse_generation_report(report: dict, source: str) -> DatasetReport:
             counts.add_reason(reason, _int(n) or 0)
         per_template[name] = counts
     return DatasetReport(source, str(report.get("device") or ""), False, bool(report.get("smoke")),
-                         per_category, per_template, bool(report.get("partial")), _run_stats(report))
+                         per_category, per_template, bool(report.get("partial")), _run_stats(report),
+                         str(report.get("generated_at") or ""))
 
 
 def parse_interpret_report(report: dict, source: str) -> DatasetReport:
@@ -494,7 +621,8 @@ def parse_interpret_report(report: dict, source: str) -> DatasetReport:
                 else:
                     counts.add_reason(_rejection_reason(row.get("status", ""), False, row.get("error")))
     return DatasetReport(source, "cpu (Triton interpreter)", True, bool(report.get("smoke")),
-                         per_category, per_template, bool(report.get("partial")), _run_stats(report))
+                         per_category, per_template, bool(report.get("partial")), _run_stats(report),
+                         str(report.get("generated_at") or ""))
 
 
 def parse_progress_log(lines: list[dict], source: str) -> ProgressLog:
@@ -511,11 +639,18 @@ def parse_progress_log(lines: list[dict], source: str) -> ProgressLog:
 
 @dataclass
 class ExplanationReview:
+    """Scores for one model + prompt mode from one review file."""
+
     source: str
-    source_report: str
-    model: str  # "base", "ft" or "unknown"
+    model: str  # "base", "ft" or "unknown" (blind review without its answer key)
+    prompt_mode: str
     n_items: int
     scores: list[int]  # only items a human actually scored (0/1/2)
+    source_report: str = ""
+
+    @property
+    def label(self) -> str:
+        return group_label(self.model, self.prompt_mode)
 
     @property
     def mean_score(self) -> Optional[float]:
@@ -527,95 +662,141 @@ class ExplanationReview:
         return Proportion(sum(1 for s in self.scores if s == 2), len(self.scores))
 
 
-def parse_review(report: dict, source: str) -> ExplanationReview:
-    src = str(report.get("source_report") or "")
-    name = Path(src).name
-    model = "ft" if name.startswith("finetuned") else "base" if name.startswith("baseline") else "unknown"
-    items = report.get("items") or []
-    scores = [int(i["rubric_score"]) for i in items
-              if isinstance(i, dict) and i.get("rubric_score") in (0, 1, 2)]
-    return ExplanationReview(source, src, model, len(items), scores)
+def _model_of_source(src: dict) -> tuple[str, str]:
+    name = str(src.get("run_name") or src.get("report") or "")
+    if name.startswith("finetuned") or src.get("adapter_path"):
+        model = "ft"
+    elif name.startswith("baseline"):
+        model = "base"
+    else:
+        model = "unknown"
+    return model, str(src.get("prompt_mode") or "unspecified")
+
+
+def parse_reviews(report: dict, source: str, key: Optional[dict]) -> list[ExplanationReview]:
+    """One ExplanationReview per (model, prompt mode) in a review file.
+
+    Current format (agent/b): items from several reports, each with a "source" dict, or,
+    for a blind review, a sample_id -> source answer key in <review>.key.json.
+    Older format: a single top-level "source_report"."""
+    items = [i for i in (report.get("items") or []) if isinstance(i, dict)]
+    legacy = str(report.get("source_report") or "")
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for item in items:
+        src = item.get("source") if isinstance(item.get("source"), dict) else (key or {}).get(item.get("sample_id"))
+        if isinstance(src, dict):
+            group = _model_of_source(src)
+        elif legacy:
+            name = Path(legacy).name
+            group = ("ft" if name.startswith("finetuned") else "base" if name.startswith("baseline") else "unknown",
+                     "unspecified")
+        else:
+            group = ("unknown", "unspecified")
+        groups.setdefault(group, []).append(item)
+    return [ExplanationReview(source, model, pm, len(group_items),
+                              [int(i["rubric_score"]) for i in group_items if i.get("rubric_score") in (0, 1, 2)],
+                              legacy)
+            for (model, pm), group_items in sorted(groups.items())]
 
 
 # --------------------------------------------------------------------------- training runs
 
-# training_metrics.json key spellings we accept, and the factor to the unit we report.
-_WALL_CLOCK_KEYS = (("wall_clock_s", 1.0), ("wall_clock_seconds", 1.0), ("train_runtime_s", 1.0),
-                    ("train_runtime", 1.0), ("seconds", 1.0))
-_MEMORY_KEYS = (("peak_memory_gb", 1.0), ("peak_gpu_memory_gb", 1.0), ("peak_memory_mb", 1e-3),
-                ("peak_gpu_memory_mb", 1e-3), ("peak_memory_bytes", 1e-9), ("peak_gpu_memory_bytes", 1e-9),
-                ("max_memory_allocated", 1e-9))  # torch.cuda.max_memory_allocated() is in bytes
-_STEP_KEYS = ("steps", "global_step", "optimizer_steps")
-
 
 @dataclass
 class TrainingRun:
-    """What one training/run_*/ folder left behind. Every field is optional."""
+    """What one training/run_*/ folder left behind (training/finetune.py). Every field is optional.
+    Peak GPU memory is not recorded by any script, so it is never reported."""
 
     name: str
     split_info: Optional[dict] = None
-    trainer_state: Optional[dict] = None  # HF Trainer trainer_state.json (newest checkpoint)
+    trainer_state: Optional[dict] = None  # HF Trainer trainer_state.json (newest)
     trainer_state_source: str = ""
     trainer_state_step: float = -1  # checkpoint number of trainer_state (inf = run-level file)
     train_log: Optional[list] = None  # train_log.json: Trainer.state.log_history
-    metrics: Optional[dict] = None  # training_metrics.json: wall-clock, steps, peak GPU memory
+    stage_seconds: Optional[float] = None  # the session's finetune stage time (fallback wall-clock)
 
     def _log_history(self) -> list:
+        """The longer of train_log.json and trainer_state.json's log_history (same data when both exist)."""
         state_log = (self.trainer_state or {}).get("log_history")
-        return state_log if isinstance(state_log, list) else (self.train_log or [])
+        logs = [log for log in (self.train_log, state_log) if isinstance(log, list)]
+        return max(logs, key=len) if logs else []
 
-    def _last_log(self, key: str) -> Optional[float]:
-        for entry in reversed(self._log_history()):
-            if isinstance(entry, dict) and _float(entry.get(key)) is not None:
-                return _float(entry[key])
-        return None
-
-    def _metric(self, keys) -> Optional[float]:
-        for key, factor in keys:
-            value = _float((self.metrics or {}).get(key))
-            if value is not None:
-                return value * factor
-        return None
+    def _values(self, key: str) -> list[float]:
+        return [_float(e[key]) for e in self._log_history()
+                if isinstance(e, dict) and _float(e.get(key)) is not None]
 
     @property
-    def final_train_loss(self) -> Optional[float]:
-        # The summary entry Trainer appends at the end has "train_loss" (mean over the run);
-        # fall back to the last logged step "loss".
-        value = self._last_log("train_loss")
-        return value if value is not None else self._last_log("loss")
+    def final_step_loss(self) -> Optional[float]:
+        """Last logged training loss (a per-logging-step "loss")."""
+        values = self._values("loss")
+        return values[-1] if values else None
+
+    @property
+    def mean_train_loss(self) -> Optional[float]:
+        """The Trainer's end-of-run summary "train_loss" (mean over the whole run)."""
+        values = self._values("train_loss")
+        return values[-1] if values else None
+
+    @property
+    def best_eval_loss(self) -> Optional[float]:
+        values = self._values("eval_loss")
+        return min(values) if values else None
 
     @property
     def final_eval_loss(self) -> Optional[float]:
-        return self._last_log("eval_loss")
+        values = self._values("eval_loss")
+        return values[-1] if values else None
 
     @property
-    def wall_clock_s(self) -> Optional[float]:
-        explicit = self._metric(_WALL_CLOCK_KEYS)
-        return explicit if explicit is not None else self._last_log("train_runtime")
+    def train_runtime_s(self) -> Optional[float]:
+        values = self._values("train_runtime")
+        return values[-1] if values else None
 
     @property
-    def peak_memory_gb(self) -> Optional[float]:
-        return self._metric(_MEMORY_KEYS)
+    def wall_clock(self) -> tuple[Optional[float], str]:
+        """(seconds, where it came from). The Trainer's train_runtime first; else the session's
+        finetune stage time, which also includes loading the model."""
+        if self.train_runtime_s is not None:
+            return self.train_runtime_s, "Trainer train_runtime"
+        if self.stage_seconds is not None:
+            return self.stage_seconds, "session finetune stage (includes model loading)"
+        return None, ""
 
     @property
     def steps(self) -> Optional[int]:
-        for key in _STEP_KEYS:
-            if _int((self.metrics or {}).get(key)) is not None:
-                return _int(self.metrics[key])
         state_step = _int((self.trainer_state or {}).get("global_step"))
         if state_step is not None:
             return state_step
-        step = self._last_log("step")
-        return int(step) if step is not None else None
+        values = self._values("step")
+        return int(values[-1]) if values else None
 
     @property
     def epochs(self) -> Optional[float]:
         value = _float((self.trainer_state or {}).get("epoch"))
-        return value if value is not None else self._last_log("epoch")
+        if value is not None:
+            return value
+        values = self._values("epoch")
+        return values[-1] if values else None
+
+    @property
+    def partial(self) -> bool:
+        return bool((self.split_info or {}).get("partial"))
+
+    @property
+    def stopped_at_step(self) -> Optional[int]:
+        return _int((self.split_info or {}).get("stopped_at_step"))
+
+    @property
+    def steps_planned(self) -> Optional[int]:
+        return _int((self.split_info or {}).get("steps_planned"))
+
+    @property
+    def is_dry_run(self) -> bool:
+        return bool((self.split_info or {}).get("dry_run"))
 
     @property
     def has_data(self) -> bool:
-        return any(x is not None for x in (self.split_info, self.trainer_state, self.train_log, self.metrics))
+        return any(x is not None for x in (self.split_info, self.trainer_state, self.train_log))
 
 
 _TRAINING_PATH = re.compile(r"(?:^|/)training/(?:[^/]+/)*?(run_[^/]+)/(.+)$")
@@ -631,8 +812,6 @@ def _add_training_file(runs: dict[str, TrainingRun], path: str, data) -> bool:
     rel = m.group(2)
     if rel == "split_info.json" and isinstance(data, dict):
         run.split_info = data
-    elif rel == "training_metrics.json" and isinstance(data, dict):
-        run.metrics = data
     elif rel == "train_log.json" and isinstance(data, list):
         run.train_log = data
     elif rel.endswith("trainer_state.json") and isinstance(data, dict):
@@ -662,8 +841,13 @@ class Artifacts:
     session: Optional[dict] = None
     stage_records: list[dict] = field(default_factory=list)  # stage_status.json, else session["stages"]
     split_info: Optional[dict] = None
-    training: Optional[TrainingRun] = None  # newest training/run_*/ with any artifact
+    training_runs: list[TrainingRun] = field(default_factory=list)  # oldest first
     problems: list[str] = field(default_factory=list)  # unreadable files
+
+    @property
+    def training(self) -> Optional[TrainingRun]:
+        """The newest training run (the reported one)."""
+        return self.training_runs[-1] if self.training_runs else None
 
     def run(self, model: str, num_candidates: int = 1, repair_rounds: int = 0,
             prompt_mode: Optional[str] = None) -> Optional[EvalRun]:
@@ -754,17 +938,37 @@ def _attach_coverage(art: Artifacts) -> None:
     """Held-out totals for each run: from the session's eval stage record that names the
     run's report, else (fine-tuned) the training run's own held-out test count."""
     for run in art.runs.values():
-        name = Path(run.source).name
+        name = Path(run.source.replace(" (search)", "")).name
         for rec in art.stage_records:
             report = rec.get("eval_report")
             if report and (report == name or Path(str(report)).stem == Path(name).stem):
                 run.held_out_total = _int(rec.get("held_out_total"))
                 full = rec.get("full_held_out_set")
-                run.full_held_out_set = full if isinstance(full, bool) else None
+                run.full_held_out_set = full if isinstance(full, bool) and not run.is_search else None
         if run.held_out_total is None and run.model == "ft" and art.split_info:
             run.held_out_total = _int(art.split_info.get("test"))
-        if run.full_held_out_set is None and run.held_out_total is not None and not run.from_summary:
+        if run.full_held_out_set is None and run.held_out_total is not None and not run.from_summary \
+                and not run.is_search:
             run.full_held_out_set = len(run.rows) == run.held_out_total
+
+
+def _place_runs(art: Artifacts, finals: list[EvalRun], logs: list[EvalRun]) -> None:
+    """One run per (model, search mode, prompt mode). The newest final report wins.
+    An incremental log replaces it only if it holds every prompt the report has and more
+    (a resumed run that was killed again); otherwise the log is listed as superseded."""
+    for run in sorted(finals, key=lambda r: (r.generated_at, r.source)):
+        if run.key in art.runs:
+            art.superseded.append(art.runs[run.key].source)
+        art.runs[run.key] = run
+    for log in logs:
+        final = art.runs.get(log.key)
+        if final is None:
+            art.runs[log.key] = log
+        elif set(log.entry_ids) > set(final.entry_ids) and not final.from_summary:
+            art.superseded.append(final.source)
+            art.runs[log.key] = log
+        else:
+            art.superseded.append(log.source)
 
 
 def load_artifacts(src: Path | str) -> Artifacts:
@@ -772,9 +976,11 @@ def load_artifacts(src: Path | str) -> Artifacts:
     files, problems = _read_files(src)
     art = Artifacts(source=str(src), problems=problems)
     finals: list[EvalRun] = []
-    incremental: list[EvalRun] = []
+    logs: list[EvalRun] = []
     training_runs: dict[str, TrainingRun] = {}
     stage_status = None
+    review_files: dict[str, dict] = {}
+    key_files: dict[str, dict] = {}
 
     for name, data in files.items():
         base = Path(name).name
@@ -785,13 +991,19 @@ def load_artifacts(src: Path | str) -> Artifacts:
                 stage_status = data
             elif base.startswith("progress_") and name.endswith(".jsonl"):
                 art.progress.append(parse_progress_log(data, name))
+            elif base in INCREMENTAL_LOG_NAMES:
+                runs, why = parse_incremental_log(data, name)
+                logs.extend(runs) if runs else art.excluded.append((name, why))
             elif name.endswith(".jsonl"):
-                run, why = parse_incremental_log(data, name)
-                (incremental.append(run) if run else art.excluded.append((name, why)))
+                reason = ("dry run (dryrun_*): not model output" if base.startswith("dryrun_") else
+                          "not one of the current incremental logs (e.g. an older log moved aside)")
+                art.excluded.append((name, reason))
             continue
         if not isinstance(data, dict):
             continue
-        if base == "session.json":
+        if base.endswith(".key.json"):
+            key_files[name[: -len(".key.json")]] = data
+        elif base == "session.json":
             art.session = data
         elif base == "generation_report.json":
             art.dataset = parse_generation_report(data, name)
@@ -801,41 +1013,37 @@ def load_artifacts(src: Path | str) -> Artifacts:
             if art.split_info is None or str(data.get("created_at", "")) > str(art.split_info.get("created_at", "")):
                 art.split_info = data
         elif "rubric" in data and "items" in data:
-            art.reviews.append(parse_review(data, name))
+            review_files[name] = data
         elif "run_name" in data and ("results" in data or "per_category" in data):
-            run, why = parse_eval_report(data, name)
-            (finals.append(run) if run else art.excluded.append((name, why)))
+            runs, why = parse_eval_report_runs(data, name)
+            finals.extend(runs) if runs else art.excluded.append((name, why))
         elif base.startswith("dryrun_"):
             art.excluded.append((name, "dry run (dryrun_*): not model output"))
 
+    for name, review in review_files.items():
+        key = key_files.get(name[: -len(".json")])
+        art.reviews.extend(parse_reviews(review, name, key))
+
     art.stage_records = _stage_records(art, stage_status)
 
-    # Run folders are named run_<UTC timestamp>, so the lexically largest is the newest.
-    with_data = [r for r in training_runs.values() if r.has_data]
-    if with_data:
-        art.training = max(with_data, key=lambda r: r.name)
+    # Run folders are named run_<UTC timestamp>, so name order is time order.
+    for run in sorted(training_runs.values(), key=lambda r: r.name):
+        if not run.has_data:
+            continue
+        if run.is_dry_run:
+            art.excluded.append((f"training/{run.name}", "dry-run training (tiny random model)"))
+            continue
+        art.training_runs.append(run)
+    if art.training:
         art.split_info = art.training.split_info or art.split_info
+        finetune = next((r for r in art.stage_records if r.get("stage") == "finetune"), None)
+        if finetune and finetune.get("status") == "ok":
+            art.training.stage_seconds = _float(finetune.get("seconds"))
 
     # If generation_report.json wasn't collected but session.json has a copy, use it.
     if art.dataset is None and art.session and isinstance(art.session.get("dataset_report"), dict):
         art.dataset = parse_generation_report(art.session["dataset_report"], "session.json (dataset_report)")
 
-    # One run per (model, search mode, prompt mode): the newest final report wins.
-    for run in sorted(finals, key=lambda r: (r.generated_at, r.source)):
-        if run.key in art.runs:
-            art.superseded.append(art.runs[run.key].source)
-        art.runs[run.key] = run
-    # An incremental log is used only when no final report covers it: same key, same
-    # file stem, or a final report of the same model and search mode that scored all its prompts.
-    for run in incremental:
-        covered = any(
-            f.key == run.key or Path(f.source).stem == Path(run.source).stem
-            or (f.model == run.model and (f.num_candidates, f.repair_rounds) == (run.num_candidates, run.repair_rounds)
-                and set(run.entry_ids) <= set(f.entry_ids))
-            for f in finals)
-        if covered or run.key in art.runs:
-            art.superseded.append(run.source)
-        else:
-            art.runs[run.key] = run
+    _place_runs(art, finals, logs)
     _attach_coverage(art)
     return art
