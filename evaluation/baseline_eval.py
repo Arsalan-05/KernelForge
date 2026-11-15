@@ -1,7 +1,11 @@
 """Phase 3: baseline evaluation of the un-fine-tuned base model.
 
-    python evaluation/baseline_eval.py --device cuda --limit 25   # Kaggle T4
-    python evaluation/baseline_eval.py --dry-run --device cpu     # pipeline check, no model
+    python evaluation/baseline_eval.py --device cuda                       # greedy pass@1, all held-out prompts
+    python evaluation/baseline_eval.py --device cuda --few-shot            # + one solved TRAIN example in the prompt
+    python evaluation/baseline_eval.py --device cuda --num-candidates 4 --repair-rounds 1   # + search on 25 prompts
+    python evaluation/baseline_eval.py --dry-run --device cpu              # pipeline check, no model
+
+See evaluation/common.py for --resume, --max-minutes and the search flags.
 """
 
 from __future__ import annotations
@@ -12,15 +16,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from evaluation.common import add_eval_args, aggregate_metrics, print_metrics_table, print_outcomes, run_eval, save_eval_report
-from kernelforge.dataset import load_eval_entries, make_split, template_of
+from evaluation.common import add_eval_args, evaluate
+from kernelforge.dataset import few_shot_picker, load_eval_entries, make_split, template_of
 from kernelforge.model import KernelGenerator, load_generation_config
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> Path:
     parser = argparse.ArgumentParser(description="Baseline eval: un-fine-tuned model on held-out test set.")
     add_eval_args(parser)
-    args = parser.parse_args()
+    parser.add_argument("--few-shot", action="store_true",
+                        help="Show one solved example from the TRAIN split (same category) before each prompt")
+    args = parser.parse_args(argv)
 
     entries, source = load_eval_entries(args.dataset, dry_run=args.dry_run)
     if not entries:
@@ -28,44 +34,28 @@ def main() -> None:
               "or pass --dry-run to check the pipeline on the unverified template candidates.", file=sys.stderr)
         sys.exit(1)
 
-    _, _, test_entries = make_split(entries, args.split)
+    train_entries, _, test_entries = make_split(entries, args.split)
+    prompt_mode = "few_shot" if args.few_shot else "zero_shot"
+    example_for = few_shot_picker(train_entries) if args.few_shot else None
     held_out = sorted({template_of(e) for e in test_entries})
-    print(f"Data: {source}. {len(test_entries)} held-out test examples (baseline, no adapter); "
+    print(f"Data: {source}. {len(test_entries)} held-out test examples (baseline, no adapter, {prompt_mode}); "
           f"{args.split} split, templates: {', '.join(held_out)}")
     if args.dry_run:
         print("DRY RUN: scoring the ground-truth kernels, not model output. Not a baseline result.")
 
     gen_config = load_generation_config(args.config)
+    gen_config.max_new_tokens = args.max_new_tokens
     generator = None if args.dry_run else KernelGenerator(gen_config)
-    results = run_eval(test_entries, args, generator)
 
-    metrics = aggregate_metrics(results)
-    print_metrics_table(metrics, title="DRY RUN (ground truth)" if args.dry_run else "Baseline (un-fine-tuned)")
-    print_outcomes(results)
-    explanation_rate = sum(1 for r in results if r.has_explanation) / len(results) * 100
-    print(f"\nExplanation field present in {explanation_rate:.1f}% of outputs.")
-
-    report_path = save_eval_report(
-        # "dryrun_" prefix so a dry run is never picked up as the baseline to compare against.
-        run_name="dryrun_baseline" if args.dry_run else "baseline",
-        model_name=gen_config.model_name,
-        adapter_path=None,
-        device=args.device,
-        results=results,
-        metrics=metrics,
-        extra={
-            "dry_run": args.dry_run,
-            "data_source": source,
-            "split": args.split,
-            "held_out_templates": held_out,
-            "skip_verification": args.skip_verification,
-            "interpret": args.interpret,
-            "max_new_tokens": gen_config.max_new_tokens,
-            "backend": generator.backend if generator else None,
-            "explanation_rate_pct": explanation_rate,
-        },
+    # "dryrun_" prefix so a dry run is never picked up as the baseline to compare against;
+    # few-shot gets its own name (and results log) so the two modes never mix.
+    run_name = ("dryrun_" if args.dry_run else "") + ("baseline_few_shot" if args.few_shot else "baseline")
+    path, _ = evaluate(
+        args, test_entries, run_name=run_name, gen_config=gen_config, generator=generator,
+        prompt_mode=prompt_mode, example_for=example_for,
+        extra={"data_source": source, "held_out_templates": held_out},
     )
-    print(f"\nReport saved to {report_path}")
+    return path
 
 
 if __name__ == "__main__":

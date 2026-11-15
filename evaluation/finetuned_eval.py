@@ -1,6 +1,10 @@
 """Phase 5: evaluate the fine-tuned model on the held-out test set.
 
-    python evaluation/finetuned_eval.py --device cuda --checkpoint-run training/checkpoints/run_X --limit 25
+    python evaluation/finetuned_eval.py --device cuda --checkpoint-run training/checkpoints/run_X
+    python evaluation/finetuned_eval.py --device cuda --checkpoint-run training/checkpoints/run_X \
+        --num-candidates 4 --repair-rounds 1        # + best-of-4 + 1 repair on 25 prompts
+
+See evaluation/common.py for --resume, --max-minutes and the search flags.
 """
 
 from __future__ import annotations
@@ -12,28 +16,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from evaluation.common import (
-    RESULTS_DIR,
-    add_eval_args,
-    aggregate_metrics,
-    print_metrics_table,
-    print_outcomes,
-    run_eval,
-    save_eval_report,
-)
+from evaluation.common import RESULTS_DIR, add_eval_args, evaluate
 from kernelforge.dataset import load_eval_entries, make_split, template_of
 from kernelforge.model import KernelGenerator, load_generation_config
 
 
 def load_baseline_report(results_dir: Path, test_ids: list[str]) -> tuple[dict | None, str | None]:
-    """Most recent real baseline report that scored exactly the same test entries.
+    """Most recent real zero-shot baseline report that scored exactly the same test entries.
 
-    Dry runs are skipped (they score ground truth), and so is any report on a
-    different set of entries, since per-category numbers would not be comparable.
+    Dry runs are skipped (they score ground truth), few-shot baselines too (the
+    fine-tuned model is prompted zero-shot), and so is any report on a different
+    set of entries, since per-category numbers would not be comparable.
     """
     for path in sorted(results_dir.glob("baseline_*.json"), reverse=True):
         report = json.loads(path.read_text())
-        if report.get("dry_run"):
+        if report.get("dry_run") or report.get("prompt_mode", "zero_shot") != "zero_shot":
             continue
         if sorted(r["id"] for r in report.get("results", [])) != sorted(test_ids):
             print(f"Skipping {path.name} for comparison: it scored a different set of test entries.")
@@ -46,13 +43,13 @@ def _fmt(value, spec: str, suffix: str) -> str:
     return f"{value:{spec}}{suffix}" if value is not None else "n/a"
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> Path:
     parser = argparse.ArgumentParser(description="Evaluate fine-tuned model on held-out test set.")
     add_eval_args(parser)
     parser.add_argument("--adapter", type=Path, default=None,
                         help="LoRA adapter directory (default: <checkpoint-run>/adapter)")
     parser.add_argument("--checkpoint-run", type=Path, default=None, help="Training run dir with held_out_test.jsonl")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.checkpoint_run and (args.checkpoint_run / "held_out_test.jsonl").exists():
         test_entries = [
@@ -69,6 +66,7 @@ def main() -> None:
         _, _, test_entries = make_split(entries, args.split)
 
     gen_config = load_generation_config(args.config)
+    gen_config.max_new_tokens = args.max_new_tokens
     adapter = args.adapter
     if adapter is None and args.checkpoint_run and (args.checkpoint_run / "adapter").exists():
         adapter = args.checkpoint_run / "adapter"
@@ -85,53 +83,28 @@ def main() -> None:
         print("DRY RUN: scoring the ground-truth kernels, not model output. Not a fine-tuned result.")
 
     generator = None if args.dry_run else KernelGenerator(gen_config)
-    results = run_eval(test_entries, args, generator)
+    # Adapters from `finetune.py --dry-run` (tiny random model) live in dryrun_* dirs.
+    dry = args.dry_run or "dryrun_" in str(gen_config.adapter_path or "")
+    path, report = evaluate(
+        args, test_entries, run_name="dryrun_finetuned" if dry else "finetuned", gen_config=gen_config,
+        generator=generator, prompt_mode="zero_shot",
+        extra={"data_source": source, "held_out_templates": held_out, "dry_run_adapter": dry and not args.dry_run},
+    )
 
-    metrics = aggregate_metrics(results)
-    print_metrics_table(metrics, title="DRY RUN (ground truth)" if args.dry_run else "Fine-tuned")
-    print_outcomes(results)
-
-    baseline, baseline_file = load_baseline_report(RESULTS_DIR, [r.id for r in results])
+    baseline, baseline_file = load_baseline_report(RESULTS_DIR, [r["id"] for r in report["results"]])
+    report.update(baseline_report=baseline_file, baseline_per_category=baseline)
+    path.write_text(json.dumps(report, indent=2))
     if baseline:
-        print(f"\n=== Baseline ({baseline_file}) vs Fine-tuned (per category) ===")
+        print(f"\n=== Baseline ({baseline_file}) vs Fine-tuned, pass@1 per category ===")
         print(f"{'Category':<20} {'Base correct':>13} {'FT correct':>11} {'Base speedup':>13} {'FT speedup':>11}")
-        for category, m in metrics.items():
-            if m.total == 0:
-                continue
+        for category, ft in report["per_category"].items():
             base = baseline.get(category, {})
             print(f"{category:<20} {_fmt(base.get('pct_correct'), '.1f', '%'):>13} "
-                  f"{_fmt(m.pct_correct, '.1f', '%'):>11} {_fmt(base.get('avg_speedup'), '.2f', 'x'):>13} "
-                  f"{_fmt(m.avg_speedup, '.2f', 'x'):>11}")
+                  f"{_fmt(ft['pct_correct'], '.1f', '%'):>11} {_fmt(base.get('avg_speedup'), '.2f', 'x'):>13} "
+                  f"{_fmt(ft['avg_speedup'], '.2f', 'x'):>11}")
     else:
-        print("\nNo comparable baseline report found (same test entries, not a dry run).")
-
-    explanation_rate = sum(1 for r in results if r.has_explanation) / len(results) * 100
-    print(f"\nExplanation field present in {explanation_rate:.1f}% of outputs.")
-
-    # Adapters from `finetune.py --dry-run` (tiny random model) live in dryrun_* dirs.
-    dry_adapter = "dryrun_" in str(gen_config.adapter_path or "")
-    report_path = save_eval_report(
-        run_name="dryrun_finetuned" if args.dry_run or dry_adapter else "finetuned",
-        model_name=gen_config.model_name,
-        adapter_path=gen_config.adapter_path,
-        device=args.device,
-        results=results,
-        metrics=metrics,
-        extra={
-            "dry_run": args.dry_run or dry_adapter,
-            "data_source": source,
-            "split": args.split,
-            "held_out_templates": held_out,
-            "skip_verification": args.skip_verification,
-            "interpret": args.interpret,
-            "max_new_tokens": gen_config.max_new_tokens,
-            "backend": generator.backend if generator else None,
-            "explanation_rate_pct": explanation_rate,
-            "baseline_report": baseline_file,
-            "baseline_per_category": baseline,
-        },
-    )
-    print(f"\nReport saved to {report_path}")
+        print("\nNo comparable baseline report found (zero-shot, same test entries, not a dry run).")
+    return path
 
 
 if __name__ == "__main__":

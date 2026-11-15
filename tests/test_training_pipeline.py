@@ -176,20 +176,15 @@ def test_eval_outcomes_separate_parse_failures_from_unverified(candidates):
     assert not junk.has_explanation  # raw text without a kernel is not an explanation
 
 
-def test_report_keeps_full_explanation(candidates, tmp_path, monkeypatch):
-    import evaluation.common as common
-
-    monkeypatch.setattr(common, "RESULTS_DIR", tmp_path)
-    entry = max(candidates, key=lambda e: len(e["triton_kernel"]))
-    result = common.evaluate_generated_kernel(entry, format_response(entry), skip_verification=True)
-    path = common.save_eval_report(run_name="synthetic", model_name="none", adapter_path=None, device="cpu",
-                                   results=[result], metrics=common.aggregate_metrics([result]))
-    row = json.loads(path.read_text())["results"][0]
-    assert row["generated_explanation"] == entry["optimization_explanation"].strip()
-    assert entry["optimization_explanation"].strip() not in row["generated_text_preview"]
-
+def test_report_keeps_full_explanation(candidates):
+    from evaluation.common import evaluate_generated_kernel, result_row
     from evaluation.explanation_review import _generated_explanation
 
+    entry = max(candidates, key=lambda e: len(e["triton_kernel"]))
+    row = result_row(evaluate_generated_kernel(entry, format_response(entry), skip_verification=True))
+    row = json.loads(json.dumps(row))  # as stored in the JSONL / report
+    assert row["generated_explanation"] == entry["optimization_explanation"].strip()
+    assert entry["optimization_explanation"].strip() not in row["generated_text_preview"]
     assert _generated_explanation(row) == entry["optimization_explanation"].strip()
 
 
