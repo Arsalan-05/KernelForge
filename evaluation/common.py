@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from kernelforge.dataset import CATEGORIES, interleave_by_category
+from kernelforge.model import effective_settings, generation_kwargs
 from kernelforge.parsing import ParsedOutput, parse_model_output
 from kernelforge.prompts import format_response
 from kernelforge.search import SearchConfig, run_search
@@ -28,6 +29,9 @@ from verification.verify_kernel import VerifyResult, verify_model_kernel
 
 RESULTS_DIR = Path(__file__).parent / "results"
 DEFAULT_MAX_NEW_TOKENS = 2048  # longest reference answer is 1,302 Qwen tokens
+# Overrides Qwen2.5's bundled 1.05 for every eval generation (pass@1, few-shot,
+# search, fine-tuned), so no hidden penalty shapes the measured outputs.
+EVAL_REPETITION_PENALTY = 1.0
 
 
 def outcome_of(parsed_kernel: bool, verification: dict | None, error: str | None = None) -> str:
@@ -424,15 +428,30 @@ def run_search_phase(entries: list[dict], args, generator, log: ResultsLog, dead
 
 # --- orchestration + report ------------------------------------------------------
 
+def _generation_settings(gen_config, generator, temperature: float | None, num_sequences: int = 1) -> dict:
+    """Effective generate() settings to record; from the loaded model when there is one."""
+    if generator is not None:
+        return generator.effective_generation_settings(temperature, num_sequences)
+    return effective_settings(generation_kwargs(gen_config, temperature, num_sequences))
+
+
 def evaluate(args, test_entries: list[dict], *, run_name: str, gen_config, generator, prompt_mode: str,
-             example_for=None, extra: dict | None = None) -> tuple[Path, dict]:
-    """Run pass@1 (and search, if enabled), then write the report from the results log."""
+             few_shot_source: str | None = None, example_for=None,
+             extra: dict | None = None) -> tuple[Path, dict]:
+    """Run pass@1 (and search, if enabled), then write the report from the results log.
+
+    The caller must have set gen_config.repetition_penalty = EVAL_REPETITION_PENALTY
+    before building the generator (checked here).
+    """
+    if gen_config.repetition_penalty != EVAL_REPETITION_PENALTY:
+        raise ValueError(f"eval runs must pin repetition_penalty={EVAL_REPETITION_PENALTY}")
     ordered = interleave_by_category(test_entries)  # round-robin: any prefix covers every category
     pass1_entries = ordered[: args.limit] if args.limit else ordered
     search_entries = pass1_entries[: args.search_limit] if search_enabled(args) else []
 
     meta = run_meta(args, run_name=run_name, model_name=gen_config.model_name,
-                    adapter_path=gen_config.adapter_path, prompt_mode=prompt_mode)
+                    adapter_path=gen_config.adapter_path, prompt_mode=prompt_mode,
+                    few_shot_source=few_shot_source, repetition_penalty=gen_config.repetition_penalty)
     log = ResultsLog(args.results_jsonl or RESULTS_DIR / f"{run_name}.jsonl", meta, args.resume)
     deadline = Deadline(args.max_minutes)
 
@@ -456,8 +475,11 @@ def evaluate(args, test_entries: list[dict], *, run_name: str, gen_config, gener
         "device": args.device,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "prompt_mode": prompt_mode,
+        "few_shot_source": few_shot_source,  # None for zero-shot
         "max_new_tokens": args.max_new_tokens,
         "decoding": "greedy",
+        "repetition_penalty": gen_config.repetition_penalty,
+        "generation_settings": _generation_settings(gen_config, generator, 0.0),
         "partial": len(pass1_rows) < len(pass1_entries) or not completed,
         "prompts_planned": len(pass1_entries),
         "prompts_scored": len(pass1_rows),
@@ -488,6 +510,11 @@ def evaluate(args, test_entries: list[dict], *, run_name: str, gen_config, gener
             "seed": args.seed,
             "round0_temperature": temps.temperature(args.num_candidates),
             "repair_temperature": temps.temperature(1),
+            "generation_settings": {
+                "round0": _generation_settings(gen_config, generator, temps.temperature(args.num_candidates),
+                                               args.num_candidates),
+                "repair": _generation_settings(gen_config, generator, temps.temperature(1)),
+            },
             "per_category": {c: m.to_dict() for c, m in aggregate_rows(search_rows).items() if m.total > 0},
             "outcomes": _count_outcomes(search_rows),
             "results": search_rows,

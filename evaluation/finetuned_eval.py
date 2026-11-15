@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from evaluation.common import RESULTS_DIR, add_eval_args, evaluate
+from evaluation.common import EVAL_REPETITION_PENALTY, RESULTS_DIR, add_eval_args, evaluate
 from kernelforge.dataset import load_eval_entries, make_split, template_of
 from kernelforge.model import KernelGenerator, load_generation_config
 
@@ -67,6 +67,7 @@ def main(argv: list[str] | None = None) -> Path:
 
     gen_config = load_generation_config(args.config)
     gen_config.max_new_tokens = args.max_new_tokens
+    gen_config.repetition_penalty = EVAL_REPETITION_PENALTY
     adapter = args.adapter
     if adapter is None and args.checkpoint_run and (args.checkpoint_run / "adapter").exists():
         adapter = args.checkpoint_run / "adapter"

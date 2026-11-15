@@ -20,6 +20,55 @@ class GenerationConfig:
     top_p: float = 0.95
     load_in_4bit: bool = True
     max_seq_length: int = 8192
+    # None = keep the model's bundled value (Qwen2.5 ships 1.05). The eval
+    # scripts pin 1.0 so no hidden penalty shapes the measured outputs.
+    repetition_penalty: float | None = None
+
+
+def generation_kwargs(config: GenerationConfig, temperature: float | None = None,
+                      num_sequences: int = 1, pad_token_id: int | None = None) -> dict:
+    """The keyword arguments KernelGenerator passes to model.generate()."""
+    temperature = config.temperature if temperature is None else temperature
+    kwargs: dict = {"max_new_tokens": config.max_new_tokens}
+    if pad_token_id is not None:
+        kwargs["pad_token_id"] = pad_token_id
+    if config.repetition_penalty is not None:
+        kwargs["repetition_penalty"] = config.repetition_penalty
+    if temperature > 0:
+        kwargs.update(do_sample=True, temperature=temperature, top_p=config.top_p)
+    else:
+        kwargs["do_sample"] = False  # greedy decoding: same prompt, same output (pass@1 eval)
+    if num_sequences > 1:
+        kwargs.update(num_return_sequences=num_sequences, do_sample=True)
+    return kwargs
+
+
+def effective_settings(kwargs: dict, model_generation_config=None) -> dict:
+    """The sampling settings generate() actually uses.
+
+    transformers deep-copies the model's bundled generation_config and updates
+    it with the call's kwargs, so anything we don't pass (e.g. Qwen's top_k=20)
+    still applies. Sampling-only values are reported as None under greedy
+    decoding, where they have no effect. Without a model (dry runs) only the
+    kwargs are known, and unset values are None.
+    """
+    if model_generation_config is not None:
+        import copy
+
+        merged = copy.deepcopy(model_generation_config)
+        merged.update(**kwargs)
+        get = lambda key: getattr(merged, key, None)  # noqa: E731
+    else:
+        get = kwargs.get
+    sampling = bool(get("do_sample"))
+    return {
+        "do_sample": sampling,
+        "temperature": get("temperature") if sampling else None,
+        "top_k": get("top_k") if sampling else None,
+        "top_p": get("top_p") if sampling else None,
+        "repetition_penalty": get("repetition_penalty"),
+        "max_new_tokens": get("max_new_tokens"),
+    }
 
 
 def unsloth_available() -> bool:
@@ -151,14 +200,14 @@ class KernelGenerator:
         input_ids = torch.tensor([ids], device=self._model.device)
         return {"input_ids": input_ids, "attention_mask": torch.ones_like(input_ids)}
 
-    def _generate_kwargs(self, temperature: float | None = None) -> dict:
-        temperature = self.config.temperature if temperature is None else temperature
-        kwargs = {"max_new_tokens": self.config.max_new_tokens, "pad_token_id": self._tokenizer.eos_token_id}
-        if temperature > 0:
-            kwargs.update(do_sample=True, temperature=temperature, top_p=self.config.top_p)
-        else:
-            kwargs["do_sample"] = False  # greedy decoding: same prompt, same output (pass@1 eval)
-        return kwargs
+    def _generate_kwargs(self, temperature: float | None = None, num_sequences: int = 1) -> dict:
+        return generation_kwargs(self.config, temperature, num_sequences, self._tokenizer.eos_token_id)
+
+    def effective_generation_settings(self, temperature: float | None = None, num_sequences: int = 1) -> dict:
+        """Settings generate()/stream_chat() use for this temperature, merged with the model's defaults."""
+        self.load()
+        return effective_settings(self._generate_kwargs(temperature, num_sequences),
+                                  getattr(self._model, "generation_config", None))
 
     def generate(self, description: str, pytorch_reference: str, temperature: float | None = None,
                  example: dict | None = None) -> str:
@@ -242,9 +291,7 @@ class KernelGenerator:
 
         streamer = BatchTextStreamer(self._tokenizer, num_sequences, self._tokenizer.eos_token_id)
         inputs = self._encode_messages(messages)
-        kwargs = self._generate_kwargs(temperature)
-        if num_sequences > 1:
-            kwargs.update(num_return_sequences=num_sequences, do_sample=True)
+        kwargs = self._generate_kwargs(temperature, num_sequences)
 
         def _run() -> None:
             try:
