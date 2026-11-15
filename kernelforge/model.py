@@ -71,6 +71,7 @@ class KernelGenerator:
         self._model = None
         self._tokenizer = None
         self._backend = None
+        self.last_hit_token_limit: bool | None = None
 
     def load(self) -> None:
         if self._model is not None:
@@ -169,6 +170,8 @@ class KernelGenerator:
             output_ids = self._model.generate(**inputs, **self._generate_kwargs())
 
         new_tokens = output_ids[0, inputs["input_ids"].shape[1] :]
+        # Lets eval reports flag outputs cut off at the cap (likely parse/syntax failures).
+        self.last_hit_token_limit = len(new_tokens) >= self.config.max_new_tokens
         return self._tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
     def stream(self, description: str, pytorch_reference: str) -> Iterator[str]:
