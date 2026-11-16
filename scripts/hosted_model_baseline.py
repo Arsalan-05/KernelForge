@@ -43,9 +43,10 @@ from verification.verify_kernel import verify_model_kernel
 
 # Hard spend cap; script refuses to continue if estimated cost exceeds this.
 SPEND_CAP_USD = 3.0
-# Cost estimate (conservative; actual OpenRouter pricing varies by model).
-COST_PER_INPUT_TOKEN = 0.5 / 1_000_000   # $0.50 / M input
-COST_PER_OUTPUT_TOKEN = 1.5 / 1_000_000  # $1.50 / M output
+# Fallback cost estimate used only when the API does not return real usage.
+# Real costs come from gen.last_usage[0].cost_usd (stream_options.include_usage=True).
+COST_PER_INPUT_TOKEN = 0.5 / 1_000_000   # $0.50 / M input (fallback estimate)
+COST_PER_OUTPUT_TOKEN = 1.5 / 1_000_000  # $1.50 / M output (fallback estimate)
 
 INTERPRETER_TIMEOUT_S = 90.0
 GENERATION_TIMEOUT_S = 60.0
@@ -84,23 +85,57 @@ def _entries_smoke() -> list[dict]:
     return entries
 
 
+def _parse_retry_after(error_text: str) -> int:
+    """Extract the Retry-After wait time (seconds) from a 402 error message.
+
+    OpenRouter returns: {"metadata": {"headers": {"Retry-After": "120"}}}
+    Falls back to 130 seconds (10-second buffer over the 120-second default).
+    """
+    import re
+    m = re.search(r'"Retry-After"\s*:\s*"?(\d+)"?', error_text)
+    return int(m.group(1)) + 10 if m else 130
+
+
 def _generate_text(gen: RemoteChatGenerator, entry: dict) -> tuple[str, int, int]:
-    """Stream a completion for one entry. Returns (text, input_tokens, output_tokens)."""
+    """Stream a completion for one entry. Returns (text, input_tokens, output_tokens).
+
+    Token counts come from the API's real usage reported in the final SSE chunk
+    (stream_options.include_usage=True, surfaced via gen.last_usage).  Falls back
+    to the char-based estimate only if the API does not return usage.
+
+    Retries up to 3 times on HTTP 402 (in-flight budget exhausted), respecting
+    the Retry-After delay from the error body.
+    """
     messages = build_messages(entry["description"], entry["pytorch_reference"], notes=True)
-    # Estimate input tokens before the call
     input_text = " ".join(m["content"] for m in messages)
-    input_tokens = gen.count_tokens(input_text)
 
-    chunks: list[str] = []
-    try:
-        for _, chunk in gen.stream_chat(messages, num_sequences=1, temperature=0.0):
-            chunks.append(chunk)
-    except Exception as exc:
-        return f"[generation error: {exc}]", input_tokens, 0
+    max_retries = 3
+    for attempt in range(max_retries):
+        chunks: list[str] = []
+        try:
+            for _, chunk in gen.stream_chat(messages, num_sequences=1, temperature=0.0):
+                chunks.append(chunk)
+        except Exception as exc:
+            err_str = str(exc)
+            is_402 = "402" in err_str and "in_flight" in err_str
+            if is_402 and attempt < max_retries - 1:
+                wait_s = _parse_retry_after(err_str)
+                print(f"    [402 rate limit] waiting {wait_s}s (attempt {attempt + 1}/{max_retries})...",
+                      flush=True)
+                time.sleep(wait_s)
+                continue
+            return f"[generation error: {exc}]", gen.count_tokens(input_text), 0
 
-    text = "".join(chunks)
-    output_tokens = gen.count_tokens(text)
-    return text, input_tokens, output_tokens
+        text = "".join(chunks)
+
+        # Prefer real token counts from the API (populated by stream_chat)
+        usage = gen.last_usage.get(0) if hasattr(gen, "last_usage") else None
+        if usage:
+            return text, usage.prompt_tokens, usage.completion_tokens
+        # Fallback: char-based estimate (~4 chars/token)
+        return text, gen.count_tokens(input_text), gen.count_tokens(text)
+
+    return "[generation error: exceeded retries]", gen.count_tokens(input_text), 0
 
 
 def _run_interpreter(entry: dict, candidate_code: str) -> dict:
@@ -128,7 +163,12 @@ def _generate_one(gen: RemoteChatGenerator, entry: dict, verify_ids: set[str],
     """Generate and optionally verify one entry. Thread-safe for the counter."""
     t0 = time.monotonic()
     text, in_tok, out_tok = _generate_text(gen, entry)
-    entry_cost = in_tok * COST_PER_INPUT_TOKEN + out_tok * COST_PER_OUTPUT_TOKEN
+    # Use real cost from API if available; fall back to per-token estimate
+    usage = gen.last_usage.get(0) if hasattr(gen, "last_usage") else None
+    if usage and usage.cost_usd is not None:
+        entry_cost = usage.cost_usd
+    else:
+        entry_cost = in_tok * COST_PER_INPUT_TOKEN + out_tok * COST_PER_OUTPUT_TOKEN
 
     parsed = parse_model_output(text)
     verification = None
@@ -266,8 +306,8 @@ def main() -> int:
     parser.add_argument("--pilot", action="store_true", help="Run only 5 entries as a pilot")
     parser.add_argument("--smoke-only", action="store_true",
                         help="Run only the 15 smoke entries (1 per template)")
-    parser.add_argument("--workers", type=int, default=4,
-                        help="Parallel LLM generation workers (default 4)")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Parallel LLM generation workers (default 1; use 1 to avoid rate limits)")
     args = parser.parse_args()
 
     env = _load_env()

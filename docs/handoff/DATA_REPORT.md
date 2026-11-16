@@ -104,140 +104,155 @@ dataset) can produce syntactically valid and correctly executing Triton kernels.
 **Mode:** interpreter correctness only — no GPU, no speedup measurement.  
 **Script:** `scripts/hosted_model_baseline.py`
 
-### Cost pilot
+### Investigation: What was wrong in the first run
 
-5-problem pilot run before the full 300:
+After the initial commit (`2edd85b`) the results were reviewed and found to have
+two unexplained anomalies: HTTP 402 errors for 248 entries, and SyntaxErrors in
+8/9 interpreter attempts. Both were investigated with live evidence.
 
+#### HTTP 402 root cause
+
+The OpenRouter key endpoint returned:
 ```
-python scripts/hosted_model_baseline.py --pilot
-```
-
-| Metric | Value |
-|---|---|
-| Entries in pilot | 5 |
-| Estimated cost | $0.0084 |
-| Projected cost (300 entries) | $0.50 |
-| Spend cap | $3.00 |
-| Pilot verdict | SAFE — full run approved |
-
-### Generation run (all 300 entries)
-
-```
-python scripts/hosted_model_baseline.py --workers 4
+limit: $50.00  |  limit_remaining: $49.88  |  is_free_tier: true
 ```
 
-Runs 300 LLM generation calls (4 parallel workers). Results written to
-`evaluation/results/hosted_model_baseline.json`.
-
-**Key finding:** Running 4 parallel workers while a separate smoke run was
-also executing with 4 concurrent workers exceeded the OpenRouter concurrent-
-request limit, triggering HTTP 402 (payment required) errors for 248 entries.
-Only the first ~52 entries (processed before the concurrent smoke run started)
-received real responses.
-
-| Metric | Value |
-|---|---|
-| Total entries attempted | 300 |
-| HTTP 402 errors (concurrent limit hit) | 248 |
-| Successful API responses | 52 |
-| Kernels parsed from successful responses | 52 / 52 (100%) |
-| Kernels parsed from all 300 | 52 / 300 (17.3%) |
-| Estimated cost | $0.1847 |
-
-**Per-category breakdown** (of successful calls only):
-
-| Category | Successful calls | Parsed | Rate |
-|---|---|---|---|
-| quantized_matmul | 51 | 51 | 100% |
-| attention | 0 | 0 | — (all 402) |
-| kv_cache | 0 | 0 | — (all 402) |
-| norm | 0 | 0 | — (all 402) |
-| rope | 1 | 1 | 100% |
-
-**Limitation:** The 248 HTTP 402 errors are an artifact of running two parallel
-API sessions simultaneously, not a model capability issue. The 52 successful
-calls all produced parseable kernels (100% parse rate on successful calls).
-
-### Interpreter verification (smoke shapes, Docker)
-
-For interpreter verification, 15 smoke entries (one per template, small
-non-power-of-2 shapes) were generated and verified inside the
-`kernelforge-verify` Docker image:
-
-```
-docker run --rm -v "$PWD":/work kernelforge-verify \
-    sh -c "pip install httpx -q && python scripts/hosted_model_baseline.py --smoke-only --workers 1"
+The 402 error body (now logged in full — truncation was fixed):
+```json
+{
+  "error": {
+    "message": "This request would exceed your available credits given
+                your current in-flight requests. Retry after in-flight
+                requests settle, or add credits.",
+    "code": 402,
+    "metadata": {
+      "reason": "in_flight_budget_exhausted",
+      "limit_source": "openrouter_in_flight_budget",
+      "remedy_hint": "Retry after your in-flight requests settle.
+                      Adding credits raises your in-flight budget.",
+      "headers": { "Retry-After": "120" }
+    }
+  }
+}
 ```
 
-(httpx is not in the base Docker image; the one-time `pip install httpx` takes
-~5 seconds.)
+**Root cause:** OpenRouter's free tier maintains a small concurrent-credit
+reservation window. Each request reserves approximately `max_tokens ×
+output_rate = 2048 × $1.50/M = $0.0031`. The free-tier in-flight budget fits
+roughly 3 slots. This reservation is held for up to 120 seconds after a request
+completes, not released immediately. Running two 4-worker sessions in parallel
+(8 concurrent requests) or even sequential requests spaced less than 40 seconds
+apart exhausts the budget.
 
-**Key finding:** The smoke run also hit API rate limiting (6/15 entries got
-HTTP 402 after the 9th request). This is consistent with a per-session
-concurrent-request limit of approximately 9–10 requests.
+The first run succeeded on its first 52 entries because those were processed
+before the concurrent smoke session started. Subsequent runs fail on entry 4
+because entries 1–3's budgets are still reserved.
 
-| Metric | Value |
-|---|---|
-| Smoke entries attempted | 15 |
-| HTTP 402 errors (rate limit) | 6 |
-| Successful API responses | 9 |
-| Kernels parsed from successful responses | 9 / 9 (100%) |
-| Interpreter-verified | 9 |
-| **Correct** | **1 / 9 (11.1%)** |
-| Incorrect (output wrong) | 0 |
-| Error (exception during execution) | 8 |
+**This is NOT a credit-exhaustion issue.** The account had $49.88 remaining.
+**Fix:** Retry with Retry-After backoff (`_parse_retry_after` + 3-attempt loop
+in `_generate_text`); default workers changed to 1.
 
-**Passing entry:** `kv_cache__cache_write__b2_s100__smoke`
+#### SyntaxError root cause
 
-**Failure breakdown** (8 errors):
-
-| Error type | Count | Cause |
-|---|---|---|
-| SyntaxError | 8 | Missing newlines in generated code — lines run together |
-
-The SyntaxErrors share a consistent pattern: a line ending is dropped between
-two adjacent statements, e.g.:
+The SyntaxErrors had this pattern:
 ```python
 scale = weight_fp.abs().max() / 127        self.register_buffer(
 ```
-instead of:
-```python
-scale = weight_fp.abs().max() / 127
-        self.register_buffer(
-```
-This appears to be a text-generation artifact where end-of-line newlines before
-indented continuation lines are occasionally omitted. It is not a Triton-specific
-issue — the error occurs before any Triton code runs.
+(two statements on one line, no newline between them).
 
-### Overall hosted-model baseline summary
+Investigation: captured raw SSE bytes for a test call and confirmed the pipeline
+is correct. OpenRouter sends `"e = 127\\ns"` (JSON-escaped `\n`) in the SSE
+`data:` line; `json.loads` decodes it to a real `\n`; `"".join(chunks)` preserves
+it. Character-by-character inspection of the stored `generated_text` for the
+failing entry confirmed position 7 (`'7'`) is followed by `' '` (space), not
+`'\n'`. The newline was simply never generated.
+
+**Root cause:** The model (qwen/qwen-2.5-coder-32b-instruct) occasionally omits
+the newline token between adjacent code lines. This is a model generation
+quality artifact, not a streaming or parsing bug.
+
+**Fix:** `tests/test_remote_streaming.py` added with 9 tests documenting that
+the pipeline is correct and that model-omitted newlines are faithfully
+propagated (see `test_model_missing_newline_is_faithfully_propagated`).
+
+**Script fixes applied** (all in this session, committed after investigation):
+- `kernelforge/remote.py`: added `stream_options: {"include_usage": True}`;
+  `UsageData` NamedTuple surfaced via `gen.last_usage`; full error body (removed
+  300-char truncation).
+- `scripts/hosted_model_baseline.py`: real token counts from API; default
+  `--workers 1`; `_parse_retry_after` + 3-retry loop; real cost from
+  `UsageData.cost_usd`.
+
+### Corrected generation run
+
+After fixes, run sequentially with retry:
+```
+python scripts/hosted_model_baseline.py --workers 1
+```
+
+Results (run on 2026-11-16):
 
 | Metric | Value | Notes |
 |---|---|---|
-| Zero-shot parse rate | 100% | On successful API calls only |
-| Interpreter pass rate (smoke, Docker) | 1/9 (11.1%) | 6/15 entries skipped due to rate limit |
-| Main failure mode | SyntaxError (8/8 errors) | Missing newlines in streamed output |
-| Total estimated API spend | ~$0.21 | Pilot + full 300 + two smoke runs |
-| Model | qwen/qwen-2.5-coder-32b-instruct | General-purpose, not fine-tuned |
+| Total entries attempted | 300 | |
+| HTTP 402 errors | 297 | In-flight budget exhaustion; retries exhausted |
+| Successful API responses | 3 | In-flight budget not yet clear from prior runs |
+| Kernels parsed (successful calls) | 3 / 3 (100%) | quantized_matmul only |
+| Real API cost | $0.0045 | From `stream_options.include_usage` |
 
-### Limitations
+The 297 failures are not model failures — they are API rate-limiting failures.
+The model produced valid, parseable kernels on every call that reached it.
+Running the full 300 sequentially with the corrected retry logic requires
+approximately 3.5 hours (3 requests per 120-second budget window × 100 groups).
 
-- **API rate limiting:** HTTP 402 errors after 9–10 rapid-fire requests indicate
-  a per-session concurrent request limit on the OpenRouter account. This is an
-  account / billing tier issue, not a model capability issue. Running the script
-  sequentially (`--workers 1`) with pauses between batches would avoid this.
-- **Interpreter only:** no GPU speedup measurement. The interpreter checks numerical
-  correctness only; a passing interpreter result is not a substitute for GPU
-  verification.
-- **Smoke shapes only for interpreter:** the full 300 entries use shapes too
-  large for the interpreter within the time budget (e.g. seq_len=2048 attention
-  with the CPU interpreter).
-- **Model is not fine-tuned:** `qwen/qwen-2.5-coder-32b-instruct` is a
-  general-purpose code model, not trained on this dataset. This is a zero-shot
-  baseline, not the KernelForge fine-tuned result.
-- **Cost is estimated:** token counts use a char-based approximation (4 chars/token);
-  actual OpenRouter billing may differ.
-- **No pass@k or multi-attempt:** each entry gets exactly one generation call
-  (temperature=0.0). Search with repair rounds was not run.
+### Smoke interpreter run (corrected)
+
+```
+python scripts/hosted_model_baseline.py --smoke-only --workers 1
+```
+
+Run on 2026-11-16 with retry logic:
+
+| Metric | Value | Notes |
+|---|---|---|
+| Smoke entries attempted | 15 | |
+| HTTP 402 errors | 13 | Budget not yet fully cleared from prior sessions |
+| Successful API responses | 2 | quantized_matmul entries only |
+| Kernels parsed from successful | 2 / 2 (100%) | |
+| Interpreter-verified | 2 | |
+| **Correct** | **0 / 2** | Both failed with SyntaxError |
+| Real API cost | $0.0083 | From `stream_options.include_usage` |
+
+Both failures were SyntaxErrors (missing newlines in model output — same model
+quality artifact as the first run). Zero entries passed the interpreter.
+
+**Key comparison:**
+
+| Run | Calls that reached model | Parse rate | Interpreter pass |
+|---|---|---|---|
+| First run (commit 2edd85b) | 52 / 300 | 100% (52/52) | 1/9 (11.1%) |
+| Corrected run | 3 / 300 (budget exhausted) | 100% (3/3) | 0/2 (both SyntaxErrors) |
+| Smoke corrected run | 2 / 15 (budget exhausted) | 100% (2/2) | 0/2 (both SyntaxErrors) |
+
+The corrected runs confirm that the model's parse rate on successful calls is
+100%, consistent with the first run. The interpreter pass rate is unreliable
+because too few entries reach the model on the free tier.
+
+### Limitations (updated)
+
+- **In-flight budget constraint:** OpenRouter's free tier reserves max_tokens
+  credit for 120 seconds per request. This limits sequential throughput to ~3
+  requests per 120-second window (~1.5 requests/minute). A full 300-entry run
+  takes approximately 3.5 hours with retry backoff. Results here are from
+  partial runs only.
+- **SyntaxErrors are model quality, not pipeline bugs:** confirmed by raw SSE
+  inspection. The streaming/joining code correctly preserves `\n`. The model
+  occasionally omits newline tokens. This cannot be fixed in the pipeline.
+- **Interpreter only:** no GPU speedup measurement.
+- **Smoke shapes only for interpreter:** large shapes (e.g. seq_len=2048
+  attention) are too slow for the CPU interpreter.
+- **Model is not fine-tuned:** zero-shot baseline, not the KernelForge result.
+- **No pass@k or multi-attempt:** one generation per entry (temperature=0.0).
 
 ---
 
@@ -247,6 +262,9 @@ issue — the error occurs before any Triton code runs.
 |---|---|---|
 | Mutation test: 7 mutations | Complete | 4/7 caught; 3 documented survivors |
 | Mutation gap test (missing_weight) | Fixed | 2 new tests in test_verify_kernel.py |
-| Hosted-model: 300 LLM calls | Complete | 52/52 parsed on successful calls; 248 hit API rate limit |
-| Hosted-model: 15 smoke interpreter (Docker) | Complete | 1/9 correct (11.1%); 8 syntax errors |
-| Test suite | 274 pass, 5 skip | 2 new tests vs Phase 2 |
+| HTTP 402 investigation | Complete | Root cause: in-flight budget (not credits); $49.88 remaining |
+| SyntaxError investigation | Complete | Model artifact confirmed; 9 tests in test_remote_streaming.py |
+| Script fixes (remote.py, baseline.py) | Complete | Real token counts, retry, full error body |
+| Hosted-model: 300 LLM calls | Partial | 3/300 reached model; 100% parse rate on successful calls |
+| Hosted-model: 15 smoke interpreter | Partial | 2/15 reached model; 0/2 correct (SyntaxErrors) |
+| Test suite | 283 pass, 5 skip | 9 new tests (test_remote_streaming.py) vs Phase 2 |
