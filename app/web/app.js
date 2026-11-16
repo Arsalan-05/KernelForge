@@ -12,6 +12,15 @@ const VARIANT_LABEL = { base: "Base model", "fine-tuned": "Fine-tuned", remote: 
 const DEVICE_LABEL = { cuda: "GPU", cpu: "Interpreter" };
 const HISTORY_KEY = "kernelforge.history.v2";
 const HISTORY_MAX = 20;
+const SETTINGS_KEY = "kernelforge.settings.v1";
+
+const CATEGORY_FULL_LABEL = {
+  quantized_matmul: "Quantized matmul",
+  attention: "Attention (prefill)",
+  kv_cache: "KV-cache decode",
+  norm: "Normalization",
+  rope: "RoPE",
+};
 
 const CUSTOM_TEMPLATE = `import torch
 import torch.nn as nn
@@ -37,19 +46,43 @@ def get_init_inputs():
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
+const _savedSettings = loadSettings();
 const state = {
   health: null,
   templates: [],
   selected: null, // template detail | {custom: true}
-  device: "cuda",
-  deviceTouched: false,
-  samples: 1,
-  repair: 0,
+  device: _savedSettings.device || "cuda",
+  deviceTouched: !!_savedSettings.device,
+  samples: _savedSettings.samples || 1,
+  repair: _savedSettings.repair || 0,
   running: false,
   abort: null,
   run: null,
   history: loadHistory(),
+  results: null,
 };
+
+/* ---------------- settings persistence ---------------- */
+
+function loadSettings() {
+  try {
+    return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      device: state.device,
+      samples: state.samples,
+      repair: state.repair,
+    }));
+  } catch {
+    /* storage full or disabled */
+  }
+}
 
 /* ---------------- utilities ---------------- */
 
@@ -231,11 +264,21 @@ async function refreshStats() {
 /* ---------------- op library ---------------- */
 
 async function loadTemplates() {
+  // Show a loading placeholder while fetching
+  const root = $("#op-groups");
+  root.replaceChildren(el("div", { class: "op-loading", "aria-live": "polite" }, "Loading ops…"));
   try {
     state.templates = await api("/templates");
   } catch (err) {
     state.templates = [];
+    root.replaceChildren(
+      el("div", { class: "op-error" },
+        "Couldn't load ops",
+        el("button", { class: "btn ghost sm", onclick: loadTemplates }, "Retry"),
+      )
+    );
     toast(`Couldn't load examples: ${err.message}`, true);
+    return;
   }
   $("#op-count").textContent = `${state.templates.length} ops`;
   renderOpGroups();
@@ -441,19 +484,34 @@ function stopTicker() {
 /* ---------------- output rendering ---------------- */
 
 function showTab(name) {
-  $$(".tab").forEach((t) => t.classList.toggle("on", t.dataset.tab === name));
+  $$(".tab").forEach((t) => {
+    const on = t.dataset.tab === name;
+    t.classList.toggle("on", on);
+    t.setAttribute("aria-selected", String(on));
+  });
   $$(".tab-panel").forEach((p) => p.classList.toggle("on", p.dataset.panel === name));
+  if (name === "results" && !state.results) loadResults();
 }
 
 function renderKernel(kernel, reference) {
   const has = !!kernel;
   $("#kernel-empty").hidden = has;
   $("#kernel-view").hidden = !has;
+  // Keep the panel height stable so the layout doesn't jump when the kernel appears.
+  // The empty placeholder is always rendered at min-height; the codeview takes over smoothly.
   $("#copy-kernel").disabled = !has;
   $("#download-kernel").disabled = !has;
   highlightInto($("#kernel-code"), kernel || "");
   $("#kernel-gutter").textContent = has ? lineNumbers(kernel) : "";
   highlightInto($("#cmp-ref"), reference || "");
+  // Update the compare pane label to include model name if available
+  const modelName = state.health?.model_name?.split("/").pop() || "";
+  const variant = state.health?.model_variant;
+  const paneLabel = $("#cmp-kernel-label");
+  if (paneLabel && modelName && variant) {
+    const extra = variant === "remote" ? ` · ${modelName}` : variant === "fine-tuned" ? " · fine-tuned" : " · base";
+    paneLabel.textContent = `Generated Triton · ModelNew${extra}`;
+  }
   highlightInto($("#cmp-kernel"), kernel || "# No kernel parsed from the model output.");
 }
 
@@ -483,6 +541,173 @@ function renderRaw(text, live) {
     const view = $("#raw-view");
     view.scrollTop = view.scrollHeight;
   }
+}
+
+/* ---------------- results tab ---------------- */
+
+async function loadResults() {
+  const view = $("#results-view");
+  view.replaceChildren(el("div", { class: "results-loading" },
+    el("span", { class: "spinner", "aria-hidden": "true" }),
+    "Loading coverage data…"
+  ));
+  try {
+    state.results = await api("/results");
+    renderResults(state.results);
+  } catch {
+    view.replaceChildren(
+      el("div", { class: "results-error" },
+        "Couldn't load results data.",
+        el("button", { class: "btn ghost sm", onclick: () => { state.results = null; loadResults(); } }, "Retry")
+      )
+    );
+  }
+}
+
+function _passBar(passed, total) {
+  const pct = total > 0 ? (passed / total) * 100 : 0;
+  const bar = el("div", { class: "res-bar" }, el("span", { style: `width:${pct.toFixed(1)}%` }));
+  return bar;
+}
+
+function renderResults(data) {
+  const view = $("#results-view");
+  view.replaceChildren();
+
+  const interp = data?.interpreter;
+  if (!interp) {
+    view.append(el("div", { class: "results-empty" }, "No coverage report found. Run ", el("code", {}, "scripts/preflight_check.py"), " to verify."));
+    return;
+  }
+
+  // ── Interpreter summary ──────────────────────────────────────────────
+  const total = interp.total;
+  const passed = interp.passed;
+  const pct = total > 0 ? Math.round((passed / total) * 100) : 0;
+  const ooms = Object.values(interp.by_category || {}).reduce((n, c) => n + c.oom, 0);
+  const fullyPassing = Object.values(interp.by_category || {})
+    .flatMap((c) => c.templates || [])
+    .filter((t) => t.passed === t.total).length;
+  const totalTemplates = Object.values(interp.by_category || {})
+    .reduce((n, c) => n + (c.templates || []).length, 0);
+
+  const summary = el("div", { class: "res-section" },
+    el("div", { class: "res-header" },
+      el("span", { class: "res-label" }, "Interpreter"),
+      el("span", { class: "chip subtle" }, interp.mode || "triton-interpreter")
+    ),
+    el("div", { class: "res-summary-row" },
+      el("div", { class: "res-big-num" },
+        el("span", { class: "res-num" }, `${passed}`),
+        el("span", { class: "res-den" }, ` / ${total}`),
+      ),
+      el("div", { class: "res-big-label" }, `shapes pass (${pct}%)`),
+      el("div", { class: "res-big-num" },
+        el("span", { class: "res-num" }, `${fullyPassing}`),
+        el("span", { class: "res-den" }, ` / ${totalTemplates}`),
+      ),
+      el("div", { class: "res-big-label" }, "templates fully pass"),
+    ),
+    ooms > 0
+      ? el("div", { class: "callout warn res-oom-note" },
+          `${ooms} shape${ooms === 1 ? "" : "s"} OOM in an 8 GB VM (crash exit −9). ` +
+          "They are kept in the dataset; OOM is tracked separately from incorrect."
+        )
+      : null,
+    el("div", { class: "res-note-row" },
+      "Triton interpreter · correctness only, CPU · no speedup numbers · no GPU required"
+    )
+  );
+  view.append(summary);
+
+  // ── Per-category table ───────────────────────────────────────────────
+  const catSection = el("div", { class: "res-section" },
+    el("div", { class: "res-header" }, el("span", { class: "res-label" }, "By category"))
+  );
+  const catTable = el("table", { class: "res-table" },
+    el("thead", {},
+      el("tr", {},
+        el("th", {}, "Category"),
+        el("th", { class: "num" }, "Pass"),
+        el("th", { class: "num" }, "OOM"),
+        el("th", {}, "")
+      )
+    )
+  );
+  const catBody = el("tbody", {});
+  for (const cat of Object.keys(CATEGORY_META)) {
+    const c = (interp.by_category || {})[cat];
+    if (!c) continue;
+    const catPct = c.total > 0 ? Math.round((c.passed / c.total) * 100) : 0;
+    const oomLabel = c.oom > 0 ? el("span", { class: "res-oom-chip" }, `${c.oom} OOM`) : null;
+    catBody.append(
+      el("tr", {},
+        el("td", {}, el("span", { class: "cat-dot", style: `background:${CATEGORY_META[cat].color}` }), " ", CATEGORY_FULL_LABEL[cat] || cat),
+        el("td", { class: "num" }, `${c.passed} / ${c.total}`),
+        el("td", { class: "num" }, oomLabel || "—"),
+        el("td", { class: "bar-cell" }, _passBar(c.passed, c.total), el("span", { class: "pct-label" }, `${catPct}%`))
+      )
+    );
+  }
+  catTable.append(catBody);
+  catSection.append(catTable);
+  view.append(catSection);
+
+  // ── Per-template detail (collapsible) ────────────────────────────────
+  const tmplSection = el("div", { class: "res-section" },
+    el("details", { class: "res-details" },
+      el("summary", { class: "res-header res-details-summary" },
+        el("span", { class: "res-label" }, "Per-template detail"),
+        el("span", { class: "chip subtle" }, `${totalTemplates} templates`)
+      ),
+      el("div", { class: "res-detail-body" },
+        ...Object.entries(interp.by_category || {}).map(([cat, catData]) => {
+          const rows = (catData.templates || []).map((t) => {
+            const full = t.passed === t.total;
+            const tOom = t.oom > 0 ? el("span", { class: "res-oom-chip sm" }, `${t.oom} OOM`) : null;
+            return el("tr", { class: full ? "" : "res-partial" },
+              el("td", { class: "mono" }, t.name),
+              el("td", { class: "num" }, `${t.passed} / ${t.total}`),
+              el("td", { class: "num" }, tOom || "—"),
+              el("td", { class: "bar-cell" }, _passBar(t.passed, t.total))
+            );
+          });
+          return el("div", { class: "res-cat-group" },
+            el("div", { class: "res-cat-head" },
+              el("span", { class: "cat-dot", style: `background:${CATEGORY_META[cat]?.color}` }),
+              " ",
+              CATEGORY_FULL_LABEL[cat] || cat
+            ),
+            el("table", { class: "res-table" },
+              el("thead", {}, el("tr", {}, el("th", {}, "Template"), el("th", { class: "num" }, "Pass"), el("th", { class: "num" }, "OOM"), el("th", {}, ""))),
+              el("tbody", {}, ...rows)
+            )
+          );
+        })
+      )
+    )
+  );
+  view.append(tmplSection);
+
+  // ── GPU eval pending ─────────────────────────────────────────────────
+  view.append(
+    el("div", { class: "res-section res-gpu-pending" },
+      el("div", { class: "res-header" },
+        el("span", { class: "res-label" }, "GPU eval"),
+        el("span", { class: "chip subtle" }, "not yet run")
+      ),
+      el("div", { class: "res-pending-body" },
+        el("div", { class: "res-pending-icon", "aria-hidden": "true" }, "⌛"),
+        el("div", {},
+          el("div", { class: "res-pending-title" }, "Pending Kaggle T4 session"),
+          el("div", { class: "res-pending-sub" },
+            "GPU eval results (pass rate, speedup, failure breakdown, ablation matrix) " +
+            "appear here once a session runs. See KAGGLE_RUNBOOK.md for setup instructions."
+          )
+        )
+      )
+    )
+  );
 }
 
 function verifyHead(stateChip, extra) {
@@ -719,8 +944,12 @@ function setRunning(running) {
   state.running = running;
   const btn = $("#run-btn");
   btn.classList.toggle("stop", running);
+  btn.setAttribute("aria-label", running ? "Stop generation (Escape)" : "Generate kernel");
   $("#run-label").textContent = running ? "Stop" : state.samples > 1 || state.repair > 0 ? "Run kernel search" : "Generate kernel";
   $("#run-kbd").textContent = running ? "esc" : navigator.platform.includes("Mac") ? "⌘ ↵" : "Ctrl ↵";
+  // Hide retry button while running
+  const retryBtn = $("#retry-btn");
+  if (retryBtn) retryBtn.hidden = running || !state.run?.error;
 }
 
 async function run() {
@@ -821,6 +1050,9 @@ async function run() {
     setRunning(false);
     state.abort = null;
     if (r.selected || r.error) pushHistory(r);
+    // Show retry button if the run errored (not user-stopped)
+    const retryBtn = $("#retry-btn");
+    if (retryBtn) retryBtn.hidden = !r.error || r.stopped;
     refreshHealth();
     refreshStats();
   }
@@ -1114,12 +1346,13 @@ function wire() {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   });
-  $$("#device-seg button").forEach((b) => b.addEventListener("click", () => setDevice(b.dataset.value)));
+  $$("#device-seg button").forEach((b) => b.addEventListener("click", () => { setDevice(b.dataset.value); saveSettings(); }));
   $$("#samples-seg button").forEach((b) =>
     b.addEventListener("click", () => {
       state.samples = Number(b.dataset.value);
       setSegment("samples-seg", state.samples);
       setRunning(state.running);
+      saveSettings();
     })
   );
   $$("#repair-seg button").forEach((b) =>
@@ -1127,10 +1360,12 @@ function wire() {
       state.repair = Number(b.dataset.value);
       setSegment("repair-seg", state.repair);
       setRunning(state.running);
+      saveSettings();
     })
   );
   $$(".tab").forEach((t) => t.addEventListener("click", () => showTab(t.dataset.tab)));
   $("#run-btn").addEventListener("click", () => (state.running ? state.abort?.abort() : run()));
+  $("#retry-btn").addEventListener("click", () => { $("#retry-btn").hidden = true; run(); });
   $("#clear-history").addEventListener("click", () => {
     state.history = [];
     saveHistory();
@@ -1152,12 +1387,17 @@ function wire() {
 
 function init() {
   wire();
+  // Apply saved settings to UI
+  setSegment("device-seg", state.device);
+  setSegment("samples-seg", state.samples);
+  setSegment("repair-seg", state.repair);
   setRunning(false);
   renderVerification(null, "idle");
   renderHistory();
   refreshHealth();
   refreshStats();
   loadTemplates();
+  loadResults();
   setInterval(refreshHealth, 20000);
   setInterval(refreshStats, 20000);
 }

@@ -92,27 +92,27 @@
             <span>Verify</span>
           </label>
           <div class="control-group">
-            <span class="control-label">Harness</span>
-            <div class="segmented" id="device-seg" role="radiogroup" aria-label="Verification device">
+            <label id="harness-label" class="control-label">Harness</label>
+            <div class="segmented" id="device-seg" role="radiogroup" aria-labelledby="harness-label">
               <button type="button" data-value="cuda" class="on" role="radio" aria-checked="true" title="Real GPU run: correctness + timed speedup">GPU</button>
               <button type="button" data-value="cpu" role="radio" aria-checked="false" title="Triton's CPU interpreter: correctness only, no timings">Interpreter</button>
             </div>
           </div>
           <div class="control-group">
-            <span class="control-label">Samples</span>
-            <div class="segmented" id="samples-seg" role="radiogroup" aria-label="Candidates sampled in the first round">
-              <button type="button" data-value="1" class="on" role="radio" aria-checked="true">1</button>
-              <button type="button" data-value="2" role="radio" aria-checked="false">2</button>
-              <button type="button" data-value="3" role="radio" aria-checked="false">3</button>
-              <button type="button" data-value="4" role="radio" aria-checked="false">4</button>
+            <label id="samples-label" class="control-label">Samples</label>
+            <div class="segmented" id="samples-seg" role="radiogroup" aria-labelledby="samples-label">
+              <button type="button" data-value="1" class="on" role="radio" aria-checked="true" aria-label="1 sample">1</button>
+              <button type="button" data-value="2" role="radio" aria-checked="false" aria-label="2 samples">2</button>
+              <button type="button" data-value="3" role="radio" aria-checked="false" aria-label="3 samples">3</button>
+              <button type="button" data-value="4" role="radio" aria-checked="false" aria-label="4 samples">4</button>
             </div>
           </div>
           <div class="control-group">
-            <span class="control-label">Repair</span>
-            <div class="segmented" id="repair-seg" role="radiogroup" aria-label="Harness-feedback repair rounds">
-              <button type="button" data-value="0" class="on" role="radio" aria-checked="true">off</button>
-              <button type="button" data-value="1" role="radio" aria-checked="false">1</button>
-              <button type="button" data-value="2" role="radio" aria-checked="false">2</button>
+            <label id="repair-label" class="control-label">Repair</label>
+            <div class="segmented" id="repair-seg" role="radiogroup" aria-labelledby="repair-label">
+              <button type="button" data-value="0" class="on" role="radio" aria-checked="true" aria-label="No repair rounds">off</button>
+              <button type="button" data-value="1" role="radio" aria-checked="false" aria-label="1 repair round">1</button>
+              <button type="button" data-value="2" role="radio" aria-checked="false" aria-label="2 repair rounds">2</button>
             </div>
           </div>
           <details class="advanced">
@@ -123,7 +123,8 @@
             </div>
           </details>
           <div class="spacer"></div>
-          <button class="btn primary" id="run-btn" type="button">
+          <button class="btn ghost sm" id="retry-btn" type="button" hidden aria-label="Retry with the same inputs">Retry</button>
+          <button class="btn primary" id="run-btn" type="button" aria-label="Generate kernel">
             <span id="run-label">Generate kernel</span>
             <kbd id="run-kbd">⌘ ↵</kbd>
           </button>
@@ -169,13 +170,14 @@
       <div class="results">
         <div class="card output-card">
           <div class="card-head tabs" role="tablist">
-            <button class="tab on" data-tab="kernel" type="button" role="tab">Triton kernel</button>
-            <button class="tab" data-tab="compare" type="button" role="tab">Side by side</button>
-            <button class="tab" data-tab="raw" type="button" role="tab">Raw output <span class="live-dot" id="live-dot" hidden></span></button>
+            <button class="tab on" data-tab="kernel" type="button" role="tab" aria-selected="true">Triton kernel</button>
+            <button class="tab" data-tab="compare" type="button" role="tab" aria-selected="false">Side by side</button>
+            <button class="tab" data-tab="results" type="button" role="tab" aria-selected="false" id="results-tab">Results</button>
+            <button class="tab" data-tab="raw" type="button" role="tab" aria-selected="false">Raw output <span class="live-dot" id="live-dot" hidden aria-hidden="true"></span></button>
             <div class="spacer"></div>
-            <span class="chip subtle mono" id="focus-chip" hidden></span>
-            <button class="btn ghost sm" id="copy-kernel" type="button" disabled>Copy</button>
-            <button class="btn ghost sm" id="download-kernel" type="button" disabled>Download .py</button>
+            <span class="chip subtle mono" id="focus-chip" hidden aria-hidden="true"></span>
+            <button class="btn ghost sm" id="copy-kernel" type="button" disabled aria-label="Copy Triton kernel to clipboard">Copy</button>
+            <button class="btn ghost sm" id="download-kernel" type="button" disabled aria-label="Download Triton kernel as .py file">Download .py</button>
           </div>
           <div class="callout warn" id="unparseable-callout" hidden>
             <strong>No parseable Triton kernel in this output.</strong>
@@ -191,7 +193,18 @@
           <div class="tab-panel" data-panel="compare">
             <div class="split">
               <div class="split-pane"><div class="pane-label">PyTorch reference · <code>Model</code></div><div class="codeview"><pre><code id="cmp-ref" class="language-python"></code></pre></div></div>
-              <div class="split-pane"><div class="pane-label">Generated Triton · <code>ModelNew</code></div><div class="codeview"><pre><code id="cmp-kernel" class="language-python"></code></pre></div></div>
+              <div class="split-pane"><div class="pane-label" id="cmp-kernel-label">Generated Triton · <code>ModelNew</code></div><div class="codeview"><pre><code id="cmp-kernel" class="language-python"></code></pre></div></div>
+            </div>
+            <div class="compare-pending" id="compare-ablation-note">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 7v4M8 4.5v.5"/></svg>
+              <span>Baseline vs few-shot vs fine-tuned comparison requires GPU eval results — pending Kaggle T4 session.</span>
+            </div>
+          </div>
+          <div class="tab-panel" data-panel="results">
+            <div id="results-view" class="results-panel">
+              <div class="results-loading" id="results-loading">
+                <span class="spinner" aria-hidden="true"></span>Loading coverage data…
+              </div>
             </div>
           </div>
           <div class="tab-panel" data-panel="raw">
