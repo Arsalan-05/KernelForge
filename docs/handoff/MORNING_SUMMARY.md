@@ -253,3 +253,92 @@ Output of `git branch -a` at end of session:
   remotes/origin/HEAD -> origin/main
   remotes/origin/main
 ```
+
+---
+
+## Phase 2 — 2026-11-15
+
+**Branch:** `agent/phase2` (cut from `main` after all Phase 1 merges)
+
+**Commit:** `fb588a1` — "Phase 2: T4 fit review, smoke test, Kaggle notebook, paper sections, quality pass"
+
+**Tests:** 272 passed, 5 skipped (same as end of Phase 1; no test count change in this session).
+
+---
+
+### What was done
+
+#### 1. T4 Fit Review (`docs/handoff/T4_FIT.md`)
+
+Computed peak tensor-memory estimates for all 300 (template × shape) entries using the kernel input/output tensor sizes (fp16, int8 as appropriate). All 300 fit on a 16 GB T4:
+
+- Largest kernel: `norm/rmsnorm_residual r65536 h12288` = 4.50 GB
+- Fine-tuning overhead (QLoRA 1.5B): ~2.5 GB → 13.5 GB remaining for kernels
+- Generation overhead (inference): ~2.0 GB → 14.0 GB remaining for kernels
+- **All 300 fit under both fine-tuning and generation scenarios.**
+- The 15 interpreter OOMs all hit the 8 GB CPU RAM cap of the Docker VM; their tensor footprints (0.27–4.50 GB) comfortably fit T4 GPU VRAM.
+
+**Labelled as estimates throughout. T4 fit is untested.**
+
+#### 2. CPU Smoke Test (`docs/handoff/SMOKE_TEST.md`)
+
+Exercised the full pipeline on the dev Mac (no GPU, no triton, no transformers):
+
+| Step | Result |
+|---|---|
+| Dataset build (`--smoke --interpret`) | SKIPPED — `No module named 'triton'` (expected) |
+| Fine-tune dry-run | SKIPPED — `No module named 'transformers'` (expected) |
+| Baseline eval `--dry-run` | PARTIAL — starts cleanly, fails at CUDA check (expected) |
+| Verification harness | SKIPPED — needs triton (expected) |
+| Report generator | PASSED — exit 0, wrote results.md, summary.json |
+| Pre-flight check | PASSED — 3 expected failures reported, no crash |
+| Leakage check | PASSED — no leakage detected |
+| Full test suite | PASSED — 272 passed, 5 skipped |
+
+**No code bugs found.** All failures are package-availability issues on macOS.
+
+#### 3. Kaggle Notebook (`notebooks/kaggle_gpu_session.ipynb`)
+
+Added three new cells between setup and main run:
+- **Cell 2b:** `python scripts/preflight_check.py` — must show 0 required failures
+- **Cell 2c:** `python scripts/check_split_leakage.py` — must show PASSED
+- Updated settings cell with inline time-budget comment (est. 6–7 h without fine-tuning, 8–9 h with)
+- Expanded fallback zip cell to also collect `evaluation/results/` and `training/checkpoints/`
+
+Updated `docs/handoff/KAGGLE_RUNBOOK.md` with a time-budget table and cross-references to `T4_FIT.md` and `SMOKE_TEST.md`.
+
+#### 4. Paper Sections (`docs/paper/paper.tex`)
+
+Wrote/completed these sections:
+
+- **Method (§3):** Fixed incorrect claim about loss masking (prompt tokens ARE masked with IGNORE\_INDEX = -100; loss is completion-only). Clarified that the standard evaluation uses zero-shot prompt. Updated interpreter results to: **285/300 pass, 0 incorrect, 15 OOM, 10 of 15 templates fully pass**.
+- **Experimental Setup (§4):** Filled decoding cap (2048 tokens, above the longest reference at 1,302 tokens). Fixed n per category (20 prompts, 100 total). Removed fast\_1 TODO and stated that raw numerator is reported alongside conditional mean. GPU hardware section left as `\todo{}` pending the actual GPU session.
+- **Threats to Validity (§7, new section):** Wrote seven distinct threats covering construct validity (tolerance choice, forward-pass only), internal validity (single GPU / no variance, template diversity, explanation rater, loss-masking choice), and external validity (hardware, operator coverage). Separated from the existing Limitations section.
+- All GPU result cells remain `\todo{}` placeholders. No numbers were invented.
+
+#### 5. Quality Pass
+
+- `kernelforge/model.py`: removed unused `Any` import from `typing`
+- `README.md`: updated stale "84 tests" count to "272 tests pass on macOS"
+- `MASTER_PLAN.md`: same test count update
+
+---
+
+### Blockers (unchanged from Phase 1)
+
+All GPU-dependent items remain blocked. See `docs/handoff/BLOCKERS.md`.
+
+| Item | Blocked on |
+|---|---|
+| GPU-verified dataset | Kaggle T4 session |
+| Baseline / fine-tuned eval results | GPU session |
+| Peak memory in training | GPU session |
+| Fine-tuning backend (Unsloth vs transformers) | GPU session |
+| Table cells in paper.tex | GPU session |
+| Token count audit (`scripts/check_token_lengths.py`) | `transformers` package |
+
+---
+
+### Next step
+
+Run the Kaggle GPU session using `notebooks/kaggle_gpu_session.ipynb` (now updated with pre-flight and leakage checks). Follow `docs/handoff/KAGGLE_RUNBOOK.md`.
