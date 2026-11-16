@@ -395,6 +395,16 @@ Every artifact (dataset, reports, logs, adapter) ends up in `/kaggle/working/ker
 - The other 39 were killed for running out of memory (8 parallel jobs in an 8 GB Docker VM). They are the largest shapes: attention/RoPE at batch 8–16 × sequence 2048, and norms at 16k–65k rows.
 - On a 16 GB T4 the largest references peak at roughly 9–12 GB, so a few may still run out of memory. The dataset report now lists `oom` separately from incorrect kernels (per category and per template), so a memory limit isn't mistaken for a broken template.
 
+**Session hardening (Nov 2026, CPU-tested only):** see DOCUMENTATION.md → *One-step GPU session* for details.
+- The zip is refreshed after every stage and every 10 minutes during a long one. `stage_status.json` (stage, ok/failed/skipped, seconds, error) and `session.json` (env, dataset report, artifacts) are inside it. A failed stage doesn't stop later stages that don't depend on it.
+- Notebook parameters `BUDGET_HOURS` (default 11) and `RESUME_FROM` map to `--budget-hours` (skip stages that can't fit, cap timeouts) and `--resume-from` (restore the dataset progress log from an old zip). `build_dataset.py` gained `--resume` (skip entry IDs already in `data/raw/progress_cuda.jsonl`) and `--max-minutes` (stop cleanly, write a partial report). OOM entries are retried once, alone.
+- Evals now use **every held-out prompt** (100) by default instead of 25. Set notebook `EVAL_LIMIT` / `--eval-limit` to cap it (`None` = all). `session.json` records how many prompts each eval scored and whether that was the full held-out set. The eval stages take longer as a result.
+- Generation cap raised from 1536 to **2048 tokens**. `scripts/check_token_lengths.py` measured the longest template target at 1302 Qwen tokens (85% of the old cap).
+- The zip now also holds all of `data/raw/`, `evaluation/results/`, scored explanation reviews, and each training run's small files (checkpoint folders contribute only `trainer_state.json`). `session.json` lists the zip's files, and a zip over 2 GB prints a warning.
+- `baseline_eval.py` and `finetune.py` have no clean time limit yet: if the budget runs out during one of them, it is killed and marked failed.
+- **If a Kaggle session dies:** download (or save) `kernelforge_outputs.zip` first, then in a new session attach it as a dataset and set `RESUME_FROM` to its `/kaggle/input/...` path. Resume assumes the zip was saved.
+- **Not yet verified on a GPU:** whether the largest shapes fit in 16 GB or a CUDA OOM retry ever succeeds; that a real CUDA OOM message is classified `oom`; a full Kaggle Run All (mid-stage zip refresh, `--resume-from` from `/kaggle/input`); whether `/kaggle/working` survives a dead session; the interpreter-mode OOM retry.
+
 **Evaluation split (changed Oct 1, 2026):** train/val/test is now **split by template**. One whole template per category is held out (100 test entries; 180 train, 20 val). A random shape-level split put the same kernel, with different shape constants, in both train and test, so a fine-tuned model would score by memorisation. `--split random` still exists for comparison, but report the template split.
 
 **1. Ship the live demo (Kaggle, GPU T4, Internet on):**
