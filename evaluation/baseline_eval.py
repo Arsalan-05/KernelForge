@@ -1,116 +1,67 @@
-"""Phase 3: baseline evaluation of the un-fine-tuned base model."""
+"""Phase 3: baseline evaluation of the un-fine-tuned base model.
+
+    python evaluation/baseline_eval.py --device cuda                       # greedy pass@1, all held-out prompts
+    python evaluation/baseline_eval.py --device cuda --few-shot            # + one solved TRAIN example in the prompt
+    python evaluation/baseline_eval.py --device cuda --num-candidates 4 --repair-rounds 1   # + search on 25 prompts
+    python evaluation/baseline_eval.py --dry-run --device cpu              # pipeline check, no model
+
+See evaluation/common.py for --resume, --max-minutes and the search flags.
+"""
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from evaluation.common import (
-    aggregate_metrics,
-    evaluate_generated_kernel,
-    print_metrics_table,
-    save_eval_report,
-)
-from kernelforge.dataset import interleave_by_category, load_training_data, make_split, template_of
-from kernelforge.model import GenerationConfig, KernelGenerator, load_generation_config
+from evaluation.common import EVAL_REPETITION_PENALTY, add_eval_args, evaluate
+from kernelforge.dataset import few_shot_picker, load_eval_entries, make_split, template_of
+from kernelforge.model import KernelGenerator, load_generation_config
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> Path:
     parser = argparse.ArgumentParser(description="Baseline eval: un-fine-tuned model on held-out test set.")
-    parser.add_argument("--config", type=Path, default=Path("training/configs/qwen2.5-coder-1.5b.json"))
-    parser.add_argument("--dataset", type=Path, default=None, help="Path to verified dataset.jsonl")
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--limit", type=int, default=None, help="Cap number of test examples")
-    parser.add_argument("--warmup", type=int, default=5)
-    parser.add_argument("--iters", type=int, default=20)
-    parser.add_argument("--timeout", type=float, default=60.0)
-    parser.add_argument("--skip-verification", action="store_true", help="Parse only, no harness run")
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Skip model inference; use ground-truth kernels to validate the eval pipeline",
-    )
-    parser.add_argument("--split", choices=["template", "random"], default="template",
-                        help="template = held-out ops (no leakage); random = shape-level split")
-    args = parser.parse_args()
+    add_eval_args(parser)
+    parser.add_argument("--few-shot", action="store_true",
+                        help="Show one solved example from the TRAIN split before each prompt")
+    parser.add_argument("--few-shot-source", choices=["other_category", "same_category"], default="other_category",
+                        help="other_category (default): the example is a different op family; "
+                             "same_category: a sibling template of the same family (a much stronger hint)")
+    args = parser.parse_args(argv)
 
-    entries = load_training_data(args.dataset)
+    entries, source = load_eval_entries(args.dataset, dry_run=args.dry_run)
     if not entries:
-        print("No dataset entries found. Run data/build_dataset.py --device cuda first,", file=sys.stderr)
-        print("or ensure data/examples/*.json exists for a minimal dry-run.", file=sys.stderr)
+        print("No verified dataset entries found. Run data/build_dataset.py --device cuda first, "
+              "or pass --dry-run to check the pipeline on the unverified template candidates.", file=sys.stderr)
         sys.exit(1)
 
-    _, _, test_entries = make_split(entries, args.split)
-    if args.limit:
-        test_entries = interleave_by_category(test_entries)[: args.limit]
-
+    train_entries, _, test_entries = make_split(entries, args.split)
+    prompt_mode = "few_shot" if args.few_shot else "zero_shot"
+    few_shot_source = args.few_shot_source if args.few_shot else None
+    example_for = few_shot_picker(train_entries, args.few_shot_source) if args.few_shot else None
     held_out = sorted({template_of(e) for e in test_entries})
-    print(f"Evaluating {len(test_entries)} held-out test examples (baseline, no adapter); "
+    print(f"Data: {source}. {len(test_entries)} held-out test examples (baseline, no adapter, {prompt_mode}); "
           f"{args.split} split, templates: {', '.join(held_out)}")
+    if args.dry_run:
+        print("DRY RUN: scoring the ground-truth kernels, not model output. Not a baseline result.")
 
     gen_config = load_generation_config(args.config)
+    gen_config.max_new_tokens = args.max_new_tokens
+    gen_config.repetition_penalty = EVAL_REPETITION_PENALTY
     generator = None if args.dry_run else KernelGenerator(gen_config)
 
-    results = []
-    for i, entry in enumerate(test_entries, 1):
-        print(f"[{i}/{len(test_entries)}] {entry['id']} ({entry['category']})")
-
-        if args.dry_run:
-            generated = (
-                f"kernel:\n{entry['triton_kernel']}\n\n"
-                f"explanation:\n{entry['optimization_explanation']}"
-            )
-        else:
-            generator.load()
-            generated = generator.generate(entry["description"], entry["pytorch_reference"])
-
-        result = evaluate_generated_kernel(
-            entry,
-            generated,
-            device=args.device,
-            warmup=args.warmup,
-            iters=args.iters,
-            timeout_s=args.timeout,
-            skip_verification=args.skip_verification,
-        )
-        results.append(result)
-
-        if result.verification:
-            print(
-                f"  status={result.verification.status} correct={result.verification.correct} "
-                f"speedup={result.verification.speedup}"
-            )
-        elif result.error:
-            print(f"  error: {result.error}")
-        else:
-            print(f"  parsed_kernel={result.parsed.has_kernel} has_explanation={result.has_explanation}")
-
-    metrics = aggregate_metrics(results)
-    print_metrics_table(metrics, title="Baseline (un-fine-tuned)")
-
-    explanation_rate = sum(1 for r in results if r.has_explanation) / len(results) * 100
-    print(f"\nExplanation field present in {explanation_rate:.1f}% of outputs.")
-
-    report_path = save_eval_report(
-        run_name="baseline",
-        model_name=gen_config.model_name,
-        adapter_path=None,
-        device=args.device,
-        results=results,
-        metrics=metrics,
-        extra={
-            "dry_run": args.dry_run,
-            "split": args.split,
-            "held_out_templates": held_out,
-            "skip_verification": args.skip_verification,
-            "explanation_rate_pct": explanation_rate,
-        },
+    # "dryrun_" prefix so a dry run is never picked up as the baseline to compare against;
+    # each few-shot source gets its own name (and results log) so modes never mix.
+    run_name = ("dryrun_" if args.dry_run else "") + (f"baseline_few_shot_{args.few_shot_source}"
+                                                      if args.few_shot else "baseline")
+    path, _ = evaluate(
+        args, test_entries, run_name=run_name, gen_config=gen_config, generator=generator,
+        prompt_mode=prompt_mode, few_shot_source=few_shot_source, example_for=example_for,
+        extra={"data_source": source, "held_out_templates": held_out},
     )
-    print(f"\nReport saved to {report_path}")
+    return path
 
 
 if __name__ == "__main__":
