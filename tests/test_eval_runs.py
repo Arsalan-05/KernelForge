@@ -236,7 +236,9 @@ def test_temperature_zero_means_greedy_decoding():
 # --- training ----------------------------------------------------------------------
 
 def test_time_limit_callback_saves_adapter_and_stops(tmp_path):
-    from transformers import TrainerControl, TrainerState
+    transformers = pytest.importorskip("transformers", reason="transformers not installed")
+    TrainerControl = transformers.TrainerControl
+    TrainerState = transformers.TrainerState
 
     from training.finetune import make_time_limit_callback
 
@@ -396,6 +398,7 @@ def _merged(model, kwargs):
 
 
 def test_recorded_generation_settings_match_what_generate_used(env, candidates):
+    pytest.importorskip("transformers", reason="transformers not installed")
     from kernelforge.model import KernelGenerator
 
     built = []
