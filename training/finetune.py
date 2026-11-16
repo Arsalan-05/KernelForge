@@ -230,6 +230,11 @@ def train(config: dict, backend: str, train_entries: list[dict], val_entries: li
         (output_dir / "train_log.json").write_text(json.dumps(trainer.state.log_history, indent=2))
         trainer.save_state()  # -> <run>/trainer_state.json
 
+    # Record peak GPU memory in GB; skipped safely when no GPU is present.
+    peak_memory_gb: float | None = None
+    if cuda and torch.cuda.is_available():
+        peak_memory_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
+
     model.save_pretrained(str(adapter_dir))
     tokenizer.save_pretrained(str(adapter_dir))
     return {
@@ -240,6 +245,7 @@ def train(config: dict, backend: str, train_entries: list[dict], val_entries: li
         "dropped_too_long": dropped_train + dropped_val,
         "supervised_token_fraction": supervised / total,
         "longest_example_tokens": longest,
+        "peak_memory_gb": peak_memory_gb,
     }
 
 

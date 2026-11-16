@@ -201,3 +201,38 @@ def test_baseline_comparison_skips_dry_runs_and_other_test_sets(tmp_path):
     per_category, name = load_baseline_report(tmp_path, ["b", "a"])
     assert name == "baseline_20260101T000000Z.json" and per_category == {"tag": name}
     assert load_baseline_report(tmp_path, ["z"]) == (None, None)
+
+
+# --- peak_memory_gb ----------------------------------------------------------
+
+def test_peak_memory_gb_is_none_without_gpu(tmp_path, monkeypatch, candidates):
+    """When CUDA is not available, peak_memory_gb must be None in split_info.json.
+
+    Stubs out load_eval_entries and train() so the full model is never loaded;
+    only the split_info update logic in main() is exercised.
+    """
+    import sys
+    import training.finetune as finetune
+
+    # Stub train() to return what it would on CPU (no GPU memory available).
+    fake_stats = {
+        "partial": False, "stopped_at_step": None, "steps_planned": 10,
+        "backend": "transformers", "dropped_too_long": [], "supervised_token_fraction": 0.5,
+        "longest_example_tokens": 100, "peak_memory_gb": None,
+    }
+    monkeypatch.setattr(finetune, "train", lambda *a, **kw: fake_stats)
+
+    # Stub load_eval_entries so no GPU dataset file is needed.
+    monkeypatch.setattr(finetune, "load_eval_entries",
+                        lambda *a, **kw: (candidates, "unverified template candidates (test stub)"))
+
+    # Stub build_tiny_random_model so transformers is not needed; return a dummy path string.
+    monkeypatch.setattr(finetune, "build_tiny_random_model",
+                        lambda *a, **kw: run / "dummy_model")
+
+    run = tmp_path / "test_peak_mem"
+    monkeypatch.setattr(sys, "argv", ["finetune.py", "--dry-run", "--output-dir", str(run)])
+    finetune.main()
+    info = json.loads((run / "split_info.json").read_text())
+    assert "peak_memory_gb" in info, "split_info.json must contain peak_memory_gb key"
+    assert info["peak_memory_gb"] is None, "peak_memory_gb must be None when no GPU is present"
