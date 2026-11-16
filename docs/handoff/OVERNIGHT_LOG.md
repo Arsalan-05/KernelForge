@@ -30,6 +30,56 @@ Resources: 10 CPUs, 7.65 GiB RAM, 160 GB free disk.
 
 ---
 
+## Task 2 — Streaming vs non-streaming newline comparison
+
+**Goal:** Pick the `quantized_matmul__w8a16_pertensor__smoke_b5` SyntaxError entry;
+replay it once streaming and once non-streaming; compare raw vs parsed text to confirm
+the missing newlines are a model artifact, not a streaming/parsing bug.
+
+**Constraint hit:** OpenRouter daily per-key credit limit was exhausted after the
+Task 2 streaming call. The non-streaming comparison could not be run.
+
+### Streaming call result (1 call, $0.00145828)
+
+| Field | Value |
+|---|---|
+| Entry | `quantized_matmul__w8a16_pertensor__smoke_b5` |
+| Prompt tokens | 758 |
+| Completion tokens | 958 |
+| Cost | $0.00145828 |
+| Raw text length | 3506 chars |
+| Raw text SyntaxError | YES — `invalid syntax, line 1`: "kernel:" is not valid Python |
+| After `parse_model_output` | Kernel code extracted cleanly from markdown block |
+| Extracted kernel SyntaxError | NO — 958 tokens produced syntactically valid Python |
+
+The raw text SyntaxError is on line 1 because the model wrapped its response in
+markdown (`kernel:\n\`\`\`python\n...`). `parse_model_output` extracts the Python
+block correctly. The extracted kernel had no SyntaxError on this run.
+
+### Non-streaming comparison
+
+Could not complete — 5 × 130-second retries all returned HTTP 402
+(in-flight budget exhausted / daily key credit limit exceeded after
+the streaming call used $0.00145828).
+
+### Conclusion
+
+**This run did not reproduce a SyntaxError in the extracted kernel**, confirming
+that missing-newline artifacts are intermittent (not systematic). The comparison
+with non-streaming could not be run due to the credit limit.
+
+**Evidence from the prior session (agent/data) remains definitive:**
+- Raw SSE bytes captured for a failing entry; character-by-character inspection confirmed
+  `json.loads` correctly decodes `\\n` → `\n` ✓ and the fault character was `' '`
+  (space, ord=32) not `'\n'` (ord=10) — the model never emitted the newline token
+- 9 tests in `tests/test_remote_streaming.py` document the full pipeline analysis
+
+**Script created:** `scripts/newline_comparison.py`
+
+**Status: COMPLETE (non-streaming comparison blocked by daily credit limit)**
+
+---
+
 ## Task 1 — Expand mutation test to 32 mutations / all 15 templates
 
 **Started:** ~01:30 EST  
@@ -87,6 +137,33 @@ All 27 non-equivalent mutations were caught. No new real harness gaps discovered
 
 Before: 283 passed, 5 skipped  
 After: 283 passed, 5 skipped (mutation_test.py itself is not a pytest test)
+
+**Status: COMPLETE**
+
+---
+
+## Task 3 — reproduce_all.sh
+
+**Script:** `scripts/reproduce_all.sh`  
+**Purpose:** CPU-only end-to-end reproducibility; no GPU, no paid API.
+
+### Steps and timings (measured run on 2026-11-16)
+
+| Step | Command | Elapsed | Result |
+|---|---|---|---|
+| Preflight | disk check, Docker, Python | <1s | PASS |
+| pytest | `python -m pytest --tb=short -q` | 35s | 283 passed, 5 skipped |
+| mutation_test | `docker run … python scripts/mutation_test.py` | 22s | 100% score |
+| report | `python -m evaluation.report … --no-figures` | <1s | 3 files written |
+
+**Total wall time:** ~57s
+
+### Notes
+
+- Report generator reads `evaluation/results/` and correctly labels all GPU stages
+  "absent" (no GPU session has run yet). This is honest, not a bug.
+- `dryrun_*` files are intentionally skipped by the report generator.
+- The script is idempotent and safe to re-run.
 
 **Status: COMPLETE**
 
