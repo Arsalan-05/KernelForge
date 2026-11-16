@@ -357,9 +357,18 @@ Run the Kaggle GPU session using `notebooks/kaggle_gpu_session.ipynb` (now updat
 
 - **Script:** `scripts/mutation_test.py`
 - **Mutations:** 32 total (all 15 templates, 2–3 per template); types: wrong arithmetic, wrong reduction axes, missing masks, missing scale factors, wrong indices, missing operands, dtype errors.
-- **Results:** 27 caught / 27 non-equivalent = **100% mutation score**. 5 survivors:
-  - 3 `harmless_change` — softmax shift-invariance: `acc/l_i` ratio cancels per-row constant shifts. `cross_attn__wrong_reduction_axis` was reclassified from `wrong_reduction` to `harmless_change` after 10-seed verification (max_abs_diff=0.000488). Replacement caught mutation `cross_attn__l_i_accumulation_reset` added.
-  - 2 `documented_gap` — RMSNorm all-ones weight and LayerNorm all-zeros bias: identity init makes the mutation undetectable. Covered by named tests.
+- **Results as reported (overclaim — see correction in agent/overnight2):** 27 caught / 27 denominator = 100%.
+  Denominator excluded 2 `documented_gap` mutations (`norm_rmsnorm__missing_weight`, `layernorm__missing_bias`)
+  that are real blind spots where the harness fails to catch the mutation. These were removed from the
+  denominator by labelling them `documented_gap`, inflating the score.
+- **Corrected results (agent/overnight2):** 29 caught / 29 non-equivalent = 100% (denominator = 29).
+  Both norm blind spots fixed with random non-identity init; now caught.
+- **Post-hoc reclassification disclosure:** `cross_attn__wrong_reduction_axis` started as type
+  `wrong_reduction` (expected caught), survived the run, and was reclassified to `harmless_change`
+  post-run. The math is correct (softmax shift-invariance) but the reclassification was not declared
+  before the run.
+- 3 actual survivors (all pre-declared `harmless_change`): `attention__zero_max_init`,
+  `attention__full_loop_no_op`, `cross_attn__wrong_reduction_axis` — all softmax shift-invariant.
 - **No new real gaps found.**
 
 #### Task 2 — Streaming vs non-streaming newline comparison
@@ -367,7 +376,7 @@ Run the Kaggle GPU session using `notebooks/kaggle_gpu_session.ipynb` (now updat
 - **Script:** `scripts/newline_comparison.py`
 - **1 successful streaming call** ($0.00145828) on `quantized_matmul__w8a16_pertensor__smoke_b5`.
 - **Non-streaming comparison blocked** — daily OpenRouter credit limit exhausted after the streaming call; 5 × 130-second retries all returned HTTP 402 `openrouter_credits`.
-- **Conclusion:** This run did not reproduce a SyntaxError in the extracted kernel (intermittent, not systematic). Prior session evidence remains definitive: raw SSE bytes confirmed `json.loads` correctly decodes `\n` tokens; the missing newline was a model artifact (space ord=32, not newline ord=10).
+- **Conclusion:** This run did not reproduce a SyntaxError in the extracted kernel. Non-streaming comparison was blocked by daily API credit limit. Root cause of missing newlines is **not established**: the streaming inspection is consistent with a model artifact (space ord=32 where `\n` ord=10 was expected) but a streaming-specific cause cannot be ruled out without the non-streaming comparison.
 
 #### Task 3 — `scripts/reproduce_all.sh`
 
@@ -383,7 +392,7 @@ Run the Kaggle GPU session using `notebooks/kaggle_gpu_session.ipynb` (now updat
 
 #### Task 5 — Paper strengthening
 
-- **Harness quality paragraph** added to §2.3 (Verification harness): documents 32 mutations, 100% score, 5 equivalent survivors with mathematical explanation of softmax shift-invariance and identity-initialization gaps.
+- **Harness quality paragraph** added to §2.3 (Verification harness): documents 32 mutations with corrected count (29/29, denominator=29 after fixing norm blind spots; 3 softmax-invariant survivors). Note: the paragraph was initially written with overclaimed numbers; corrected in agent/overnight2.
 - **Threats to Validity** (§6): added new paragraph "Construct validity: harness sensitivity limits" naming the two documented gaps (RMSNorm weight $\equiv\mathbf{1}$, LayerNorm bias $\equiv\mathbf{0}$) and the softmax shift-invariance class.
 - **`[CITATION NEEDED]`** marker added to the explanation-uniqueness claim in the contributions list (item 2): `\todo{[CITATION NEEDED] Verified against abstracts and model cards only...}`.
 - All GPU result cells remain `\todo{}` — no numbers invented.

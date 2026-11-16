@@ -546,3 +546,131 @@ def test_missing_weight_survives_with_ones_init():
         "Expected the harness to pass the all-ones mutant "
         "(x * ones == x, so the gap is in the template init, not the harness)"
     )
+
+
+# ---------------------------------------------------------------------------
+# LayerNorm missing-bias tests (parallel to the RMSNorm missing-weight tests)
+# ---------------------------------------------------------------------------
+
+MODEL_LAYERNORM_RANDOM_BIAS = """
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    \"\"\"LayerNorm with randomly-initialised bias (non-zero, so missing bias is detectable).\"\"\"
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.bias = nn.Parameter(torch.randn(hidden_size))  # non-zero
+
+    def forward(self, x):
+        mean = x.mean(-1, keepdim=True)
+        var = ((x - mean) ** 2).mean(-1, keepdim=True)
+        x_norm = (x - mean) * torch.rsqrt(var + self.eps)
+        return x_norm * self.weight + self.bias
+
+def get_inputs():
+    return [torch.randn(4, 32)]
+
+def get_init_inputs():
+    return [32]
+"""
+
+MODEL_LAYERNORM_MISSING_BIAS = """
+import torch
+import torch.nn as nn
+
+class ModelNew(nn.Module):
+    \"\"\"LayerNorm with the bias addition omitted (broken mutant).\"\"\"
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.bias = nn.Parameter(torch.randn(hidden_size))  # same RNG call order
+
+    def forward(self, x):
+        mean = x.mean(-1, keepdim=True)
+        var = ((x - mean) ** 2).mean(-1, keepdim=True)
+        x_norm = (x - mean) * torch.rsqrt(var + self.eps)
+        return x_norm * self.weight  # BUG: bias not added
+"""
+
+MODEL_LAYERNORM_ZEROS_BIAS = """
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    \"\"\"LayerNorm with all-zeros bias (the template default).\"\"\"
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.bias = nn.Parameter(torch.zeros(hidden_size))
+
+    def forward(self, x):
+        mean = x.mean(-1, keepdim=True)
+        var = ((x - mean) ** 2).mean(-1, keepdim=True)
+        x_norm = (x - mean) * torch.rsqrt(var + self.eps)
+        return x_norm * self.weight + self.bias
+
+def get_inputs():
+    return [torch.randn(4, 32)]
+
+def get_init_inputs():
+    return [32]
+"""
+
+MODEL_LAYERNORM_MISSING_BIAS_ZEROS = """
+import torch
+import torch.nn as nn
+
+class ModelNew(nn.Module):
+    \"\"\"LayerNorm with bias skipped but default zeros init (gap mutant).\"\"\"
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.bias = nn.Parameter(torch.zeros(hidden_size))
+
+    def forward(self, x):
+        mean = x.mean(-1, keepdim=True)
+        var = ((x - mean) ** 2).mean(-1, keepdim=True)
+        x_norm = (x - mean) * torch.rsqrt(var + self.eps)
+        return x_norm * self.weight  # BUG: bias not added — but bias is all-zeros so result is same
+"""
+
+
+def test_missing_bias_caught_with_random_init():
+    """The harness catches a missing bias addition when bias != zeros.
+
+    Parallel to test_missing_weight_caught_with_random_init for RMSNorm.
+    The LayerNorm template uses all-zeros bias by default, making missing-bias
+    undetectable. With random bias the harness correctly catches the mutant.
+    """
+    result = verify_model_kernel(
+        MODEL_LAYERNORM_RANDOM_BIAS, MODEL_LAYERNORM_MISSING_BIAS,
+        device="cpu", seed=7, warmup=0, iters=1,
+    )
+    assert result.status == "ok"
+    assert result.correct is False, (
+        "Expected the harness to catch missing bias addition "
+        "when bias is randomly initialised (not all-zeros)"
+    )
+
+
+def test_missing_bias_survives_with_zeros_init():
+    """Documents the all-zeros bias gap: when both Model and ModelNew initialise
+    their bias to zeros, skipping the addition is undetectable because x + 0 == x.
+    The harness correctly reports the outputs as equal; the limitation is in the
+    template initialisation, not the harness logic.
+    """
+    result = verify_model_kernel(
+        MODEL_LAYERNORM_ZEROS_BIAS, MODEL_LAYERNORM_MISSING_BIAS_ZEROS,
+        device="cpu", seed=0, warmup=0, iters=1,
+    )
+    assert result.status == "ok"
+    assert result.correct is True, (
+        "Expected the harness to pass the all-zeros mutant "
+        "(x + zeros == x, so the gap is in the template init, not the harness)"
+    )

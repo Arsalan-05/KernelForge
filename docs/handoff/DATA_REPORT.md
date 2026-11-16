@@ -160,7 +160,7 @@ scale = weight_fp.abs().max() / 127        self.register_buffer(
 ```
 (two statements on one line, no newline between them).
 
-Investigation: captured raw SSE bytes for a test call and confirmed the pipeline
+Investigation: captured raw SSE bytes for a streaming call and partially examined the pipeline
 is correct. OpenRouter sends `"e = 127\\ns"` (JSON-escaped `\n`) in the SSE
 `data:` line; `json.loads` decodes it to a real `\n`; `"".join(chunks)` preserves
 it. Character-by-character inspection of the stored `generated_text` for the
@@ -263,7 +263,7 @@ because too few entries reach the model on the free tier.
 | Mutation test: 7 mutations | Complete | 4/7 caught; 3 documented survivors |
 | Mutation gap test (missing_weight) | Fixed | 2 new tests in test_verify_kernel.py |
 | HTTP 402 investigation | Complete | Root cause: in-flight budget (not credits); $49.88 remaining |
-| SyntaxError investigation | Complete | Model artifact confirmed; 9 tests in test_remote_streaming.py |
+| SyntaxError investigation | Partial | Root cause not established (non-streaming comparison blocked); pipeline is correct per 9 tests in test_remote_streaming.py |
 | Script fixes (remote.py, baseline.py) | Complete | Real token counts, retry, full error body |
 | Hosted-model: 300 LLM calls | Partial | 3/300 reached model; 100% parse rate on successful calls |
 | Hosted-model: 15 smoke interpreter | Partial | 2/15 reached model; 0/2 correct (SyntaxErrors) |

@@ -44,6 +44,174 @@ from verification.verify_kernel import VerifyResult, verify_model_kernel
 
 TIMEOUT_S = 90.0
 
+# ---------------------------------------------------------------------------
+# Custom smoke entries for norm mutations that need non-identity parameter init.
+#
+# The standard norm templates use all-ones weight / all-zeros bias (matching
+# PyTorch's nn.LayerNorm / RMSNorm default init). With that init, skipping
+# weight (y = x * inv_rms instead of y = x * inv_rms * weight) gives identical
+# output because ones * x == x, and skipping bias gives identical output because
+# x + 0 == x.
+#
+# These custom entries use torch.randn so both mutations are detectable:
+# both Model AND ModelNew init from randn with the same RNG seed, so they get
+# the same non-trivial parameter values; the mutant skips applying them → caught.
+# ---------------------------------------------------------------------------
+
+_RMSNORM_RANDOM_WEIGHT_REF = '''\
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.randn(hidden_size))  # non-identity init
+
+    def forward(self, x):
+        variance = x.pow(2).mean(-1, keepdim=True)
+        x = x * torch.rsqrt(variance + self.eps)
+        return x * self.weight
+
+rows = 7
+hidden_size = 300
+
+def get_inputs():
+    return [torch.randn(rows, hidden_size, dtype=torch.float16)]
+
+def get_init_inputs():
+    return [hidden_size]
+'''
+
+_RMSNORM_RANDOM_WEIGHT_KERNEL = '''\
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _rmsnorm_kernel(
+    x_ptr, weight_ptr, out_ptr,
+    row_stride, n_cols, eps,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row_idx = tl.program_id(0)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
+    row_ptr = x_ptr + row_idx * row_stride
+    x = tl.load(row_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
+    mean_sq = tl.sum(x * x, axis=0) / n_cols
+    inv_rms = 1.0 / tl.sqrt(mean_sq + eps)
+    weight = tl.load(weight_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
+    y = x * inv_rms * weight
+    out_row_ptr = out_ptr + row_idx * row_stride
+    tl.store(out_row_ptr + col_offsets, y.to(tl.float16), mask=mask)
+
+
+class ModelNew(torch.nn.Module):
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = torch.nn.Parameter(torch.randn(hidden_size))  # non-identity init
+
+    def forward(self, x):
+        n_rows, n_cols = x.shape
+        out = torch.empty_like(x)
+        BLOCK_SIZE = triton.next_power_of_2(n_cols)
+        num_warps = min(max(BLOCK_SIZE // 256, 1), 16)
+        _rmsnorm_kernel[(n_rows,)](
+            x, self.weight, out,
+            x.stride(0), n_cols, self.eps,
+            BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps,
+        )
+        return out
+'''
+
+_RMSNORM_RANDOM_WEIGHT_ENTRY = {
+    "pytorch_reference": _RMSNORM_RANDOM_WEIGHT_REF,
+    "triton_kernel": _RMSNORM_RANDOM_WEIGHT_KERNEL,
+}
+
+_LAYERNORM_RANDOM_BIAS_REF = '''\
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))   # ones — not the blind spot
+        self.bias = nn.Parameter(torch.randn(hidden_size))    # non-zero init
+
+    def forward(self, x):
+        mean = x.mean(-1, keepdim=True)
+        var = ((x - mean) ** 2).mean(-1, keepdim=True)
+        x_norm = (x - mean) * torch.rsqrt(var + self.eps)
+        return x_norm * self.weight + self.bias
+
+rows = 7
+hidden_size = 300
+
+def get_inputs():
+    return [torch.randn(rows, hidden_size, dtype=torch.float16)]
+
+def get_init_inputs():
+    return [hidden_size]
+'''
+
+_LAYERNORM_RANDOM_BIAS_KERNEL = '''\
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _layernorm_kernel(
+    x_ptr, weight_ptr, bias_ptr, out_ptr,
+    row_stride, n_cols, eps,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row_idx = tl.program_id(0)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
+    row_ptr = x_ptr + row_idx * row_stride
+    x = tl.load(row_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
+    mean = tl.sum(x, axis=0) / n_cols
+    diff = tl.where(mask, x - mean, 0.0)
+    var = tl.sum(diff * diff, axis=0) / n_cols
+    inv_std = 1.0 / tl.sqrt(var + eps)
+    weight = tl.load(weight_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
+    bias = tl.load(bias_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
+    y = diff * inv_std * weight + bias
+    out_row_ptr = out_ptr + row_idx * row_stride
+    tl.store(out_row_ptr + col_offsets, y.to(tl.float16), mask=mask)
+
+
+class ModelNew(torch.nn.Module):
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = torch.nn.Parameter(torch.ones(hidden_size))
+        self.bias = torch.nn.Parameter(torch.randn(hidden_size))  # non-zero init
+
+    def forward(self, x):
+        n_rows, n_cols = x.shape
+        out = torch.empty_like(x)
+        BLOCK_SIZE = triton.next_power_of_2(n_cols)
+        num_warps = min(max(BLOCK_SIZE // 256, 1), 16)
+        _layernorm_kernel[(n_rows,)](
+            x, self.weight, self.bias, out,
+            x.stride(0), n_cols, self.eps,
+            BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps,
+        )
+        return out
+'''
+
+_LAYERNORM_RANDOM_BIAS_ENTRY = {
+    "pytorch_reference": _LAYERNORM_RANDOM_BIAS_REF,
+    "triton_kernel": _LAYERNORM_RANDOM_BIAS_KERNEL,
+}
+
 
 @dataclass
 class MutantResult:
@@ -572,11 +740,16 @@ MUTATIONS = [
 
     # --- norm/rmsnorm ---
     ("norm_rmsnorm__missing_divisor",         "wrong_reduction", "norm",      0, _mut_norm_rmsnorm_missing_divisor),
-    ("norm_rmsnorm__missing_weight",          "documented_gap",  "norm",      0, _mut_norm_rmsnorm_missing_weight),
+    # Fixed blind spot: use random-weight entry so missing_weight is detectable.
+    # The standard smoke entry uses all-ones weight (default init), making x*inv_rms*1==x*inv_rms
+    # and the mutation undetectable. This custom entry uses torch.randn for weight.
+    ("norm_rmsnorm__missing_weight",          "missing_operand", "norm",      0, _mut_norm_rmsnorm_missing_weight, _RMSNORM_RANDOM_WEIGHT_ENTRY),
 
     # --- norm/layernorm ---
     ("layernorm__missing_mean_centering",     "wrong_reduction", "norm",      1, _mut_layernorm_missing_mean_centering),
-    ("layernorm__missing_bias",               "documented_gap",  "norm",      1, _mut_layernorm_missing_bias),
+    # Fixed blind spot: use random-bias entry so missing_bias is detectable.
+    # The standard smoke entry uses all-zeros bias, making x+0==x and the mutation undetectable.
+    ("layernorm__missing_bias",               "missing_operand", "norm",      1, _mut_layernorm_missing_bias, _LAYERNORM_RANDOM_BIAS_ENTRY),
 
     # --- norm/rmsnorm_residual ---
     ("rmsnorm_res__missing_residual_add",     "missing_operand", "norm",      2, _mut_rmsnorm_res_missing_add),
@@ -608,15 +781,19 @@ MUTATIONS = [
 ]
 
 # Mutations expected to survive (not harness failures):
-# - "harmless_change": mathematically equivalent on all inputs.
-# - "documented_gap": equivalent only due to all-zeros/all-ones test init.
-_EQUIVALENT_TYPES = {"harmless_change", "documented_gap"}
+# - "harmless_change": mathematically equivalent on all inputs (e.g. softmax shift-invariance).
+# "documented_gap" was previously used for all-ones/all-zeros norm init blind spots.
+# Those have been fixed (custom entries with torch.randn) and reclassified as "missing_operand".
+_EQUIVALENT_TYPES = {"harmless_change"}
 
 
 def run_mutation(name: str, mutation_type: str, category: str, template_idx: int,
-                 transform_fn) -> MutantResult:
-    entries = list(SMOKE_GENERATORS[category]())
-    entry = entries[template_idx]
+                 transform_fn, custom_entry: Optional[dict] = None) -> MutantResult:
+    if custom_entry is not None:
+        entry = custom_entry
+    else:
+        entries = list(SMOKE_GENERATORS[category]())
+        entry = entries[template_idx]
     reference = entry["pytorch_reference"]
     correct_kernel = entry["triton_kernel"]
 
@@ -689,15 +866,17 @@ def main() -> int:
     print("KernelForge verification harness — mutation test")
     print("=" * 70)
     print(f"Mutations: {len(MUTATIONS)}")
-    print(f"Templates covered: {len({(cat, idx) for _, _, cat, idx, _ in MUTATIONS})}")
+    print(f"Templates covered: {len({(t[2], t[3]) for t in MUTATIONS})}")
     print(f"Timeout per mutant: {TIMEOUT_S}s")
     print(f"Mode: interpreter (TRITON_INTERPRET=1)")
     print()
 
     results: list[MutantResult] = []
-    for i, (name, mutation_type, category, idx, fn) in enumerate(MUTATIONS, 1):
+    for i, entry_tuple in enumerate(MUTATIONS, 1):
+        name, mutation_type, category, idx, fn = entry_tuple[:5]
+        custom_entry = entry_tuple[5] if len(entry_tuple) > 5 else None
         print(f"[{i:2}/{len(MUTATIONS)}] {name} ...", end=" ", flush=True)
-        r = run_mutation(name, mutation_type, category, idx, fn)
+        r = run_mutation(name, mutation_type, category, idx, fn, custom_entry)
         results.append(r)
         verdict = "CAUGHT" if r.caught else "SURVIVED"
         print(f"{verdict}  ({r.elapsed_s:.1f}s)  [{r.status}]")
@@ -721,7 +900,7 @@ def main() -> int:
     n_caught = sum(1 for r in results if r.caught)
     n_survived = len(results) - n_caught
 
-    equivalent_names = {name for name, mt, *_ in MUTATIONS if mt in _EQUIVALENT_TYPES}
+    equivalent_names = {t[0] for t in MUTATIONS if t[1] in _EQUIVALENT_TYPES}
     # Non-equivalent = mutations that SHOULD be caught
     non_equivalent = [r for r in results if r.name not in equivalent_names]
     n_ne_caught = sum(1 for r in non_equivalent if r.caught)

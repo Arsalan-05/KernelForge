@@ -300,12 +300,18 @@ submissions, we applied 32 text-substitution mutations (wrong arithmetic operato
 reduction axes, missing scale factors, missing masks, wrong indices, missing operands) across
 all 15 templates and ran each in the Triton CPU interpreter inside Docker.
 % src: scripts/mutation_test.py — 32 mutations across all 15 templates, 2026-11-16
-27 of the 32 mutations are non-equivalent; the harness caught all 27 (100\% mutation score).
-The 5 surviving mutations are equivalent by construction: 3 exploit softmax shift-invariance
-(the online-softmax $\mathrm{acc}/l_i$ ratio cancels any per-row constant shift in the
-running max, so changing which axis is used for the row maximum does not change the output),
-and 2 hit documented identity-initialization gaps (RMSNorm weight $\equiv\mathbf{1}$,
-LayerNorm bias $\equiv\mathbf{0}$). Both initialization gaps are covered by named tests.
+29 of the 32 mutations are non-equivalent; the harness caught all 29 ($29/29$; the
+denominator excludes only the 3 mathematically-equivalent softmax-invariant survivors below).
+% src: scripts/mutation_test.py 2026-11-16 overnight2 session
+The 3 surviving mutations all exploit softmax shift-invariance: the online-softmax
+$\mathrm{acc}/l_i$ ratio cancels any per-row constant shift in the running maximum~$m_i$,
+so changing which axis provides that constant is undetectable on all inputs.
+Two norm mutations that formerly survived due to identity-valued initialization
+(RMSNorm weight $\equiv\mathbf{1}$, LayerNorm bias $\equiv\mathbf{0}$) were previously
+excluded from the denominator under a ``\textit{documented\_gap}'' label; they are now
+caught with non-identity random initialization and included in the 29-denominator count.
+% src: tests/test_verify_kernel.py test_missing_weight_caught_with_random_init,
+%      test_missing_bias_caught_with_random_init
 % src: tests/test_verify_kernel.py test_missing_weight_survives_with_ones_init
 
 \paragraph{Interpreter mode versus GPU mode.}
@@ -572,16 +578,17 @@ numerically noisy can fail. The tolerance was chosen for fp16 operations; strict
 would reject more outputs. We do not test gradients, only forward passes.
 
 \paragraph{Construct validity: harness sensitivity limits.}
-Mutation testing (\S\ref{sec:harness}) identified two categories of non-detectable bugs.
-(i)~\textbf{Identity-initialization gaps}: if a normalization weight or bias buffer is initialized
-to its identity value (all-ones for the weight, all-zeros for the bias), skipping the buffer
-in the kernel produces identical output on every input. This affects RMSNorm and LayerNorm.
-The gap disappears with random initialization; named test cases document both behaviours.
-(ii)~\textbf{Softmax shift-invariance}: the final $\mathrm{acc}/l_i$ normalization in online
-softmax cancels any per-row constant shift in the running maximum $m_i$, so certain changes
-to the reduction axis are undetectable on all inputs. This is a mathematical identity, not
-a harness weakness, and applies only to mutations that preserve the per-row-constant structure.
-No other non-equivalent mutations survived across 32 mutations on all 15 templates.
+Mutation testing (\S\ref{sec:harness}) identified one remaining class of non-detectable
+mutations: \textbf{Softmax shift-invariance}: the final $\mathrm{acc}/l_i$ normalization in
+online softmax cancels any per-row constant shift in the running maximum $m_i$, so mutations
+that change which axis provides that constant are undetectable on all inputs. This is a
+mathematical identity, not a harness weakness, and applies only to mutations that preserve
+the per-row-constant structure. The three surviving mutations fall into this class.
+An earlier concern about identity-valued parameter initialization
+(RMSNorm weight $\equiv\mathbf{1}$, LayerNorm bias $\equiv\mathbf{0}$) has been addressed:
+the mutation test now uses non-identity random initialization for norm templates and both
+mutations are correctly caught. No other non-equivalent mutations survived across 32
+mutations on all 15 templates.
 
 \paragraph{Internal validity: single GPU, no variance.}
 All timings come from a single run on a single T4 instance. We report medians over 20--30 warmup-excluded

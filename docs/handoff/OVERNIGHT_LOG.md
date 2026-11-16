@@ -68,11 +68,15 @@ the streaming call used $0.00145828).
 that missing-newline artifacts are intermittent (not systematic). The comparison
 with non-streaming could not be run due to the credit limit.
 
-**Evidence from the prior session (agent/data) remains definitive:**
-- Raw SSE bytes captured for a failing entry; character-by-character inspection confirmed
-  `json.loads` correctly decodes `\\n` → `\n` ✓ and the fault character was `' '`
-  (space, ord=32) not `'\n'` (ord=10) — the model never emitted the newline token
-- 9 tests in `tests/test_remote_streaming.py` document the full pipeline analysis
+**Evidence from the streaming inspection (agent/data) — partial; non-streaming comparison was not done:**
+- Raw SSE bytes captured for a failing entry; character-by-character inspection showed
+  `json.loads` correctly decodes `\\n` → `\n` ✓ and the fault character at that position
+  was `' '` (space, ord=32) not `'\n'` (ord=10) — consistent with the model not emitting a newline
+- 9 tests in `tests/test_remote_streaming.py` document that the pipeline correctly handles newlines
+- **Non-streaming comparison was blocked (daily API credit limit).** Without a non-streaming
+  comparison on the same prompt, a streaming-specific cause cannot be fully ruled out.
+  Root cause is not established; the streaming evidence is consistent with a model artifact
+  but not conclusive.
 
 **Script created:** `scripts/newline_comparison.py`
 
@@ -89,56 +93,62 @@ docker run --rm -v "$PWD":/work kernelforge-verify python scripts/mutation_test.
 ```
 **Runtime:** ~25s (all 32 mutations serial, interpreter mode)
 
-### Results
+### Results (this session — agent/overnight, before blind-spot fix)
 
 | Metric | Value |
 |---|---|
 | Total mutations | 32 |
-| Templates covered | 15 (all) |
-| Mutations per template | 2–3 |
 | Caught | 27 |
 | Survived | 5 |
-| Non-equivalent mutations | 27 |
-| **Mutation score** | **100.0%** |
+| Denominator (non-equivalent as classified) | 27 |
+| **Mutation score as reported** | **27/27 = 100.0%** |
 
-### Per-type mutation score
+**⚠ Overclaim — see correction below.** The denominator of 27 excluded 2 `documented_gap`
+mutations (`norm_rmsnorm__missing_weight`, `layernorm__missing_bias`) that are real blind spots
+where the harness DOES fail to catch the mutation (all-ones/all-zeros init makes the mutation
+a no-op). They were called "documented gaps" and excluded from the denominator, inflating the
+score. Additionally, `cross_attn__wrong_reduction_axis` was reclassified post-hoc: it started as
+type `wrong_reduction` (expected to be caught), survived the run, and was then moved to
+`harmless_change` (expected to survive) and explained by softmax shift-invariance. This
+reclassification happened AFTER the run result was observed, not before.
 
-| Type | Total | Caught | Equiv | Score |
-|---|---|---|---|---|
-| harmless_change | 3 | 0 | 3 | n/a |
-| documented_gap | 2 | 0 | 2 | n/a |
-| dtype_error | 1 | 1 | 0 | 100% |
-| missing_mask | 3 | 3 | 0 | 100% |
-| missing_operand | 1 | 1 | 0 | 100% |
-| missing_scale | 3 | 3 | 0 | 100% |
-| wrong_arithmetic | 4 | 4 | 0 | 100% |
-| wrong_index | 5 | 5 | 0 | 100% |
-| wrong_operand | 3 | 3 | 0 | 100% |
-| wrong_reduction | 7 | 7 | 0 | 100% |
+### Correction (agent/overnight2)
 
-### Survivor analysis
+Both blind spots were fixed in the following session by providing custom template entries
+with `torch.randn` initialization. With random init:
+- `norm_rmsnorm__missing_weight` → **CAUGHT** (output mismatch: 2036/2100 elements)
+- `layernorm__missing_bias` → **CAUGHT** (output mismatch: 2092/2100 elements)
 
-**3 × harmless_change — all EQUIVALENT:**
+Corrected counts:
 
-- **`attention__zero_max_init`** — Softmax shift-invariant; m_i=0 and m_i=-inf give identical output.
-- **`attention__full_loop_no_op`** — Loop extends past diagonal, but per-element causal mask zeros out future positions.
-- **`cross_attn__wrong_reduction_axis`** (NEW) — Initially unexpected. `tl.max(s, 0)` vs `tl.max(s, 1)` changes which values appear in m_new, but the final `acc / l_i` cancels any per-row constant shift (softmax shift-invariance). Verified on 10 random seeds: max_abs_diff=0.000488 on every seed. Reclassified `harmless_change`; added `cross_attn__l_i_accumulation_reset` as the replacement genuinely-caught mutation for cross_noncausal.
+| Metric | Value |
+|---|---|
+| Total mutations | 32 |
+| Caught | 29 |
+| Survived | 3 |
+| Denominator (non-equivalent = all except 3 harmless_change) | 29 |
+| **Corrected mutation score** | **29/29 = 100.0%** |
 
-**2 × documented_gap — REAL COVERAGE GAPS (pre-existing, documented in prior session):**
+The score is still 100% but the denominator is now 29 (not 27). The two norm mutations
+are properly included and both caught. The 3 survivors are all mathematically-equivalent
+softmax-invariant mutations (`harmless_change`) — this classification was set before the
+run, not after.
 
-- **`norm_rmsnorm__missing_weight`** — Weight init = all-ones; skipping weight is a no-op. Covered by existing tests `test_missing_weight_caught_with_random_init` and `test_missing_weight_survives_with_ones_init` in `tests/test_verify_kernel.py`.
-- **`layernorm__missing_bias`** — Bias init = all-zeros; skipping bias is a no-op. Same gap as missing_weight; documented in script.
+### Post-hoc reclassification disclosure
 
-### No real gaps found
-
-All 27 non-equivalent mutations were caught. No new real harness gaps discovered.
+`cross_attn__wrong_reduction_axis` was first assigned type `wrong_reduction` (expected:
+caught). It survived. Post-run investigation showed softmax shift-invariance makes it
+equivalent. It was then reclassified to `harmless_change` and a replacement caught mutation
+(`cross_attn__l_i_accumulation_reset`) was added to cover cross_noncausal. This reclassification
+was legitimate — the math is correct — but it happened post-hoc, not before the run.
+Per the overnight2 task rules, classification types must be declared BEFORE running.
 
 ### Test suite
 
-Before: 283 passed, 5 skipped  
-After: 283 passed, 5 skipped (mutation_test.py itself is not a pytest test)
+Before (agent/overnight): 283 passed, 5 skipped  
+After (agent/overnight2): 285 passed, 5 skipped (+2 LayerNorm missing-bias tests)
 
-**Status: COMPLETE**
+**Status: SUPERSEDED by agent/overnight2 correction**
 
 ---
 
@@ -153,7 +163,7 @@ After: 283 passed, 5 skipped (mutation_test.py itself is not a pytest test)
 |---|---|---|---|
 | Preflight | disk check, Docker, Python | <1s | PASS |
 | pytest | `python -m pytest --tb=short -q` | 35s | 283 passed, 5 skipped |
-| mutation_test | `docker run … python scripts/mutation_test.py` | 22s | 100% score |
+| mutation_test | `docker run … python scripts/mutation_test.py` | 22s | 27/27 (overclaim — see Task 1 correction) |
 | report | `python -m evaluation.report … --no-figures` | <1s | 3 files written |
 
 **Total wall time:** ~57s
@@ -197,5 +207,104 @@ After: 283 passed, 5 skipped (mutation_test.py itself is not a pytest test)
 - Added missing troubleshooting row for "report shows all stages absent"
 
 **Status: COMPLETE**
+
+---
+
+# KernelForge Overnight Log — Session 2
+
+Branch: `agent/overnight2` (cut from `agent/overnight` @ `80961da`)
+Session start: 2026-11-16 02:30 EST
+Cutoff: 07:00 EST
+
+---
+
+## Task 0 — Preflight (02:30 EST)
+
+**Branch:** `agent/overnight2`, cut from `agent/overnight` @ `80961da`
+
+**Tests:** 283 passed, 5 skipped — green.
+
+**Disk:** 160 GB available.
+
+**Decisions written before any run:**
+- Classification rules for mutation types written here, before running:
+  - `harmless_change`: mathematically equivalent on ALL inputs — shift-invariance, causal mask no-ops
+  - `missing_operand`: skips a required operand (weight, bias, scale). Expected to be CAUGHT.
+  - Any survivor that is not `harmless_change` is an UNEXPECTED GAP — not a post-hoc reclassification.
+- For the two norm blind spots: custom entries with `torch.randn` will be provided. If they still
+  survive, they remain as real gaps (not reclassified).
+
+**Status: COMPLETE**
+
+---
+
+## Task 1 — Correct norm blind spots and remove overclaims (02:35–03:30 EST)
+
+### What was wrong (from agent/overnight)
+
+1. `norm_rmsnorm__missing_weight` and `layernorm__missing_bias` were classified as `documented_gap`
+   and excluded from the mutation score denominator. With all-ones/all-zeros init the mutation is
+   a no-op (ones*x==x, x+0==x), but excluding them from the denominator inflated the score.
+   These are real blind spots — the harness DOES fail to detect these mutations at default init.
+
+2. The denominator-excluded mutations made the "100%" score misleading:
+   - Reported: 27 caught / 27 non-equivalent = 100% (denominator = 27)
+   - Honest: 27 caught / 29 mutations that should be caught = 93.1% (if un-fixed)
+   
+3. `cross_attn__wrong_reduction_axis` was reclassified post-hoc (after observing it survived).
+   The reclassification is mathematically correct but was not declared before the run.
+
+### Fix
+
+**Custom template entries with `torch.randn`:** both Model AND ModelNew in the custom entries
+use `torch.randn` for weight/bias (seeded identically by the harness). The correct kernel
+gets the same weight on both sides → passes. The mutant skips the weight → fails.
+
+**Mutations reclassified (before running):**
+- `norm_rmsnorm__missing_weight`: `documented_gap` → `missing_operand`
+- `layernorm__missing_bias`: `documented_gap` → `missing_operand`
+
+**`_EQUIVALENT_TYPES`:** `documented_gap` removed. Only `harmless_change` is excluded.
+
+### New tests added
+
+- `test_missing_bias_caught_with_random_init` — LayerNorm analog of existing RMSNorm test
+- `test_missing_bias_survives_with_zeros_init` — documents the original gap
+
+### Results after fix (Docker run, interpreter mode)
+
+| Metric | Before (agent/overnight) | After (agent/overnight2) |
+|---|---|---|
+| Total mutations | 32 | 32 |
+| Caught | 27 | 29 |
+| Survived | 5 | 3 |
+| Denominator definition | 27 (excluded 3 harmless + 2 documented_gap) | 29 (excludes only 3 harmless_change) |
+| **Mutation score** | **27/27 = 100%** (overclaim) | **29/29 = 100%** (honest) |
+
+**Both norm mutations caught:**
+- `norm_rmsnorm__missing_weight` CAUGHT — 2036/2100 elements outside tolerance, max error 7.714
+- `layernorm__missing_bias` CAUGHT — 2092/2100 elements outside tolerance, max error 3.411
+
+**3 survivors (all pre-declared `harmless_change`):**
+- `attention__zero_max_init` — m_i=0 vs m_i=-inf: softmax shift-invariant
+- `attention__full_loop_no_op` — loop past diagonal, causal mask zeroes future positions
+- `cross_attn__wrong_reduction_axis` — axis=0 vs axis=1: acc/l_i cancels per-row constant
+
+### Text corrections applied
+
+- `docs/paper/paper.tex`: removed "100%" and "equivalent by construction"; replaced with honest
+  counts (29/29, denominator=29) and explanation of the correction.
+- `docs/paper/paper.tex` threats section: updated to say identity-init gap WAS present and is now fixed.
+- `docs/handoff/OVERNIGHT_LOG.md` Task 1 entry: updated with overclaim disclosure.
+- `docs/handoff/OVERNIGHT_LOG.md` Task 2 entry: "definitive" → "not established"
+- `docs/handoff/MORNING_SUMMARY.md`: corrected mutation score entry and Task 2 newline conclusion.
+- `docs/handoff/DATA_REPORT.md`: "confirmed" → "partial; root cause not established"
+
+### Test suite
+
+Before: 283 passed, 5 skipped
+After: 285 passed, 5 skipped (+2 LayerNorm missing-bias tests)
+
+**Status: COMPLETE (02:35–03:30 EST)**
 
 ---
