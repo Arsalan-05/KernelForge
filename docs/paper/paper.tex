@@ -410,9 +410,10 @@ Total            & 300 & \todo{} & \todo{} & \todo{} & \todo{} \\
 \fi
 \bottomrule
 \end{tabular}
-\caption{Dataset construction on one T4. Source: \code{data/raw/generation\_report.json}.
-\todo{add median speedup of the hand-written templates per category; this is the ceiling the
-model is trained toward.}}
+\caption{Dataset construction: how many candidates passed the GPU harness, were incorrect, ran
+out of memory, or hit another error.  Values populated from \code{data/raw/generation\_report.json};
+all cells show \todo{} until the GPU dataset run completes.
+\todo{add median speedup of the hand-written templates per category.}}
 \label{tab:dataset}
 \end{table}
 
@@ -435,8 +436,11 @@ RoPE             & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
 \fi
 \bottomrule
 \end{tabular}
-\caption{Held-out-template test set, GPU harness. Mean speedup is over passing kernels only
-(``--'' if none passed). \todo{add \% parsed and Wilson intervals, or put them in an appendix table.}}
+\caption{Pass@1 on the held-out-template test set, GPU harness.
+Greedy decoding (\texttt{repetition\_penalty=1.0}); few-shot source: other-category sibling.
+Mean speedup is over passing kernels only (``--'' if none passed).
+All cells show \todo{} until the GPU evaluation run completes.
+\todo{add \% parsed and Wilson intervals.}}
 \label{tab:main}
 \end{table}
 
@@ -453,9 +457,11 @@ Fine-tuned & \todo{} & \todo{} & \todo{} \\
 \fi
 \bottomrule
 \end{tabular}
-\caption{Training-free search, \% correct over all test prompts. Extra cost per prompt:
-\todo{mean generated tokens and harness runs per column}. \todo{the evaluation scripts do not run
-the search yet; see CHECKLIST.md.}}
+\caption{Training-free search, \% correct over all test prompts.
+Best-of-4 sampling then harness-feedback repair (\texttt{repetition\_penalty=1.0}).
+All cells show \todo{} until the GPU evaluation run completes.
+Extra cost per prompt: \todo{mean generated tokens and harness runs per column}.
+\todo{The evaluation scripts do not yet produce the search output; see CHECKLIST.md.}}
 \label{tab:search}
 \end{table}
 
@@ -471,7 +477,10 @@ QLoRA run & \todo{} & \todo{} & \todo{} & \todo{} \\
 \fi
 \bottomrule
 \end{tabular}
-\caption{Training run. Source: training logs in the session output archive.}
+\caption{QLoRA fine-tuning run on a Kaggle T4 (16\,GB).
+Wall clock and peak GPU memory recorded from the actual session.
+All cells show \todo{} until the GPU training run completes.
+Source: \code{split\_info.json} and \code{train\_log.json} in the session output archive.}
 \label{tab:training}
 \end{table}
 
@@ -511,7 +520,9 @@ Fine-tuned & \todo{} & \todo{} & \todo{} & \todo{} \\
 \fi
 \bottomrule
 \end{tabular}
-\caption{Manual explanation rubric on \todo{n} samples per model.}
+\caption{Manual explanation rubric on \todo{n} randomly sampled outputs per model
+(greedy decoding, \texttt{repetition\_penalty=1.0}, few-shot source: other-category sibling).
+All cells show \todo{} until the GPU evaluation and manual scoring are complete.}
 \label{tab:rubric}
 \end{table}
 
