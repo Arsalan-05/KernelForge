@@ -34,7 +34,7 @@ This is the single plan for the project. It replaces `PROJECT PLAN.md` (build ro
 
 LLM-driven GPU kernel generation is an active, crowded research area. Prior work is better resourced than a solo student project can match (see **Prior work**). This project deliberately does **not** try to beat it on broad coverage or raw speedup. It targets gaps that are still open:
 
-1. **Data-efficient specialization instead of broad, RL-heavy coverage.** Kevin-32B, AutoTriton and TritonRL rely on large-scale RL and heavy compute to chase generic operator coverage. Few ask how good a narrowly specialized model can get with a small, curated supervised dataset, zero RL, and a free-tier compute budget.
+1. **Data-efficient specialization instead of broad, RL-heavy coverage.** Kevin-32B (CUDA), AutoTriton and TritonRL (Triton; supervised fine-tuning followed by RL) rely on RL and substantial compute to chase generic operator coverage. Few ask how good a narrowly specialized model can get with a small, curated supervised dataset, zero RL, and a free-tier compute budget.
 2. **Explainability.** Every surveyed system outputs a kernel and a benchmark number. None explain *why* the optimization works (which tiling, fusion, or memory-access decision was made). This is unclaimed and cheap to add.
 3. **One verification harness, everywhere.** The same `verify_model_kernel` gates the training dataset, scores the evaluation, drives the demo's kernel search, and produces what the live demo shows. Nothing in the demo is presented as verified unless the harness ran.
 
@@ -45,14 +45,14 @@ LLM-driven GPU kernel generation is an active, crowded research area. Prior work
 ## Prior work (cite in the write-up)
 
 - **KernelBench** (Stanford Scaling Intelligence Lab, Feb 2025): the standard benchmark for LLM-generated GPU kernels; 250 PyTorch workloads. We adopt its `Model`/`ModelNew` contract.
-- **TritonBench** (Li et al., Feb 2025): Triton-specific benchmark; frontier models peak below 24% correctness on real-world kernels, and speedup rarely exceeds 1.5×.
-- **KernelLLM** (Fisches et al., 2025): 8B Llama-3.1 fine-tuned for PyTorch→Triton. The closest prior work to the original framing.
-- **Kevin-32B** (Baronio et al., 2025): multi-turn RL for kernel self-refinement. Our repair loop uses the same multi-turn feedback idea **at inference time, without training**.
-- **AutoTriton / TritonRL** (Li et al., Woo et al., 2025): RL-trained Triton models.
+- **TritonBench** (Li et al., ACL Findings 2025): Triton-specific benchmark with 184 real-world GitHub operators (TritonBench-G) and a PyTorch-aligned set (TritonBench-T). Best execution accuracy 23.91% on G and 53.01% on T; best speedup among correct operators 1.56× (G) and 1.91× (T).
+- **KernelLLM** (Fisches et al., 2025): 8B Llama-3.1 Instruct, supervised fine-tuning only (no RL) on ~25k PyTorch→Triton pairs plus synthetic samples. The closest prior work: same training paradigm as ours, with ~100× more data and 16 GPUs.
+- **Kevin-32B** (Baronio et al., 2025): QwQ-32B trained with multi-turn RL to write and refine **CUDA** (not Triton) kernels. Our repair loop uses the same multi-turn feedback idea **at inference time, without training**.
+- **AutoTriton / TritonRL** (Li et al., Woo et al., 2025): 8B Triton models trained with supervised fine-tuning followed by RL with execution-based rewards.
 - **AI CUDA Engineer** (Sakana AI, 2025): agentic, training-free PyTorch→CUDA with iterative optimization.
 - **Liger Kernel**: production hand-written Triton kernels for LLM training; prior art for the patterns we target.
 
-None of these output a natural-language rationale. RL approaches need large domain-specific datasets and compute, so nobody reports what is achievable without that budget.
+None of the works we reviewed treats a natural-language explanation of the optimization as an evaluated output (some produce reasoning traces, which are not scored as explanations). RL approaches need large domain-specific datasets and compute, and we found no report of what is achievable without that budget.
 
 ## Architecture
 
@@ -147,11 +147,18 @@ Triton basics, KernelBench structure, dev environment (Kaggle GPU notebook, depe
 - Attention/GQA references mixed an fp32 mask into an fp16 matmul, so the *reference itself* raised. They now use a boolean `triu` mask with `masked_fill`.
 - The W8A8 reference used an int32 matmul that CUDA doesn't support. It now matmuls int8 values in fp32 (exact).
 - Attention kernels were whole-sequence single blocks. They're now FlashAttention-style: query-block programs, KV tiles, online softmax with exp2, tensor-core `tl.dot`, and causal/GQA loops that stop at the diagonal.
-- Decode attention is now a tiled loop with online softmax (flash-decoding style). GQA packs a whole query group per KV head into one `tl.dot`.
+- Decode attention is now a tiled loop with online softmax over the KV cache (one program per batch × head; no Flash-Decoding split-KV pass). GQA packs a whole query group per KV head into one `tl.dot`.
 - W8A16 dequantizes to fp16 before `tl.dot`, matching the reference's rounding. RoPE processes 16-row tiles. Norms pick `num_warps` from the block size.
 - `is_cuda` asserts were removed so the interpreter can run them.
 
 **Local verification:** `python data/build_dataset.py --interpret --smoke --jobs 8` in the Docker image runs one small instance per template: **15/15 pass**. A negative check confirms the gate is real: an off-by-one causal mask fails with "output contains NaN", and a missing per-channel scale fails with max abs error 1416.
+
+**Full-grid interpreter result** (`data/raw/interpret_report_2026-11-15.json`): Triton interpreter correctness, 285/300 pass, 15 out of memory in an 8 GB VM, no GPU result. The 15 OOM shapes are kept in the dataset — they are the largest attention and norm shapes:
+- `attention__causal_prefill__b16_s2048`, `attention__gqa_causal_prefill__b16_s2048`
+- `norm__rmsnorm__r65536_h{4096,8192,11008,12288}`, `norm__layernorm__r65536_h{4096,8192,11008,12288}`
+- `norm__rmsnorm_residual__r{16384,65536}_h{...}` (5 shapes)
+
+Whether these 15 shapes fit on a 16 GB T4 is untested. All 15 templates have at least one passing shape, so template correctness is established.
 
 **Deliverable:** `data/verified/dataset.jsonl` with 300+ GPU-verified triples and a per-category pass/speedup report.
 
@@ -390,10 +397,10 @@ Limitations to state: small model and dataset vs 8B–32B RL systems; 5 narrow c
 3. Runs a baseline eval on held-out templates.
 4. With `FINETUNE = True`, also runs a QLoRA fine-tune plus its evaluation.
 
-Every artifact (dataset, reports, logs, adapter) ends up in `/kaggle/working/kernelforge_outputs.zip`. Local pre-flight (Oct 1, 2026, Docker interpreter, all 300 grid shapes):
-- **261/300 pass and 0 are incorrect.**
-- The other 39 were killed for running out of memory (8 parallel jobs in an 8 GB Docker VM). They are the largest shapes: attention/RoPE at batch 8–16 × sequence 2048, and norms at 16k–65k rows.
-- On a 16 GB T4 the largest references peak at roughly 9–12 GB, so a few may still run out of memory. The dataset report now lists `oom` separately from incorrect kernels (per category and per template), so a memory limit isn't mistaken for a broken template.
+Every artifact (dataset, reports, logs, adapter) ends up in `/kaggle/working/kernelforge_outputs.zip`. Triton interpreter correctness run (Nov 15, 2026, Docker, all 300 grid shapes; `data/raw/interpret_report_2026-11-15.json`):
+- **285/300 pass. 0 are incorrect. 15 out of memory in an 8 GB VM. No GPU result.**
+- The 15 OOM shapes are the largest shapes: attention causal-prefill and GQA-causal-prefill at batch 16 × seq 2048, and norms (rmsnorm, layernorm, rmsnorm-residual) at 65536 rows or 12288 hidden. All 15 templates have at least one passing shape.
+- Whether these 15 OOM shapes fit on a 16 GB T4 is untested. The dataset report lists `oom` separately from incorrect kernels (per category and per template), so a memory limit isn't mistaken for a broken template.
 
 **Session hardening (Nov 2026, CPU-tested only):** see DOCUMENTATION.md → *One-step GPU session* for details.
 - The zip is refreshed after every stage and every 10 minutes during a long one. `stage_status.json` (stage, ok/failed/skipped, seconds, error) and `session.json` (env, dataset report, artifacts) are inside it. A failed stage doesn't stop later stages that don't depend on it.

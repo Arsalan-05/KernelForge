@@ -236,8 +236,13 @@ the rest are kept with their failure reason. Out-of-memory failures are counted 
 incorrect kernels, so a memory limit on the 16\,GB GPU is not mistaken for a broken template.
 % src: data/build_dataset.py; MASTER_PLAN.md Part III
 
-Before any GPU time, every template was run on a small shape through Triton's CPU interpreter
-in a Linux container. All 15 pass. % src: data/raw/interpret_report.json (15/15)
+Before any GPU time, the full grid of 300 candidates was run through Triton's CPU interpreter
+in a Linux container (Triton interpreter correctness, no GPU result):
+285/300 pass, 15 out of memory in an 8\,GB VM.
+% src: data/raw/interpret_report_2026-11-15.json — 285 passed, 0 incorrect, 15 OOM (exit code -9)
+% The 15 OOM shapes are the largest attention (batch 16 × seq 2048) and norm (65536 rows) shapes.
+% Whether they fit on a 16 GB T4 is untested.
+All 15 templates have at least one passing shape.
 This check found real bugs, including attention references that failed on a mixed-dtype matmul
 and a W8A8 reference that used an int32 matmul. It checks correctness only and gives no timing.
 None of the results below rely on it.

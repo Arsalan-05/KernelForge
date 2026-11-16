@@ -62,7 +62,7 @@ On top of that harness sits a **training-free, verifier-guided kernel search**
 (`kernelforge/search.py`): best-of-N sampling (one batched generation, up to 4
 candidates) filtered by the harness, then up to 2 repair rounds that give the model the
 exact mismatch description or traceback from its best failed attempt. Kevin-32B learns
-this multi-turn refinement with RL; here it runs at inference time on the same budget.
+this multi-turn refinement with RL (for CUDA kernels); here it runs at inference time, without training.
 
 All of this is built on a solo-compute budget: QLoRA via Unsloth on a free-tier T4,
 no RL.
