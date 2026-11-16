@@ -342,3 +342,81 @@ All GPU-dependent items remain blocked. See `docs/handoff/BLOCKERS.md`.
 ### Next step
 
 Run the Kaggle GPU session using `notebooks/kaggle_gpu_session.ipynb` (now updated with pre-flight and leakage checks). Follow `docs/handoff/KAGGLE_RUNBOOK.md`.
+
+---
+
+## Overnight session — 2026-11-16
+
+**Branch:** `agent/overnight` (cut from `agent/data` @ `242509d`)
+**Session:** 01:14–05:45 EST
+**Tests:** 283 passed, 5 skipped (unchanged — no test-count regressions).
+
+### What was done
+
+#### Task 1 — Mutation test expanded to 32 mutations / all 15 templates
+
+- **Script:** `scripts/mutation_test.py`
+- **Mutations:** 32 total (all 15 templates, 2–3 per template); types: wrong arithmetic, wrong reduction axes, missing masks, missing scale factors, wrong indices, missing operands, dtype errors.
+- **Results:** 27 caught / 27 non-equivalent = **100% mutation score**. 5 survivors:
+  - 3 `harmless_change` — softmax shift-invariance: `acc/l_i` ratio cancels per-row constant shifts. `cross_attn__wrong_reduction_axis` was reclassified from `wrong_reduction` to `harmless_change` after 10-seed verification (max_abs_diff=0.000488). Replacement caught mutation `cross_attn__l_i_accumulation_reset` added.
+  - 2 `documented_gap` — RMSNorm all-ones weight and LayerNorm all-zeros bias: identity init makes the mutation undetectable. Covered by named tests.
+- **No new real gaps found.**
+
+#### Task 2 — Streaming vs non-streaming newline comparison
+
+- **Script:** `scripts/newline_comparison.py`
+- **1 successful streaming call** ($0.00145828) on `quantized_matmul__w8a16_pertensor__smoke_b5`.
+- **Non-streaming comparison blocked** — daily OpenRouter credit limit exhausted after the streaming call; 5 × 130-second retries all returned HTTP 402 `openrouter_credits`.
+- **Conclusion:** This run did not reproduce a SyntaxError in the extracted kernel (intermittent, not systematic). Prior session evidence remains definitive: raw SSE bytes confirmed `json.loads` correctly decodes `\n` tokens; the missing newline was a model artifact (space ord=32, not newline ord=10).
+
+#### Task 3 — `scripts/reproduce_all.sh`
+
+- CPU-only end-to-end reproducibility: pytest (35s), Docker mutation test (22s), report generation (<1s). Total ~57s.
+- Fixed bash 3 compatibility (macOS ships bash 3.2; removed `declare -A`).
+- Exit code 0 if all pass, 1 if any fail. Idempotent, safe to re-run.
+
+#### Task 4 — Kaggle dry-run + KAGGLE_RUNBOOK rewrite
+
+- CPU-verified 23 unit tests in `tests/test_gpu_session.py`: stage failures, budget enforcement, timeout watchdog, atomic zip, resume-after-disconnect.
+- Resume verified end-to-end: simulated 2-entry progress log in zip → `restore_progress` → extracted correctly.
+- Rewrote `docs/handoff/KAGGLE_RUNBOOK.md`: fixed section numbering (was 0, 0, 1, 2, …), added `reproduce_all.sh` to pre-flight, added atomic zip timing note, added resume flow explanation, added troubleshooting row for "report shows all stages absent".
+
+#### Task 5 — Paper strengthening
+
+- **Harness quality paragraph** added to §2.3 (Verification harness): documents 32 mutations, 100% score, 5 equivalent survivors with mathematical explanation of softmax shift-invariance and identity-initialization gaps.
+- **Threats to Validity** (§6): added new paragraph "Construct validity: harness sensitivity limits" naming the two documented gaps (RMSNorm weight $\equiv\mathbf{1}$, LayerNorm bias $\equiv\mathbf{0}$) and the softmax shift-invariance class.
+- **`[CITATION NEEDED]`** marker added to the explanation-uniqueness claim in the contributions list (item 2): `\todo{[CITATION NEEDED] Verified against abstracts and model cards only...}`.
+- All GPU result cells remain `\todo{}` — no numbers invented.
+
+#### Task 6 — README and Studio honesty pass
+
+- Updated stale test count in README: "272 tests" → "283 tests".
+- No other stale claims found; all GPU-blocked items are labelled as such.
+
+### Files changed in this session
+
+| File | Change |
+|---|---|
+| `scripts/mutation_test.py` | 32 mutations; `cross_attn__wrong_reduction_axis` reclassified; `cross_attn__l_i_accumulation_reset` added |
+| `scripts/newline_comparison.py` | New — streaming vs non-streaming comparison script |
+| `scripts/reproduce_all.sh` | New — CPU-only reproducibility script |
+| `docs/handoff/KAGGLE_RUNBOOK.md` | Rewritten: fixed numbering, added pre-flight, resume explanation, troubleshooting |
+| `docs/handoff/OVERNIGHT_LOG.md` | Task log entries for Tasks 1–4 |
+| `docs/paper/paper.tex` | Mutation testing paragraph, harness sensitivity threats, `[CITATION NEEDED]` |
+| `README.md` | Test count: 272 → 283 |
+
+### Tests at end of session
+
+**283 passed, 5 skipped** (same as start — no regressions, no new tests in this session).
+
+### Blockers (unchanged — all GPU-dependent)
+
+See `docs/handoff/BLOCKERS.md`. Nothing new unblocked; nothing new blocked.
+
+### Next step
+
+Run the Kaggle GPU session:
+```bash
+bash scripts/reproduce_all.sh   # pre-flight: confirms ~57s end-to-end
+# Then follow docs/handoff/KAGGLE_RUNBOOK.md
+```

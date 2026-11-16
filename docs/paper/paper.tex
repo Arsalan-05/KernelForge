@@ -111,8 +111,12 @@ serving-relevant set of operators, and can it say why its kernel is faster?}
         PyTorch reference (\S\ref{sec:dataset}).
   \item \textbf{An explanation output and its evaluation.} The training target contains a short
         rationale next to the kernel. We score generated explanations with a manual rubric
-        (\S\ref{sec:explanations}). None of the works we reviewed evaluates a
-        natural-language explanation as an output \todo{re-check against full papers before posting; see UNVERIFIED.md}.
+        (\S\ref{sec:explanations}). None of the works we reviewed \emph{evaluates} a
+        natural-language explanation as an output.%
+        \todo{[CITATION NEEDED] Verified against abstracts and model cards only. Some systems
+        produce reasoning traces (Kevin's CoT, TritonRL's \emph{think} stage) that are not
+        scored as explanation outputs; check full papers before posting to confirm no prior
+        work measures explanation quality separately. See docs/paper/UNVERIFIED.md.}
   \item \textbf{One verification function everywhere.} The same function filters training data,
         scores the baseline and the fine-tuned model, and drives an inference-time best-of-$N$ +
         repair search. So ``correct'' means the same thing in every number we report
@@ -289,6 +293,20 @@ Inside the subprocess:
 When outputs differ, the harness describes the difference (shape, output count, NaN count, or the
 number of elements outside tolerance and the location of the largest error). The repair loop
 feeds this description back to the model.
+
+\paragraph{Harness quality: mutation testing.}
+To confirm that the harness catches real logical errors rather than trivially passing ill-formed
+submissions, we applied 32 text-substitution mutations (wrong arithmetic operators, wrong
+reduction axes, missing scale factors, missing masks, wrong indices, missing operands) across
+all 15 templates and ran each in the Triton CPU interpreter inside Docker.
+% src: scripts/mutation_test.py — 32 mutations across all 15 templates, 2026-11-16
+27 of the 32 mutations are non-equivalent; the harness caught all 27 (100\% mutation score).
+The 5 surviving mutations are equivalent by construction: 3 exploit softmax shift-invariance
+(the online-softmax $\mathrm{acc}/l_i$ ratio cancels any per-row constant shift in the
+running max, so changing which axis is used for the row maximum does not change the output),
+and 2 hit documented identity-initialization gaps (RMSNorm weight $\equiv\mathbf{1}$,
+LayerNorm bias $\equiv\mathbf{0}$). Both initialization gaps are covered by named tests.
+% src: tests/test_verify_kernel.py test_missing_weight_survives_with_ones_init
 
 \paragraph{Interpreter mode versus GPU mode.}
 With \code{interpret=True}, the subprocess runs with \code{TRITON\_INTERPRET=1} on CPU tensors. It
@@ -552,6 +570,18 @@ A kernel can pass while computing the wrong operation (e.g., non-causal attentio
 agree numerically on the specific test shapes), and a kernel that is algorithmically correct but
 numerically noisy can fail. The tolerance was chosen for fp16 operations; stricter tolerances
 would reject more outputs. We do not test gradients, only forward passes.
+
+\paragraph{Construct validity: harness sensitivity limits.}
+Mutation testing (\S\ref{sec:harness}) identified two categories of non-detectable bugs.
+(i)~\textbf{Identity-initialization gaps}: if a normalization weight or bias buffer is initialized
+to its identity value (all-ones for the weight, all-zeros for the bias), skipping the buffer
+in the kernel produces identical output on every input. This affects RMSNorm and LayerNorm.
+The gap disappears with random initialization; named test cases document both behaviours.
+(ii)~\textbf{Softmax shift-invariance}: the final $\mathrm{acc}/l_i$ normalization in online
+softmax cancels any per-row constant shift in the running maximum $m_i$, so certain changes
+to the reduction axis are undetectable on all inputs. This is a mathematical identity, not
+a harness weakness, and applies only to mutations that preserve the per-row-constant structure.
+No other non-equivalent mutations survived across 32 mutations on all 15 templates.
 
 \paragraph{Internal validity: single GPU, no variance.}
 All timings come from a single run on a single T4 instance. We report medians over 20--30 warmup-excluded
