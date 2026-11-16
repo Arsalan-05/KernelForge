@@ -69,6 +69,22 @@ def _clean_explanation(text: str) -> str | None:
     return text or None
 
 
+def is_degenerate_output(text: str, tail_chars: int = 300, threshold: float = 0.5) -> bool:
+    """True when >threshold of the last tail_chars characters are one repeated character.
+
+    Catches fp16/bf16 NaN degeneration on MPS and similar hardware where NaN
+    logits cause argmax to return token 0 repeatedly (observed as '!!!...!').
+    threshold=0.5 means more than half the tail is a single character.
+    """
+    if not text:
+        return False
+    tail = text[-tail_chars:]
+    if len(tail) < 2:
+        return False
+    most_common = max(tail.count(c) for c in set(tail))
+    return most_common / len(tail) > threshold
+
+
 def parse_model_output(text: str) -> ParsedOutput:
     """Extract kernel and explanation from model output.
 

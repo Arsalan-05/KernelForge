@@ -36,7 +36,7 @@ repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(repo_root))
 
 from data.templates import GENERATORS, SMOKE_GENERATORS
-from kernelforge.parsing import parse_model_output
+from kernelforge.parsing import is_degenerate_output, parse_model_output
 from kernelforge.prompts import build_messages
 
 RESULTS_DIR = repo_root / "evaluation" / "results"
@@ -116,7 +116,7 @@ def _generate_one(model, tokenizer, entry: dict, device) -> tuple[str, float, in
     """
     import torch
 
-    messages = build_messages(entry["description"], entry["pytorch_reference"], notes=True)
+    messages = build_messages(entry["description"], entry["pytorch_reference"])
     prompt = _apply_chat_template(tokenizer, messages)
 
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
@@ -152,6 +152,16 @@ def _verify_in_docker(entry: dict, generated_text: str) -> dict:
     raw_text, extracted_kernel.  Storing raw_text and extracted_kernel in
     the checkpoint allows post-hoc comparison to confirm extraction fidelity.
     """
+    if is_degenerate_output(generated_text):
+        return {
+            "parse_status": "degenerate",
+            "verify_status": None,
+            "correct": False,
+            "error": "degenerate_output: repeated single character >50% of tail",
+            "raw_text": generated_text,
+            "extracted_kernel": None,
+        }
+
     parsed = parse_model_output(generated_text)
     if not parsed.has_kernel:
         return {
@@ -304,7 +314,9 @@ def _build_report(records: list[dict]) -> dict:
         ps = r.get("parse_status", "unknown")
         vs = r.get("verify_status", "unknown")
         err = r.get("error") or ""
-        if ps != "ok":
+        if ps == "degenerate":
+            key = "degenerate_output"
+        elif ps != "ok":
             key = "parse_failure"
         elif vs == "timeout":
             key = "timeout"

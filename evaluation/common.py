@@ -22,7 +22,7 @@ from typing import Callable
 
 from kernelforge.dataset import CATEGORIES, interleave_by_category
 from kernelforge.model import effective_settings, generation_kwargs
-from kernelforge.parsing import ParsedOutput, parse_model_output
+from kernelforge.parsing import ParsedOutput, is_degenerate_output, parse_model_output
 from kernelforge.prompts import format_response
 from kernelforge.search import SearchConfig, run_search
 from verification.verify_kernel import VerifyResult, verify_model_kernel
@@ -36,6 +36,8 @@ EVAL_REPETITION_PENALTY = 1.0
 
 def outcome_of(parsed_kernel: bool, verification: dict | None, error: str | None = None) -> str:
     """One label per entry, so reports separate parse failures from wrong kernels."""
+    if error and "degenerate_output" in error:
+        return "degenerate_output"
     if not parsed_kernel:
         return "no_kernel"
     if not verification or verification.get("ran") is False:
@@ -114,6 +116,17 @@ def evaluate_generated_kernel(
     parsed = parse_model_output(generated_text)
     verification = None
     error = None
+
+    if is_degenerate_output(generated_text):
+        return EntryEvalResult(
+            id=entry["id"],
+            category=entry["category"],
+            generated_text=generated_text,
+            parsed=parsed,
+            verification=None,
+            has_explanation=False,
+            error="degenerate_output: repeated single character >50% of tail",
+        )
 
     if not parsed.has_kernel:
         error = "no parseable kernel in model output"
