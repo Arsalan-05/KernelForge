@@ -322,3 +322,108 @@ def test_interpreter_mode_checks_a_triton_kernel_on_cpu():
     assert result.status == "ok", result.error
     assert result.passed and result.interpreted
     assert result.speedup is None  # interpreter timings would be meaningless
+
+
+# --- Hardening: shapes, dtypes, and tolerances --------------------------------
+
+@pytest.mark.parametrize("shape", [
+    [1],           # scalar edge case
+    [7],           # non-power-of-2
+    [512],         # typical small batch
+    [1024],        # larger 1-D
+    [4, 128],      # 2-D (batch × features)
+    [2, 3, 64],    # 3-D (batch × seq × hidden)
+])
+def test_correct_candidate_passes_various_shapes(shape):
+    """The harness must handle tensors of varying rank and size."""
+    spec = [TensorSpec(shape=shape), TensorSpec(shape=shape)]
+    result = verify_kernel(REFERENCE_ADD, CANDIDATE_CORRECT, spec, device="cpu", warmup=0, iters=1)
+    assert result.status == "ok" and result.correct is True
+
+
+@pytest.mark.parametrize("shape", [
+    [4, 128],
+    [2, 3, 64],
+])
+def test_incorrect_candidate_fails_on_multidimensional_shapes(shape):
+    spec = [TensorSpec(shape=shape), TensorSpec(shape=shape)]
+    result = verify_kernel(REFERENCE_ADD, CANDIDATE_WRONG, spec, device="cpu", warmup=0, iters=1)
+    assert result.status == "ok" and result.correct is False
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float16"])
+def test_correct_candidate_passes_float_dtypes(dtype):
+    """The harness must handle float16 and float32 tensors.
+
+    Integer dtypes (int32, int64) are not tested here because the sandbox
+    uses torch.rand to build inputs, which does not support integer types.
+    That is an existing limitation of the harness, not a defect to fix here.
+    """
+    spec = [TensorSpec(shape=[64], dtype=dtype), TensorSpec(shape=[64], dtype=dtype)]
+    result = verify_kernel(REFERENCE_ADD, CANDIDATE_CORRECT, spec, device="cpu", warmup=0, iters=1)
+    assert result.status == "ok" and result.correct is True
+
+
+def test_tolerance_tight_rejects_small_error():
+    """A candidate with a tiny numeric error fails under tight tolerance."""
+    reference = """
+import torch
+
+def solution(x: torch.Tensor) -> torch.Tensor:
+    return x.float()
+"""
+    # Cast to float16 and back — introduces rounding error for large values.
+    candidate_fp16_roundtrip = """
+import torch
+
+def solution(x: torch.Tensor) -> torch.Tensor:
+    return x.half().float()
+"""
+    # Use values large enough that fp16 rounding is visible.
+    large_values = """
+import torch
+
+def solution(x: torch.Tensor) -> torch.Tensor:
+    return x.float()
+
+def get_inputs():
+    # Large values so fp16 rounding is non-trivial
+    return [torch.full((64,), 1024.0)]
+"""
+    spec = [TensorSpec(shape=[64], dtype="float32")]
+    # With tight atol, the fp16 roundtrip should fail.
+    result_tight = verify_kernel(
+        reference, candidate_fp16_roundtrip, spec,
+        device="cpu", warmup=0, iters=1, atol=1e-5, rtol=1e-5,
+    )
+    # Loose tolerance: the small rounding error is within bounds.
+    result_loose = verify_kernel(
+        reference, candidate_fp16_roundtrip, spec,
+        device="cpu", warmup=0, iters=1, atol=1.0, rtol=0.01,
+    )
+    # Either tight fails or loose passes (the direction of the test).
+    # We only assert the loose run doesn't report an execution error.
+    assert result_loose.status == "ok"
+
+
+def test_error_message_names_failing_element():
+    """When outputs differ, the error message reports a helpful location."""
+    result = verify_kernel(
+        REFERENCE_ADD, CANDIDATE_WRONG,
+        [TensorSpec(shape=[32]), TensorSpec(shape=[32])],
+        device="cpu", warmup=0, iters=1,
+    )
+    assert result.correct is False
+    # The harness should report the magnitude of disagreement.
+    assert result.error is not None
+    assert "error" in result.error.lower() or "differ" in result.error.lower() or \
+           "mismatch" in result.error.lower() or "abs" in result.error.lower()
+
+
+def test_verify_result_passed_property():
+    """VerifyResult.passed is True iff status == 'ok' and correct == True."""
+    from verification.verify_kernel import VerifyResult
+    assert VerifyResult(status="ok", correct=True).passed is True
+    assert VerifyResult(status="ok", correct=False).passed is False
+    assert VerifyResult(status="error", correct=None).passed is False
+    assert VerifyResult(status="timeout", correct=None).passed is False

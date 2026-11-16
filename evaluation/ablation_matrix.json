@@ -1,0 +1,83 @@
+{
+  "_comment": "Ablation matrix for the KernelForge paper. Each condition under 'conditions' defines one experiment cell. The runner (scripts/run_ablations.py) iterates over conditions and launches the right eval script for each. All numbers are TODO until the GPU run.",
+  "_note": "repetition_penalty is always 1.0 (enforced in common.py:EVAL_REPETITION_PENALTY). Do not add it here.",
+
+  "base_config": "training/configs/finetune_default.json",
+
+  "conditions": [
+    {
+      "id": "base_zero_shot",
+      "description": "Base model, zero-shot (no example), greedy pass@1",
+      "model": "base",
+      "few_shot_source": null,
+      "lora_r": null,
+      "script": "evaluation/baseline_eval.py",
+      "extra_flags": []
+    },
+    {
+      "id": "base_few_shot_other",
+      "description": "Base model, few-shot from a sibling in a different category",
+      "model": "base",
+      "few_shot_source": "other_category",
+      "lora_r": null,
+      "script": "evaluation/baseline_eval.py",
+      "extra_flags": ["--few-shot-source", "other_category"]
+    },
+    {
+      "id": "base_few_shot_same",
+      "description": "Base model, few-shot from a sibling in the same category",
+      "model": "base",
+      "few_shot_source": "same_category",
+      "lora_r": null,
+      "script": "evaluation/baseline_eval.py",
+      "extra_flags": ["--few-shot-source", "same_category"]
+    },
+    {
+      "id": "ft_r8_zero_shot",
+      "description": "Fine-tuned model (LoRA rank 8), zero-shot, greedy pass@1",
+      "model": "finetuned",
+      "few_shot_source": null,
+      "lora_r": 8,
+      "script": "evaluation/finetuned_eval.py",
+      "extra_flags": [],
+      "finetune_overrides": {"lora_r": 8, "lora_alpha": 16}
+    },
+    {
+      "id": "ft_r16_zero_shot",
+      "description": "Fine-tuned model (LoRA rank 16, default), zero-shot, greedy pass@1",
+      "model": "finetuned",
+      "few_shot_source": null,
+      "lora_r": 16,
+      "script": "evaluation/finetuned_eval.py",
+      "extra_flags": [],
+      "finetune_overrides": {"lora_r": 16, "lora_alpha": 32}
+    },
+    {
+      "id": "ft_r32_zero_shot",
+      "description": "Fine-tuned model (LoRA rank 32), zero-shot, greedy pass@1",
+      "model": "finetuned",
+      "few_shot_source": null,
+      "lora_r": 32,
+      "script": "evaluation/finetuned_eval.py",
+      "extra_flags": [],
+      "finetune_overrides": {"lora_r": 32, "lora_alpha": 64}
+    },
+    {
+      "id": "ft_r16_few_shot_other",
+      "description": "Fine-tuned model (LoRA rank 16), few-shot from other category",
+      "model": "finetuned",
+      "few_shot_source": "other_category",
+      "lora_r": 16,
+      "script": "evaluation/finetuned_eval.py",
+      "extra_flags": ["--few-shot-source", "other_category"],
+      "finetune_overrides": {"lora_r": 16, "lora_alpha": 32}
+    }
+  ],
+
+  "shared_flags": {
+    "max_new_tokens": 2048,
+    "device": "cuda",
+    "split": "template",
+    "seed": 42
+  }
+}

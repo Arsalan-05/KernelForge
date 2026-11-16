@@ -80,3 +80,90 @@ def median(values: Sequence[float]) -> Optional[float]:
         return None
     mid = len(vals) // 2
     return vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
+
+
+# ---------------------------------------------------------------------------
+# pass@k estimator (Chen et al. 2021, "Evaluating Large Language Models
+# Trained on Code", arXiv:2107.03374).
+# ---------------------------------------------------------------------------
+
+def pass_at_k(n: int, c: int, k: int) -> Optional[float]:
+    """Unbiased estimator for pass@k.
+
+    Given n independent samples per problem, c of which are correct, the
+    unbiased estimator for the probability that at least one of k samples is
+    correct is:
+
+        pass@k = 1 - C(n-c, k) / C(n, k)
+
+    This equals 0.0 when c == 0 and 1.0 when c >= k.
+
+    Args:
+        n: total samples per problem (must be >= k)
+        c: correct samples (0 <= c <= n)
+        k: number of samples to draw
+
+    Returns None when n < k (not enough samples to estimate).
+    """
+    if n < k:
+        return None
+    if c < 0 or c > n:
+        raise ValueError(f"c={c} must be between 0 and n={n}")
+    if c == 0:
+        return 0.0
+    if n - c < k:
+        # Fewer than k incorrect samples: impossible to pick k without getting a correct one.
+        return 1.0
+    # Use log-domain arithmetic to avoid overflow on large n.
+    # C(n-c, k) / C(n, k) = prod_{i=0}^{k-1} (n-c-i) / (n-i)
+    log_ratio = sum(
+        math.log(n - c - i) - math.log(n - i)
+        for i in range(k)
+    )
+    return 1.0 - math.exp(log_ratio)
+
+
+def pass_at_k_aggregate(counts: Sequence[tuple[int, int]], k: int) -> Optional[float]:
+    """Average pass@k over a collection of (n, c) pairs (one per problem).
+
+    Returns the mean pass@k across problems where n >= k. Returns None if no
+    problem has enough samples.
+    """
+    estimates = [pass_at_k(n, c, k) for n, c in counts if pass_at_k(n, c, k) is not None]
+    return sum(estimates) / len(estimates) if estimates else None
+
+
+# ---------------------------------------------------------------------------
+# Failure-type breakdown
+# ---------------------------------------------------------------------------
+
+# Canonical failure types. These map raw outcome strings from evaluation/common.py
+# to a coarser display category for the report.
+FAILURE_TYPE_LABELS: dict[str, str] = {
+    "no_kernel": "syntax / no kernel",
+    "harness_exception": "harness error",
+    "not_verified": "not verified",
+    "error": "compile / runtime error",
+    "crash": "crash (OOM or hard kill)",
+    "timeout": "timeout",
+    "correct": "correct",          # not a failure, included for completeness
+    "incorrect": "wrong output",
+}
+
+
+def failure_breakdown(outcome_counts: dict[str, int]) -> dict[str, int]:
+    """Map raw outcome strings to display categories and sum counts.
+
+    Args:
+        outcome_counts: dict of {outcome_string: count} as written by
+            evaluation.common._count_outcomes().
+
+    Returns a dict of {display_label: total_count} with one entry per
+    non-zero failure type. Outcomes not in FAILURE_TYPE_LABELS are grouped
+    under "other".
+    """
+    result: dict[str, int] = {}
+    for outcome, count in outcome_counts.items():
+        label = FAILURE_TYPE_LABELS.get(outcome, "other")
+        result[label] = result.get(label, 0) + count
+    return result
