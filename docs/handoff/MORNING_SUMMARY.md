@@ -522,7 +522,7 @@ See `evaluation/results/ast_mutation_report.json` for complete numbers.
 | Mutation score | 329/329 = 100.0% |
 | Wilson 95% CI | [98.8%, 100.0%] |
 
-**Commit:** `614f777` (script), FILL_RESULTS_COMMIT
+**Commits:** `614f777` (script), `28c8a47` (results + doc update)
 
 ### Test counts
 
@@ -538,6 +538,8 @@ The skip count change: `transformers` now installed → 3 previously-skipped tes
 ### Commits this session
 
 ```
+28c8a47 Task 2: AST mutation campaign complete; 329/329 = 100% (Wilson CI [98.8%, 100%])
+bd645cd Task 3: local base-model eval complete; 0/60 pass@1 (100% parse, 23 syntax_err, 37 runtime_err)
 3bd3221 Fix test skipping: guard finetune dry-run test with datasets importskip
 614f777 Add Task 3+4+2 scripts; log Task 4 (bibliography) in OVERNIGHT_LOG
 0a5d106 Task 4: verify bibliography; promote Reflexion to NeurIPS 2023 proceedings
