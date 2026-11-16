@@ -36,7 +36,8 @@ from evaluation.report.render import (
     readme_snippet,
     stage_status,
 )
-from evaluation.report.stats import Proportion, geomean, mean, median, wilson_interval
+from evaluation.report.stats import (Proportion, failure_breakdown, geomean, mean, median,
+                                      pass_at_k, pass_at_k_aggregate, wilson_interval)
 from kernelforge.dataset import CATEGORIES as DATASET_CATEGORIES
 from verification.verify_kernel import VerifyResult
 
@@ -118,6 +119,58 @@ def test_proportion_small_flag_and_means():
     assert Proportion(1, 19).small and not Proportion(1, 20).small
     assert mean([1.0, 3.0, float("inf"), None]) == 2.0
     assert median([3.0, 1.0, 2.0, 4.0]) == 2.5 and mean([]) is None
+
+
+def test_pass_at_k_boundary_cases():
+    # Zero correct → pass@k == 0
+    assert pass_at_k(10, 0, 1) == 0.0
+    assert pass_at_k(10, 0, 4) == 0.0
+    # All correct → pass@k == 1
+    assert pass_at_k(4, 4, 4) == 1.0
+    # n - c < k → can't pick k without including a correct one
+    assert pass_at_k(5, 4, 4) == 1.0  # n-c=1 < k=4
+    # n < k → None (not enough samples)
+    assert pass_at_k(3, 2, 4) is None
+    # n == k == 1: pass@1 == c/n
+    assert pass_at_k(1, 1, 1) == 1.0
+    assert pass_at_k(1, 0, 1) == 0.0
+
+
+def test_pass_at_k_known_value():
+    # n=10, c=1, k=1: pass@1 = c/n = 0.1
+    assert pass_at_k(10, 1, 1) == pytest.approx(0.1)
+    # n=10, c=5, k=1: pass@1 = 5/10 = 0.5
+    assert pass_at_k(10, 5, 1) == pytest.approx(0.5)
+    # n=10, c=5, k=2: 1 - C(5,2)/C(10,2) = 1 - 10/45 ≈ 0.7778
+    assert pass_at_k(10, 5, 2) == pytest.approx(1.0 - 10 / 45, abs=1e-6)
+
+
+def test_pass_at_k_aggregate_ignores_underpopulated():
+    # Problem 1: n=5, c=2, k=3 → pass_at_k returns something
+    # Problem 2: n=2, c=1, k=3 → n < k → excluded
+    counts = [(5, 2), (2, 1)]
+    result = pass_at_k_aggregate(counts, k=3)
+    expected = pass_at_k(5, 2, 3)
+    assert result == pytest.approx(expected)
+    # All excluded → None
+    assert pass_at_k_aggregate([(1, 0), (2, 1)], k=5) is None
+
+
+def test_failure_breakdown_maps_outcome_strings():
+    counts = {"correct": 5, "incorrect": 2, "timeout": 1, "no_kernel": 3, "error": 4, "crash": 1}
+    bd = failure_breakdown(counts)
+    assert bd["correct"] == 5
+    assert bd["wrong output"] == 2
+    assert bd["timeout"] == 1
+    assert bd["syntax / no kernel"] == 3
+    assert bd["compile / runtime error"] == 4
+    assert bd["crash (OOM or hard kill)"] == 1
+
+
+def test_failure_breakdown_groups_unknown_as_other():
+    bd = failure_breakdown({"some_new_outcome": 7, "correct": 3})
+    assert bd["other"] == 7
+    assert bd["correct"] == 3
 
 
 def test_categories_match_dataset_module():
