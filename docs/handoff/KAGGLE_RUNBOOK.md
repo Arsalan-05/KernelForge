@@ -237,6 +237,71 @@ the session mid-zip, the previous complete zip is kept.
 
 ---
 
+## 10. Precision and NaN Guard
+
+### Generation precision on T4
+
+Generation (`KernelGenerator`) uses 4-bit NF4 quantization with fp16 activations
+(`BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)`).
+This is the standard QLoRA setup and is stable on T4 CUDA.
+
+Training uses `torch_dtype=torch.float16` and `fp16=True` in `TrainingArguments`
+(T4 supports fp16 natively; it does not support bf16).
+
+The fp16 NaN issue (repeating `!` output) was observed on MPS (Apple Silicon) with
+*full* fp16 weights — not on T4. On T4 with 4-bit quantization the NaN risk is low.
+
+### Degenerate-output detection
+
+The eval pipeline (`evaluation/common.py`) and local baseline script
+(`scripts/local_baseline_eval.py`) now detect degenerate output before attempting
+verification. If more than 50% of the last 300 generated characters are a single
+repeated character, the result is recorded as `degenerate_output` (not `syntax_error`).
+
+If you see a high `degenerate_output` count in results, check:
+1. `load_in_4bit` is `True` in `training/configs/finetune_default.json` (default)
+2. No `torch_dtype` override is bypassing quantization in `KernelGenerator`
+
+---
+
+## 11. Pre-flight Notebook Static Check (verified 2026-11-16)
+
+Checked `notebooks/kaggle_gpu_session.ipynb` statically:
+- **Hard-coded local paths:** none (no `/Users/...` or other non-Kaggle paths)
+- **Non-Kaggle absolute paths:** Cell 6 reads `/kaggle/working/kernelforge_outputs/session.json` — correct for Kaggle
+- **Imports:** `shlex` (Cell 5), `json, os` (Cell 6), `os, shutil` (Cell 7) — all standard library, always available
+- **Cell-order dependencies:** `BRANCH`, `BUDGET_HOURS`, `FINETUNE`, `EVAL_LIMIT`, `RESUME_FROM` defined in Cell 1 and used in Cell 2 and Cell 5 — correct order
+- **No forward references** — no cell reads a variable set in a later cell
+
+### Training pipeline CPU dry-run (verified 2026-11-16)
+
+```bash
+python training/finetune.py --dry-run
+```
+
+Result: **complete** (exit code 0).
+
+What was exercised:
+- Template entry loading from all 5 categories (GENERATORS, unverified — dry-run mode)
+- `build_messages` + `render_prompt` tokenization, prompt+answer assembly
+- Loss masking: 59% supervised tokens (answer-only), 41% prompt tokens masked to -100
+- Tiny random Qwen2 (2 layers, hidden=64) created from configured model's tokenizer
+- LoRA config applied via `get_peft_model` (32,768 trainable params / 9.8M total)
+- `DataCollatorForSeq2Seq` padding
+- 2 optimizer steps (HuggingFace `Trainer`, transformers backend, CPU fp32)
+- `split_info.json`, `held_out_test.jsonl`, `train_log.json`, `trainer_state.json` written
+- LoRA adapter saved to `training/checkpoints/dryrun_*/adapter/`
+
+What was **not** exercised:
+- Real model weights (tiny random weights → loss is noise, ~11.9)
+- CUDA / T4 GPU path (CPU only)
+- Unsloth backend (uses `transformers` backend on CPU)
+- 4-bit quantization (CPU path loads full fp32)
+- `TimeLimitCallback` (`--max-minutes` not passed)
+- `datasets.Dataset` load from JSONL (dry-run uses template candidates directly)
+
+---
+
 ## 9. Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -248,3 +313,4 @@ the session mid-zip, the previous complete zip is kept.
 | `split_info.json` has `peak_memory_gb: null` | GPU OOM during training | Lower `per_device_train_batch_size` in `training/configs/finetune_default.json` |
 | `--resume-from` path not found | Dataset not attached | Attach the dataset zip in Kaggle UI before running |
 | `report` shows all stages "absent" | Zip contains only `progress_cuda.jsonl` | The dataset stage may not have written `generation_report.json` — check `stage_status.json` |
+| Eval shows many `degenerate_output` entries | fp16 NaN (unlikely on T4+4bit) | Verify `load_in_4bit=true` in finetune_default.json |

@@ -1,5 +1,44 @@
 # KernelForge Overnight Log
 
+---
+
+## Kaggle Fine-Tuning Safety Session (2026-11-16, branch `agent/overnight2`)
+
+Four tasks completed before the Kaggle run. All 319 tests pass. No push.
+
+### Task 1 — Training-data audit
+- Audited all 300 generated entries: 0/300 missing required imports or `class ModelNew`.
+- 20/20 random sample pass both checks.
+- Added `tests/test_training_data.py` (8 tests).
+
+### Task 2 — Prompt match
+- **Mismatch found and fixed:** `scripts/local_baseline_eval.py` called `build_messages(..., notes=True)`.
+  Training (`finetune.py`) and Kaggle eval (`KernelGenerator.generate()`) both use `notes=False` (no TRITON_NOTES).
+- Changed `local_baseline_eval.py` to `notes=False`.
+- Note: the existing 60-entry numbers in DATA_REPORT were collected with `notes=True`; they are not directly comparable to the Kaggle baseline.
+- Three tests added to `tests/test_training_data.py` asserting `notes=True` absent from all callers.
+
+### Task 3 — Degenerate-output guard
+- Added `is_degenerate_output(text, tail_chars=300, threshold=0.5)` to `kernelforge/parsing.py`.
+- Wired into `evaluation/common.py:evaluate_generated_kernel()` and `scripts/local_baseline_eval.py:_verify_in_docker()`.
+- `outcome_of()` returns `"degenerate_output"` when error contains that string.
+- `_build_report()` adds `"degenerate_output"` bucket before `"parse_failure"`.
+- 17 tests added in `tests/test_degenerate_output.py`.
+- KAGGLE_RUNBOOK: added Section 10 (precision and NaN guard); T4 uses 4-bit NF4 + fp16 compute — stable. NaN was an MPS+full-fp16 artifact, not expected on T4.
+
+### Task 4 — Notebook static check + dry run
+- **Static check passed:** no hardcoded local paths, all imports are stdlib, no forward variable references.
+- **CPU dry-run passed:** `python training/finetune.py --dry-run` completes in ~12s. Exercises tokenization, loss masking (59% supervised tokens), LoRA setup, 2 optimizer steps, adapter save. Does NOT exercise GPU/CUDA, Unsloth, 4-bit quant, or `datasets` JSONL loading.
+- KAGGLE_RUNBOOK: added Section 11 with static check and dry-run findings.
+
+### Commits (branch `agent/overnight2`)
+- `3d4c1a8` — Baseline eval: error breakdown, pipeline fix, 1536 rerun, truncation inspection
+- `01462eb` — fp32 rerun: confirm fp16 NaN as cause of !!!! output on MPS
+- `33de670` — Tasks 1-3: training-data audit, prompt match fix, degenerate-output guard
+- Final commit: Task 4 + RUNBOOK + this log entry
+
+---
+
 Branch: `agent/overnight` (cut from `agent/data` @ `242509d`)  
 Session start: 2026-11-16 01:14 EST  
 Cutoff: 05:45 EST
