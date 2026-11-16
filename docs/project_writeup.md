@@ -37,12 +37,14 @@ changed.
 | Work | Contribution | Gap vs KernelForge |
 |---|---|---|
 | **KernelBench** (Stanford SIL, 2025) | 250 PyTorch ML workloads, standard eval harness | Broad generic ops; no explanations |
-| **TritonBench** (Li et al., 2025) | Hardware-aware Triton benchmark | Frontier models <24% correct on hard kernels |
-| **KernelLLM** (Fisches et al., 2025) | 8B Llama fine-tuned for PyTorch→Triton | No explanation field; RL-scale adjacent |
-| **Kevin-32B** (Baronio et al., 2025) | 32B + multi-turn RL self-refinement | Large compute; no explanations |
-| **AutoTriton / TritonRL** (2025) | RL for Triton | Heavy training budget |
+| **TritonBench** (Li et al., ACL Findings 2025) | Triton benchmark: 184 GitHub operators (G) + PyTorch-aligned set (T) | Best execution accuracy 23.91% (G) / 53.01% (T); best speedup 1.56× / 1.91× |
+| **KernelLLM** (Fisches et al., 2025) | 8B Llama 3.1 SFT on ~25k PyTorch→Triton pairs | Supervised like us, but ~100× more data, 16 GPUs; no explanation field |
+| **Kevin-32B** (Baronio et al., 2025) | QwQ-32B + multi-turn RL, generates **CUDA** kernels | Large compute; no explanations |
+| **AutoTriton / TritonRL** (2025) | 8B Triton models: SFT then RL | Heavy training budget |
 | **AI CUDA Engineer** (Sakana, 2025) | Agentic iterative CUDA translation | Training-free but no explanation output |
 | **Liger Kernel** | Hand-optimized Triton for LLM training | Not LLM-generated; relevant kernel patterns |
+
+Verified citations and the exact claims we make about each work: [`docs/paper/SOURCES.md`](paper/SOURCES.md).
 
 ## This project's contribution
 
