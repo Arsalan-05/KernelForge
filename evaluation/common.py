@@ -189,6 +189,48 @@ def aggregate_metrics(results: list[EntryEvalResult]) -> dict[str, CategoryMetri
     return aggregate_rows([result_row(r) for r in results])
 
 
+def save_eval_report(
+    *,
+    run_name: str,
+    model_name: str,
+    adapter_path: str | None,
+    device: str,
+    results: list[EntryEvalResult],
+    metrics: dict[str, "CategoryMetrics"],
+    extra: dict | None = None,
+) -> Path:
+    """Build a minimal eval-report JSON and write it to RESULTS_DIR.
+
+    This helper lets tests and tooling write a report without running the full
+    generation pipeline.  ``extra`` is merged into the top level, so callers can
+    supply ``dry_run``, ``split``, ``held_out_templates``, ``generation_settings``,
+    ``few_shot_source``, ``prompt_mode``, ``repetition_penalty``, etc.
+    """
+    rows = [result_row(r) for r in results]
+    report: dict = {
+        "run_name": run_name,
+        "model_name": model_name,
+        "adapter_path": adapter_path,
+        "device": device,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "partial": False,
+        "prompts_planned": len(rows),
+        "prompts_scored": len(rows),
+        "per_category": {c: m.to_dict() for c, m in metrics.items() if m.total > 0},
+        "outcomes": _count_outcomes(rows),
+        "results": rows,
+        **(extra or {}),
+    }
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = RESULTS_DIR / f"{run_name}_{_timestamp()}.json"
+    n = 1
+    while path.exists():
+        n += 1
+        path = RESULTS_DIR / f"{run_name}_{_timestamp()}_{n}.json"
+    path.write_text(json.dumps(report, indent=2))
+    return path
+
+
 # --- incremental results -------------------------------------------------------
 
 class ResultsLog:
