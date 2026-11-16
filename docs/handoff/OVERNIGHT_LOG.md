@@ -168,3 +168,34 @@ After: 283 passed, 5 skipped (mutation_test.py itself is not a pytest test)
 **Status: COMPLETE**
 
 ---
+
+## Task 4 — Kaggle notebook dry-run + KAGGLE_RUNBOOK.md rewrite
+
+**CPU dry-run results:**
+
+1. **Stage runner** — 23 unit tests in `tests/test_gpu_session.py` all pass on CPU:
+   - Stage failures don't stop later stages or artifact saving ✓
+   - Budget enforcement skips late stages cleanly ✓
+   - `run_command` timeout watchdog kills stuck processes ✓
+   - Atomic zip write (rename, not copy) ✓
+
+2. **Resume-after-disconnect** — verified end-to-end:
+   - Simulated a 2-entry `progress_cuda.jsonl` in a zip (session 1 output)
+   - `restore_progress(zip, root=new_root)` correctly extracted and wrote the log
+   - Confirmed the restored log has the right entry IDs and pass flags
+   - `gpu_session.py --resume-from <zip>` wires this into the dataset stage
+
+3. **Notebook cells** — syntactically valid; `env` stage correctly fails
+   (no CUDA) and continues to later stages as expected.
+
+**Rewrote `docs/handoff/KAGGLE_RUNBOOK.md`:**
+- Fixed duplicate "## 0." section numbering (was 0, 0, 1, 2, ...)
+- Added `bash scripts/reproduce_all.sh` as the first pre-flight command
+- Added CPU-verification note (23 tests) under resume section
+- Added resume flow explanation with what `restore_progress` actually does
+- Added atomic zip timing note (10 min refresh + per-stage)
+- Added missing troubleshooting row for "report shows all stages absent"
+
+**Status: COMPLETE**
+
+---
