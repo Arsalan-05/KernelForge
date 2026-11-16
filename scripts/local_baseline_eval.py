@@ -148,10 +148,10 @@ def _verify_in_docker(entry: dict, generated_text: str) -> dict:
     """
     Parse `generated_text` and verify the kernel in Docker.
 
-    Returns a dict with keys: parse_status, verify_status, correct, error
+    Returns a dict with keys: parse_status, verify_status, correct, error,
+    raw_text, extracted_kernel.  Storing raw_text and extracted_kernel in
+    the checkpoint allows post-hoc comparison to confirm extraction fidelity.
     """
-    import tempfile
-
     parsed = parse_model_output(generated_text)
     if not parsed.has_kernel:
         return {
@@ -159,6 +159,8 @@ def _verify_in_docker(entry: dict, generated_text: str) -> dict:
             "verify_status": None,
             "correct": False,
             "error": "parse_model_output: no kernel: section found or empty kernel",
+            "raw_text": generated_text,
+            "extracted_kernel": None,
         }
 
     # Write kernel + reference to temp files inside the repo (mounted at /work in Docker).
@@ -209,6 +211,8 @@ def _verify_in_docker(entry: dict, generated_text: str) -> dict:
                 "verify_status": "error",
                 "correct": False,
                 "error": (proc.stderr or proc.stdout or "")[-3000:],
+                "raw_text": generated_text,
+                "extracted_kernel": parsed.triton_kernel,
             }
         stdout = proc.stdout.strip()
         if not stdout:
@@ -217,6 +221,8 @@ def _verify_in_docker(entry: dict, generated_text: str) -> dict:
                 "verify_status": "error",
                 "correct": False,
                 "error": f"Docker produced no output. stderr: {proc.stderr[-1000:]}",
+                "raw_text": generated_text,
+                "extracted_kernel": parsed.triton_kernel,
             }
         last_line = stdout.splitlines()[-1]
         result = json.loads(last_line)
@@ -225,6 +231,8 @@ def _verify_in_docker(entry: dict, generated_text: str) -> dict:
             "verify_status": result["status"],
             "correct": result["correct"],
             "error": result.get("error"),
+            "raw_text": generated_text,
+            "extracted_kernel": parsed.triton_kernel,
         }
     except subprocess.TimeoutExpired:
         return {
@@ -232,6 +240,8 @@ def _verify_in_docker(entry: dict, generated_text: str) -> dict:
             "verify_status": "timeout",
             "correct": False,
             "error": f"Docker outer timeout ({INTERPRETER_TIMEOUT_S + 15}s)",
+            "raw_text": generated_text,
+            "extracted_kernel": parsed.triton_kernel,
         }
     except Exception as exc:
         return {
@@ -239,6 +249,8 @@ def _verify_in_docker(entry: dict, generated_text: str) -> dict:
             "verify_status": "error",
             "correct": False,
             "error": str(exc),
+            "raw_text": generated_text,
+            "extracted_kernel": parsed.triton_kernel,
         }
     finally:
         # Clean up temp files
@@ -302,6 +314,8 @@ def _build_report(records: list[dict]) -> dict:
             key = "syntax_error"
         elif "code policy" in err.lower():
             key = "policy_violation"
+        elif "NameError" in err:
+            key = "name_error"
         else:
             key = "runtime_error"
         failure_types[key] = failure_types.get(key, 0) + 1

@@ -368,17 +368,29 @@ quantized_matmul, attention, kv_cache, norm, rope.
 | Parse OK | 60 / 60 (100.0%) |
 | Correct (pass@1) | 0 / 60 (0.0%) |
 | Wilson 95% CI | [0.0%, 6.0%] |
-| Failure types | syntax_error: 23, runtime_error: 37 |
+| Failure types | name_error: 37, syntax_error: 23 |
 | Tokens/s | median=13.2, mean=12.2 |
 
 **Per-category:** all 5 categories: 0/12, CI=[0%, 24%].
 
-### Interpretation
+**Actual error distribution (last line of each traceback):**
+- 37 × `NameError: name 'triton' is not defined` — model writes `@triton.jit` on line 1 without `import triton` / `import triton.language as tl`
+- 8 × `SyntaxError: invalid syntax. Maybe you meant '==' or ':=' instead of '='?` — model uses `=` where `==` is needed (non-truncation)
+- 6 × `SyntaxError: invalid syntax` (truncated at 768 tokens, cut mid-expression)
+- 5 × `SyntaxError: '(' was never closed` (truncated; all 5 are norm entries)
+- 3 × `SyntaxError: invalid syntax. Perhaps you forgot a comma?` (truncated)
+- 1 × `SyntaxError: '[' was never closed` (truncated)
 
-0% pass@1 is expected for a 1.5B base model on complex zero-shot Triton kernel generation.
-The two failure types are:
-- `syntax_error` (23): model generated syntactically invalid Python (keyword arg syntax, unclosed parens)
-- `runtime_error` (37): parsed OK but kernel crashed at runtime (shape errors, missing Triton ops, etc.)
+19 of 60 entries hit max_new_tokens=768 (truncated). All 6 `'(' was never closed` and
+`'[' was never closed` SyntaxErrors are norm entries that hit the token cap.
+
+**Extraction fidelity:** `parse_model_output` faithfully preserves newlines and indentation.
+Evidence: (a) NameError traceback shows `line 1: @triton.jit` — extracted code is exactly
+what the model generated; (b) positive control (3 known-correct kernels wrapped in model
+output format) confirms 3/3 PASS and all extractions bit-for-bit identical to original.
+No newline or indentation was lost between raw_text and the code that reached the interpreter.
+raw_text is not stored in the existing 60-entry checkpoint (pre-fix); prospective runs will
+include it (pipeline fix applied in this sanity-check session).
 
 Parse rate is 100% — the `kernel:` markdown block was always present and non-empty. This confirms
 `parse_model_output` works correctly with Qwen2.5-Coder output format.

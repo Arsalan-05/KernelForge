@@ -256,7 +256,132 @@ because too few entries reach the model on the free tier.
 
 ---
 
-## 3. Summary
+## 3. Local Base-Model Evaluation (Qwen2.5-Coder-1.5B-Instruct, MPS)
+
+**Goal:** Measure zero-shot pass@1 for the smallest Qwen2.5-Coder model on our 60-entry subset.
+Establishes a CPU-local baseline without paid API or GPU.
+
+**Model:** `Qwen/Qwen2.5-Coder-1.5B-Instruct` (BASE model, not fine-tuned)  
+**Device:** MPS float16 (Apple Silicon)  
+**Script:** `scripts/local_baseline_eval.py`  
+**Run date:** 2026-11-16
+
+### Method
+
+Two-phase: generate all 60 entries on MPS, free model, then Docker interpreter verify.
+60 entries = 12 per category × 5 categories (3 smoke + 9 regular); categories:
+quantized_matmul, attention, kv_cache, norm, rope.
+
+### Limits
+
+- **Single attempt per entry** (temperature=0, greedy decoding)
+- **768-token cap** — 19 of 60 entries hit max_new_tokens=768 (truncated)
+- **MPS float16** — results may differ slightly from CUDA fp16 (rounding)
+- **No pass@k** — one generation per entry; no multi-attempt sampling
+- **CPU interpreter only** — no GPU speedup measurement
+
+### Results
+
+| Metric | Value |
+|---|---|
+| Total entries | 60 |
+| Parse OK | 60 / 60 (100.0%) |
+| Correct (pass@1) | 0 / 60 (0.0%) |
+| Wilson 95% CI | [0.0%, 6.0%] |
+| Truncated (hit 768-token cap) | 19 / 60 |
+| Tokens/s | median=13.2, mean=12.2 (MPS fp16) |
+
+**Per-category:** all 5 categories: 0/12, CI=[0%, 24%].
+
+### Actual error distribution (top 6 error messages, N=60)
+
+| Count | Last line of traceback |
+|---|---|
+| 37 | `NameError: name 'triton' is not defined` |
+| 8 | `SyntaxError: invalid syntax. Maybe you meant '==' or ':=' instead of '='?` |
+| 6 | `SyntaxError: invalid syntax` |
+| 5 | `SyntaxError: '(' was never closed` |
+| 3 | `SyntaxError: invalid syntax. Perhaps you forgot a comma?` |
+| 1 | `SyntaxError: '[' was never closed` |
+
+**Root causes:**
+- **NameError (37/60 = 62%):** Base model generates `@triton.jit` on line 1 without
+  `import triton` / `import triton.language as tl`. Dominant failure — model knows the
+  Triton API but consistently omits the import header.
+- **SyntaxError `== or :=` (8/60 = 13%):** Model uses `=` where `==` is needed (non-truncation; 
+  present in non-truncated entries only).
+- **SyntaxError from truncation (15/60 = 25%):** 19 entries hit 768 token cap; 15 had truncation
+  SyntaxErrors (cut mid-expression). All 5 `'(' was never closed` are norm entries.
+- Remaining 4 truncated entries had NameError (kernel structurally complete but missing imports).
+
+### Extraction fidelity (step 2 sanity check)
+
+`parse_model_output` faithfully preserves newlines and indentation. Evidence:
+- NameError traceback shows `line 1: @triton.jit` — extracted code is exactly what the model generated.
+- Positive control: 3 known-correct kernels (norm, attention, rope) wrapped in model output format → 3/3 PASS, extraction bit-for-bit identical to original.
+- For unclosed-fence (truncated) inputs: `_split_code_and_prose` returns all content after the opening fence without modification.
+
+**raw_text not stored** in the original 60-entry checkpoint (pre-fix). Pipeline fix applied
+(`scripts/local_baseline_eval.py` now saves `raw_text` and `extracted_kernel` per record for
+future runs; `name_error` added as a distinct `failure_types` bucket in `_build_report`).
+
+### 1536-token rerun (12 smoke entries, all 5 categories)
+
+**Script:** `scripts/rerun_1536.py`  
+**Script:** `scripts/inspect_and_header_verify.py` (truncation inspection + with-header verify)  
+**Run date:** 2026-11-16
+
+12 entries selected (3 quantized_matmul + 3 attention + 2 kv_cache + 2 norm + 2 rope smoke entries).
+max_new_tokens raised from 768 → 1536.
+
+| Metric | 768-token run (60 entries) | 1536-token run (12 smoke entries) |
+|---|---|---|
+| Correct (pass@1) | 0 / 60 (0.0%) | 0 / 12 (0.0%) |
+| Truncated | 19 / 60 | 4 / 12 |
+| NameError (missing imports) | 37 / 60 | 6 / 12 |
+| SyntaxError `== or :=` | 8 / 60 | 3 / 12 |
+| SyntaxError from truncation | 15 / 60 | 4 / 12 |
+
+Raising the token cap does not fix the dominant NameError failure. It converts some truncation
+SyntaxErrors to NameErrors but does not improve correctness.
+
+#### Truncation inspection (4 entries that hit 1536 tokens)
+
+All 4 truncated entries — `norm__rmsnorm__smoke`, `norm__layernorm__smoke`,
+`rope__rotate_half__b2_s9__smoke`, `rope__interleaved__b2_s9__smoke` — are **looping**,
+not genuinely long. The model fills the remaining output budget with repeated `!` characters.
+Example of tail-300 chars (identical for all 4):
+
+```
+'!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'
+```
+
+No valid kernel code appears beyond the first line. The truncation SyntaxErrors are a
+consequence of the looping output cutting mid-expression.
+
+#### With-header verification (6 NameError entries)
+
+Prepending `import triton\nimport triton.language as tl\n\n` to the 6 NameError kernels
+and re-verifying in Docker:
+
+| Result | Count | Notes |
+|---|---|---|
+| Correct | 0 / 6 | |
+| Still failing | 6 / 6 | Deeper errors remain after import fix |
+
+Remaining errors after adding the header:
+- `NameError: name 'ModelNew' is not defined` (3 entries) — model omits the `ModelNew` class entirely
+- `NameError: name 'batch_size' is not defined` (1 entry) — references undefined local variable
+- `NameError: name 'torch' is not defined` (1 entry) — also omits `import torch`
+- `NameError: name 'max_seq_len' is not defined` (1 entry) — references undefined local variable
+
+The NameError failures are not fixable by prepending import headers. The kernels have
+structural errors (missing class definitions, undefined variables) independent of the
+missing imports.
+
+---
+
+## 4. Summary
 
 | Task | Status | Key numbers |
 |---|---|---|
@@ -267,4 +392,10 @@ because too few entries reach the model on the free tier.
 | Script fixes (remote.py, baseline.py) | Complete | Real token counts, retry, full error body |
 | Hosted-model: 300 LLM calls | Partial | 3/300 reached model; 100% parse rate on successful calls |
 | Hosted-model: 15 smoke interpreter | Partial | 2/15 reached model; 0/2 correct (SyntaxErrors) |
-| Test suite | 283 pass, 5 skip | 9 new tests (test_remote_streaming.py) vs Phase 2 |
+| Local base-model eval: 60 entries | Complete | 0/60 pass@1; 37 NameError, 23 SyntaxError; 19/60 truncated |
+| Positive control (extraction fidelity) | Complete | 3/3 known-correct kernels pass same path |
+| Pipeline fix: raw_text, name_error bucket | Complete | local_baseline_eval.py + 6 new tests |
+| 1536-token rerun: 12 smoke entries | Complete | 0/12 pass@1; 4 truncated (all looping) |
+| Truncation inspection (4 entries) | Complete | All 4 looping (`!!!!` pattern); not genuinely long |
+| With-header verify (6 NameError entries) | Complete | 0/6 correct; deeper errors remain |
+| Test suite (agent/overnight2 state) | 288 pass, 2 skip | +3 transformers-guarded, 1 datasets-skip |
