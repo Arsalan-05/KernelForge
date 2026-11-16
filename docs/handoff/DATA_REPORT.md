@@ -345,35 +345,56 @@ max_new_tokens raised from 768 → 1536.
 Raising the token cap does not fix the dominant NameError failure. It converts some truncation
 SyntaxErrors to NameErrors but does not improve correctness.
 
-#### Truncation inspection (4 entries that hit 1536 tokens)
+#### Truncation inspection: fp16 NaN on MPS (4 entries that hit 1536 tokens)
 
-All 4 truncated entries — `norm__rmsnorm__smoke`, `norm__layernorm__smoke`,
-`rope__rotate_half__b2_s9__smoke`, `rope__interleaved__b2_s9__smoke` — are **looping**,
-not genuinely long. The model fills the remaining output budget with repeated `!` characters.
-Example of tail-300 chars (identical for all 4):
+All 4 truncated entries under fp16 — `norm__rmsnorm__smoke`, `norm__layernorm__smoke`,
+`rope__rotate_half__b2_s9__smoke`, `rope__interleaved__b2_s9__smoke` — produced a tail
+of repeated `!` characters filling the remaining output budget. Example tail-300 (identical
+for all 4 under fp16):
 
 ```
 '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'
 ```
 
-No valid kernel code appears beyond the first line. The truncation SyntaxErrors are a
-consequence of the looping output cutting mid-expression.
+This is the fp16 NaN signature on MPS: NaN logits cause the argmax to return token 0
+repeatedly, which the tokenizer decodes as `!`. The `!` output is not model looping.
 
-#### With-header verification (6 NameError entries)
+**Confirmed by fp32 rerun** (`scripts/fp32_rerun_truncated.py`, 2026-11-16): the same 4
+entries were regenerated under float32 on MPS at max_new_tokens=1536, temperature=0.
 
-Prepending `import triton\nimport triton.language as tl\n\n` to the 6 NameError kernels
-and re-verifying in Docker:
+| Entry | fp16 tokens | fp32 tokens | Bang-tail gone? | fp32 no-header result |
+|---|---|---|---|---|
+| `norm__rmsnorm__smoke` | 1536 (truncated) | 1536 (truncated) | Yes | SyntaxError: `(` never closed |
+| `norm__layernorm__smoke` | 1536 (truncated) | 602 | Yes | NameError: triton |
+| `rope__rotate_half__b2_s9__smoke` | 1536 (truncated) | 770 | Yes | NameError: triton |
+| `rope__interleaved__b2_s9__smoke` | 1536 (truncated) | 745 | Yes | NameError: triton |
 
-| Result | Count | Notes |
+All 4 entries produced no `!` tail under fp32. 3 of 4 no longer truncate — they were
+hitting the token limit only because fp16 NaN filled the budget. `norm__rmsnorm__smoke`
+still truncates at 1536 under fp32; its fp32 tail shows legitimate kernel argument code
+(`BLOCK_DSIZE_123=128, ...`) cut mid-expression — a genuine long generation.
+
+**Original 19 truncated entries (768-token run):** raw_text was not stored in that
+checkpoint (pre-fix). Whether those entries also had fp16 NaN tails is unknown.
+
+#### With-header verification
+
+**fp16 run (6 NameError entries from 12-entry rerun):** 0/6 correct with header prepended.
+**fp32 run (3 NameError entries from 4-entry rerun):** 0/3 correct with header prepended.
+
+Remaining errors after adding `import triton\nimport triton.language as tl\n\n`:
+
+| Error | fp16 run | fp32 run |
 |---|---|---|
-| Correct | 0 / 6 | |
-| Still failing | 6 / 6 | Deeper errors remain after import fix |
+| `NameError: name 'ModelNew' is not defined` | 3 | 1 |
+| `NameError: name 'batch_size' is not defined` | 1 | — |
+| `NameError: name 'torch' is not defined` | 1 | — |
+| `NameError: name 'max_seq_len' is not defined` | 1 | 1 |
+| `AttributeError: module 'triton' has no attribute 'types'` | — | 1 |
 
-Remaining errors after adding the header:
-- `NameError: name 'ModelNew' is not defined` (3 entries) — model omits the `ModelNew` class entirely
-- `NameError: name 'batch_size' is not defined` (1 entry) — references undefined local variable
-- `NameError: name 'torch' is not defined` (1 entry) — also omits `import torch`
-- `NameError: name 'max_seq_len' is not defined` (1 entry) — references undefined local variable
+The NameError failures are not fixable by prepending import headers. The kernels have
+structural errors (missing class definitions, undefined variables) independent of the
+missing imports.
 
 The NameError failures are not fixable by prepending import headers. The kernels have
 structural errors (missing class definitions, undefined variables) independent of the
@@ -396,6 +417,6 @@ missing imports.
 | Positive control (extraction fidelity) | Complete | 3/3 known-correct kernels pass same path |
 | Pipeline fix: raw_text, name_error bucket | Complete | local_baseline_eval.py + 6 new tests |
 | 1536-token rerun: 12 smoke entries | Complete | 0/12 pass@1; 4 truncated (all looping) |
-| Truncation inspection (4 entries) | Complete | All 4 looping (`!!!!` pattern); not genuinely long |
-| With-header verify (6 NameError entries) | Complete | 0/6 correct; deeper errors remain |
+| Truncation inspection + fp32 rerun | Complete | `!!!!` = fp16 NaN on MPS (confirmed); 3/4 no longer truncate under fp32 |
+| With-header verify (fp16+fp32 runs) | Complete | 0/6 (fp16) and 0/3 (fp32); deeper errors remain |
 | Test suite (agent/overnight2 state) | 288 pass, 2 skip | +3 transformers-guarded, 1 datasets-skip |
