@@ -308,3 +308,37 @@ After: 285 passed, 5 skipped (+2 LayerNorm missing-bias tests)
 **Status: COMPLETE (02:35–03:30 EST)**
 
 ---
+
+## Task 4 — Verified bibliography
+
+**Script/Method:** Web fetch of each cited arXiv and proceedings URL.
+
+### New finding: Reflexion is NeurIPS 2023 (not arXiv-only)
+
+Fetched `papers.nips.cc/paper_files/paper/2023/hash/1b44b878bb782e6954cd888628510e90-Abstract-Conference.html`
+and confirmed: "Reflexion: language agents with verbal reinforcement learning" in NeurIPS 2023 proceedings.
+
+**Change:** `docs/paper/references.bib` entry `shinn2023reflexion` upgraded from `@article` (arXiv) to
+`@inproceedings` (NeurIPS 2023). Author list updated to the 5-author proceedings version (Berman absent).
+
+### Other checks
+
+| Entry key | Source checked on 2026-11-16 | Outcome |
+|---|---|---|
+| `baronio2025kevin` | arxiv.org/abs/2507.11948 | Confirmed: title, authors, year match |
+| `liu2026drkernel` | arxiv.org/abs/2602.05885 | Confirmed: paper exists, Feb 2026, correct title |
+| `woo2025tritonrl` | arxiv.org/abs/2510.17891 | Confirmed: v1 Oct 2025, v2 Feb 2026 |
+| `su2021roformer` | arxiv.org/abs/2104.09864 | Still arXiv-only: no journal listed on page |
+| `chen2023selfdebug` | arxiv.org/abs/2304.05128 | Still arXiv-only: OpenReview verification blocked |
+| All other entries | Previously verified 2026-11-15; not re-fetched | No change |
+
+### UNVERIFIED.md update
+
+Reflexion removed from "Venues not confirmed". Self-Debugging and RoFormer remain arXiv-only (OpenReview
+blocked and RoFormer journal page not accessible).
+
+**Commit:** `0a5d106`
+
+**Status: COMPLETE**
+
+---
