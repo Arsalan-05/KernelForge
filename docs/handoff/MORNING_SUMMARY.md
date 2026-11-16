@@ -483,7 +483,7 @@ See `evaluation/results/local_baseline_report.json` for complete numbers.
 **Note:** These are BASE model results. The fine-tuned model is expected to perform significantly better.
 Tokens per second: median=13.2, mean=12.2 tok/s on MPS float16 (useful for planning Kaggle generation time estimates).
 
-**Commits:** `614f777` (script), FILL_RESULTS_COMMIT
+**Commits:** `614f777` (script), `bd645cd` (results + doc update)
 
 #### Task 4 — Verified bibliography
 
@@ -515,12 +515,12 @@ See `evaluation/results/ast_mutation_report.json` for complete numbers.
 
 | Metric | Value |
 |---|---|
-| Mutations run (in time-box) | FILL_AFTER_RUN |
-| harmless_change | FILL_AFTER_RUN |
-| expected_caught | FILL_AFTER_RUN |
-| Caught (by seed=42) | FILL_AFTER_RUN |
-| Mutation score | FILL_AFTER_RUN |
-| Wilson 95% CI | FILL_AFTER_RUN |
+| Mutations run (in time-box) | 353 / 353 (all completed) |
+| harmless_change | 24 |
+| expected_caught | 329 |
+| Caught (by seed=42) | 329 / 329 |
+| Mutation score | 329/329 = 100.0% |
+| Wilson 95% CI | [98.8%, 100.0%] |
 
 **Commit:** `614f777` (script), FILL_RESULTS_COMMIT
 
