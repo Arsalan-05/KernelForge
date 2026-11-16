@@ -265,7 +265,8 @@ textarea, input[type="number"] { font: inherit; color: var(--text); }
 .btn.stop kbd { background: var(--surface); border-color: var(--border-strong); color: var(--muted); }
 
 .control-group { display: inline-flex; align-items: center; gap: 8px; }
-.control-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+.control-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); cursor: default; }
+label.control-label { cursor: default; }
 .segmented button:disabled { opacity: 0.4; cursor: not-allowed; }
 .mono { font-family: var(--mono); }
 
@@ -492,6 +493,87 @@ textarea, input[type="number"] { font: inherit; color: var(--text); }
 .limits strong { color: var(--text); }
 .footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 22px 24px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
 
+/* ---------- accessibility: focus rings ---------- */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button:focus-visible, a:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* Suppress default outline only where :focus-visible is used */
+*:focus:not(:focus-visible) { outline: none; }
+
+/* ---------- no-layout-jump: stable height for kernel tab panel ---------- */
+/* Reserve space so the panel doesn't reflow when the kernel appears/disappears */
+.tab-panel[data-panel="kernel"] { min-height: 400px; }
+.tab-panel[data-panel="compare"] { min-height: 400px; }
+.tab-panel[data-panel="raw"] { min-height: 400px; }
+
+/* ---------- compare: ablation pending notice ---------- */
+.compare-pending {
+  display: flex; align-items: center; gap: 10px;
+  margin: 12px 14px; padding: 10px 12px; border-radius: var(--radius-sm);
+  font-size: 12.5px; color: #bfdbfe;
+  background: rgba(96, 165, 250, 0.08); border: 1px solid rgba(96, 165, 250, 0.25);
+}
+.compare-pending svg { width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+
+/* ---------- op list loading/error ---------- */
+.op-loading { padding: 14px 10px; font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.op-error { padding: 14px 10px; font-size: 12.5px; color: var(--warn); display: flex; flex-direction: column; gap: 8px; }
+
+/* ---------- results tab ---------- */
+.results-panel { padding: 0 0 4px; }
+.results-loading, .results-error, .results-empty {
+  display: flex; align-items: center; gap: 10px; padding: 32px 20px; font-size: 13px; color: var(--muted);
+}
+.results-error { color: var(--warn); flex-direction: column; align-items: flex-start; }
+.spinner {
+  display: inline-block; width: 16px; height: 16px; border-radius: 50%; flex: none;
+  border: 2px solid var(--border-strong); border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+.res-section { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.res-section:last-child { border-bottom: 0; }
+.res-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.res-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.res-summary-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 20px; margin-bottom: 10px; }
+.res-big-num { display: inline-flex; align-items: baseline; gap: 1px; }
+.res-num { font: 700 26px/1 var(--mono); letter-spacing: -0.03em; color: var(--ok); }
+.res-den { font: 500 14px var(--mono); color: var(--muted); }
+.res-big-label { font-size: 12px; color: var(--muted); margin-right: 12px; }
+.res-oom-note { margin: 10px 0 0; }
+.res-note-row { font-size: 11.5px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+.res-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.res-table th { text-align: left; font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); padding: 7px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.res-table th.num, .res-table td.num { text-align: right; font-family: var(--mono); }
+.res-table td { padding: 8px 8px; border-bottom: 1px solid var(--border); color: var(--text-2); vertical-align: middle; }
+.res-table tbody tr:last-child td { border-bottom: 0; }
+.res-table .res-partial td { color: var(--warn); }
+.bar-cell { min-width: 120px; display: flex; align-items: center; gap: 8px; }
+.res-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+.res-bar > span { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--ok), #6ee7b7); transition: width 0.5s ease; }
+.pct-label { font: 11px var(--mono); color: var(--muted); white-space: nowrap; min-width: 32px; text-align: right; }
+.res-oom-chip { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; font: 600 10.5px var(--mono); color: var(--warn); background: var(--warn-soft); border: 1px solid rgba(245, 165, 36, 0.3); }
+.res-oom-chip.sm { height: 15px; font-size: 10px; padding: 0 4px; }
+.cat-dot { display: inline-block; width: 7px; height: 7px; border-radius: 2px; vertical-align: middle; margin-right: 2px; flex: none; }
+.res-details summary { cursor: pointer; list-style: none; }
+.res-details summary::-webkit-details-marker { display: none; }
+.res-details-summary { margin-bottom: 0; padding: 0; }
+.res-details-summary .res-label::before { content: "▸ "; }
+.res-details[open] .res-details-summary .res-label::before { content: "▾ "; }
+.res-detail-body { margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }
+.res-cat-group { }
+.res-cat-head { font-size: 12px; font-weight: 600; color: var(--text-2); padding: 4px 8px; display: flex; align-items: center; gap: 6px; }
+.res-gpu-pending { }
+.res-pending-body { display: flex; align-items: flex-start; gap: 14px; padding: 4px 0 2px; }
+.res-pending-icon { font-size: 22px; flex: none; opacity: 0.6; }
+.res-pending-title { font-size: 14px; font-weight: 600; color: var(--text-2); margin-bottom: 4px; }
+.res-pending-sub { font-size: 12.5px; color: var(--muted); line-height: 1.55; max-width: 520px; }
+
 /* ---------- toast ---------- */
 .toast {
   position: fixed; left: 50%; bottom: 24px; z-index: 50; transform: translate(-50%, 16px);
@@ -526,4 +608,14 @@ textarea, input[type="number"] { font: inherit; color: var(--text); }
   .brand-tag, #gpu-pill { display: none; }
   .studio { padding: 14px; }
   .btn.primary { width: 100%; }
+  .controls { flex-direction: column; align-items: stretch; gap: 10px; }
+  .control-group { justify-content: space-between; }
+  .segmented { flex: 1; justify-content: stretch; }
+  .segmented button { flex: 1; }
+  .bar-cell { min-width: 60px; }
+  .res-summary-row { gap: 4px 10px; }
+  .res-num { font-size: 20px; }
+  .tab-panel[data-panel="kernel"],
+  .tab-panel[data-panel="compare"],
+  .tab-panel[data-panel="raw"] { min-height: 280px; }
 }

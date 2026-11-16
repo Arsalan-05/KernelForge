@@ -75,8 +75,10 @@ from kernelforge.search import SearchConfig, SearchStats, kernel_key, run_search
 from verification.policy import check_code
 from verification.verify_kernel import verify_model_kernel
 
-DEFAULT_MODEL_CONFIG = Path(__file__).parent.parent.parent / "training" / "configs" / "qwen2.5-coder-1.5b.json"
+_ROOT = Path(__file__).parent.parent.parent
+DEFAULT_MODEL_CONFIG = _ROOT / "training" / "configs" / "qwen2.5-coder-1.5b.json"
 WEB_DIR = Path(__file__).parent.parent / "web"
+_RESULTS_REPORT = _ROOT / "data" / "raw" / "interpret_report_2026-11-15.json"
 MAX_REFERENCE_CHARS = 20_000
 MAX_DESCRIPTION_CHARS = 2_000
 MAX_CANDIDATES = 4
@@ -605,6 +607,47 @@ def stats():
 @app.get("/categories")
 def list_categories():
     return {"categories": list(CATEGORIES)}
+
+
+@app.get("/results")
+def get_results():
+    """Coverage summary from the interpreter run and (once available) the GPU eval run."""
+    interpreter = None
+    if _RESULTS_REPORT.exists():
+        try:
+            report = json.loads(_RESULTS_REPORT.read_text())
+            by_cat: dict[str, dict] = {}
+            for name, shapes in report.get("templates", {}).items():
+                if not isinstance(shapes, list):
+                    continue
+                cat = name.split("/")[0]
+                total = len(shapes)
+                passed = sum(
+                    1 for s in shapes if s.get("passed") or s.get("status") == "ok"
+                )
+                oom = sum(1 for s in shapes if s.get("status") == "crash")
+                entry = by_cat.setdefault(cat, {"total": 0, "passed": 0, "oom": 0, "templates": []})
+                entry["total"] += total
+                entry["passed"] += passed
+                entry["oom"] += oom
+                tname = name.split("/", 1)[1] if "/" in name else name
+                entry["templates"].append({
+                    "name": tname,
+                    "id": name.replace("/", "__"),
+                    "total": total,
+                    "passed": passed,
+                    "oom": oom,
+                })
+            interpreter = {
+                "mode": report.get("mode", "triton-interpreter"),
+                "total": report.get("total", 0),
+                "passed": report.get("passed", 0),
+                "generated_at": report.get("generated_at"),
+                "by_category": by_cat,
+            }
+        except (OSError, ValueError):
+            pass
+    return {"interpreter": interpreter, "gpu": None}
 
 
 @app.get("/templates", response_model=list[TemplateInfo])
