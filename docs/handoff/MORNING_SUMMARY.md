@@ -509,7 +509,16 @@ See `evaluation/results/local_baseline_report.json` for complete numbers.
 | Parse OK | 60 / 60 (100.0%) |
 | Correct (pass@1) | 0 / 60 (0.0%) |
 | Wilson 95% CI | [0.0%, 6.0%] |
-| Failure types | syntax_error: 23, runtime_error: 37 |
+| Failure types (actual last-line) | name_error: 37, syntax_error: 23 |
+| Truncated (hit 768-token cap) | 19 / 60 |
+
+**Error breakdown:** 37 × `NameError: name 'triton' is not defined` (model omits `import triton`);
+8 × `SyntaxError: invalid syntax (== or :=)` (model uses `=` where `==` needed); 15 × SyntaxErrors
+from truncation (norm entries: 5 `'(' was never closed`, 1 `'[' was never closed`, plus 9 others).
+
+**Limits:** single attempt per entry, temperature=0, 768-token cap (19/60 truncated), MPS fp16.
+Extraction fidelity confirmed: 3/3 positive control (known-correct kernels) pass through the same
+path. No newlines or indentation lost between raw_text and code reaching the interpreter.
 
 **Note:** These are BASE model results. The fine-tuned model is expected to perform significantly better.
 Tokens per second: median=13.2, mean=12.2 tok/s on MPS float16 (useful for planning Kaggle generation time estimates).
@@ -547,11 +556,17 @@ See `evaluation/results/ast_mutation_report.json` for complete numbers.
 | Metric | Value |
 |---|---|
 | Mutations run (in time-box) | 353 / 353 (all completed) |
-| harmless_change | 24 |
+| harmless_change (equivalent) | 24 |
 | expected_caught | 329 |
 | Caught (by seed=42) | 329 / 329 |
-| Mutation score | 329/329 = 100.0% |
+| Mutation score | 353 auto-generated mutants, 24 equivalent, all remaining caught |
 | Wilson 95% CI | [98.8%, 100.0%] |
+
+**Interpretation:** Score is 329/329 = 100% (Wilson CI [98.8%, 100%]). The score is close to
+definitional because the harness uses the same numerical tolerance to verify both the reference
+kernel and to catch mutations — a mutation that changes output by less than the tolerance
+would appear equivalent and fall in the `harmless_change` bucket (there were 24 such cases).
+This is a correct characterisation, not an overclaim.
 
 **Commits:** `614f777` (script), `28c8a47` (results + doc update)
 

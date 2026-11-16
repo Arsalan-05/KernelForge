@@ -256,7 +256,153 @@ because too few entries reach the model on the free tier.
 
 ---
 
-## 3. Summary
+## 3. Local Base-Model Evaluation (Qwen2.5-Coder-1.5B-Instruct, MPS)
+
+**Goal:** Measure zero-shot pass@1 for the smallest Qwen2.5-Coder model on our 60-entry subset.
+Establishes a CPU-local baseline without paid API or GPU.
+
+**Model:** `Qwen/Qwen2.5-Coder-1.5B-Instruct` (BASE model, not fine-tuned)  
+**Device:** MPS float16 (Apple Silicon)  
+**Script:** `scripts/local_baseline_eval.py`  
+**Run date:** 2026-11-16
+
+### Method
+
+Two-phase: generate all 60 entries on MPS, free model, then Docker interpreter verify.
+60 entries = 12 per category × 5 categories (3 smoke + 9 regular); categories:
+quantized_matmul, attention, kv_cache, norm, rope.
+
+### Limits
+
+- **Single attempt per entry** (temperature=0, greedy decoding)
+- **768-token cap** — 19 of 60 entries hit max_new_tokens=768 (truncated)
+- **MPS float16** — results may differ slightly from CUDA fp16 (rounding)
+- **No pass@k** — one generation per entry; no multi-attempt sampling
+- **CPU interpreter only** — no GPU speedup measurement
+
+### Results
+
+| Metric | Value |
+|---|---|
+| Total entries | 60 |
+| Parse OK | 60 / 60 (100.0%) |
+| Correct (pass@1) | 0 / 60 (0.0%) |
+| Wilson 95% CI | [0.0%, 6.0%] |
+| Truncated (hit 768-token cap) | 19 / 60 |
+| Tokens/s | median=13.2, mean=12.2 (MPS fp16) |
+
+**Per-category:** all 5 categories: 0/12, CI=[0%, 24%].
+
+### Actual error distribution (top 6 error messages, N=60)
+
+| Count | Last line of traceback |
+|---|---|
+| 37 | `NameError: name 'triton' is not defined` |
+| 8 | `SyntaxError: invalid syntax. Maybe you meant '==' or ':=' instead of '='?` |
+| 6 | `SyntaxError: invalid syntax` |
+| 5 | `SyntaxError: '(' was never closed` |
+| 3 | `SyntaxError: invalid syntax. Perhaps you forgot a comma?` |
+| 1 | `SyntaxError: '[' was never closed` |
+
+**Root causes:**
+- **NameError (37/60 = 62%):** Base model generates `@triton.jit` on line 1 without
+  `import triton` / `import triton.language as tl`. Dominant failure — model knows the
+  Triton API but consistently omits the import header.
+- **SyntaxError `== or :=` (8/60 = 13%):** Model uses `=` where `==` is needed (non-truncation; 
+  present in non-truncated entries only).
+- **SyntaxError from truncation (15/60 = 25%):** 19 entries hit 768 token cap; 15 had truncation
+  SyntaxErrors (cut mid-expression). All 5 `'(' was never closed` are norm entries.
+- Remaining 4 truncated entries had NameError (kernel structurally complete but missing imports).
+
+### Extraction fidelity (step 2 sanity check)
+
+`parse_model_output` faithfully preserves newlines and indentation. Evidence:
+- NameError traceback shows `line 1: @triton.jit` — extracted code is exactly what the model generated.
+- Positive control: 3 known-correct kernels (norm, attention, rope) wrapped in model output format → 3/3 PASS, extraction bit-for-bit identical to original.
+- For unclosed-fence (truncated) inputs: `_split_code_and_prose` returns all content after the opening fence without modification.
+
+**raw_text not stored** in the original 60-entry checkpoint (pre-fix). Pipeline fix applied
+(`scripts/local_baseline_eval.py` now saves `raw_text` and `extracted_kernel` per record for
+future runs; `name_error` added as a distinct `failure_types` bucket in `_build_report`).
+
+### 1536-token rerun (12 smoke entries, all 5 categories)
+
+**Script:** `scripts/rerun_1536.py`  
+**Script:** `scripts/inspect_and_header_verify.py` (truncation inspection + with-header verify)  
+**Run date:** 2026-11-16
+
+12 entries selected (3 quantized_matmul + 3 attention + 2 kv_cache + 2 norm + 2 rope smoke entries).
+max_new_tokens raised from 768 → 1536.
+
+| Metric | 768-token run (60 entries) | 1536-token run (12 smoke entries) |
+|---|---|---|
+| Correct (pass@1) | 0 / 60 (0.0%) | 0 / 12 (0.0%) |
+| Truncated | 19 / 60 | 4 / 12 |
+| NameError (missing imports) | 37 / 60 | 6 / 12 |
+| SyntaxError `== or :=` | 8 / 60 | 3 / 12 |
+| SyntaxError from truncation | 15 / 60 | 4 / 12 |
+
+Raising the token cap does not fix the dominant NameError failure. It converts some truncation
+SyntaxErrors to NameErrors but does not improve correctness.
+
+#### Truncation inspection: fp16 NaN on MPS (4 entries that hit 1536 tokens)
+
+All 4 truncated entries under fp16 — `norm__rmsnorm__smoke`, `norm__layernorm__smoke`,
+`rope__rotate_half__b2_s9__smoke`, `rope__interleaved__b2_s9__smoke` — produced a tail
+of repeated `!` characters filling the remaining output budget. Example tail-300 (identical
+for all 4 under fp16):
+
+```
+'!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'
+```
+
+This is the fp16 NaN signature on MPS: NaN logits cause the argmax to return token 0
+repeatedly, which the tokenizer decodes as `!`. The `!` output is not model looping.
+
+**Confirmed by fp32 rerun** (`scripts/fp32_rerun_truncated.py`, 2026-11-16): the same 4
+entries were regenerated under float32 on MPS at max_new_tokens=1536, temperature=0.
+
+| Entry | fp16 tokens | fp32 tokens | Bang-tail gone? | fp32 no-header result |
+|---|---|---|---|---|
+| `norm__rmsnorm__smoke` | 1536 (truncated) | 1536 (truncated) | Yes | SyntaxError: `(` never closed |
+| `norm__layernorm__smoke` | 1536 (truncated) | 602 | Yes | NameError: triton |
+| `rope__rotate_half__b2_s9__smoke` | 1536 (truncated) | 770 | Yes | NameError: triton |
+| `rope__interleaved__b2_s9__smoke` | 1536 (truncated) | 745 | Yes | NameError: triton |
+
+All 4 entries produced no `!` tail under fp32. 3 of 4 no longer truncate — they were
+hitting the token limit only because fp16 NaN filled the budget. `norm__rmsnorm__smoke`
+still truncates at 1536 under fp32; its fp32 tail shows legitimate kernel argument code
+(`BLOCK_DSIZE_123=128, ...`) cut mid-expression — a genuine long generation.
+
+**Original 19 truncated entries (768-token run):** raw_text was not stored in that
+checkpoint (pre-fix). Whether those entries also had fp16 NaN tails is unknown.
+
+#### With-header verification
+
+**fp16 run (6 NameError entries from 12-entry rerun):** 0/6 correct with header prepended.
+**fp32 run (3 NameError entries from 4-entry rerun):** 0/3 correct with header prepended.
+
+Remaining errors after adding `import triton\nimport triton.language as tl\n\n`:
+
+| Error | fp16 run | fp32 run |
+|---|---|---|
+| `NameError: name 'ModelNew' is not defined` | 3 | 1 |
+| `NameError: name 'batch_size' is not defined` | 1 | — |
+| `NameError: name 'torch' is not defined` | 1 | — |
+| `NameError: name 'max_seq_len' is not defined` | 1 | 1 |
+| `AttributeError: module 'triton' has no attribute 'types'` | — | 1 |
+
+The NameError failures are not fixable by prepending import headers. The kernels have
+structural errors (missing class definitions, undefined variables) independent of the
+missing imports.
+
+The NameError failures are not fixable by prepending import headers. The kernels have
+structural errors (missing class definitions, undefined variables) independent of the
+missing imports.
+
+---
+
+## 4. Summary
 
 | Task | Status | Key numbers |
 |---|---|---|
@@ -267,4 +413,10 @@ because too few entries reach the model on the free tier.
 | Script fixes (remote.py, baseline.py) | Complete | Real token counts, retry, full error body |
 | Hosted-model: 300 LLM calls | Partial | 3/300 reached model; 100% parse rate on successful calls |
 | Hosted-model: 15 smoke interpreter | Partial | 2/15 reached model; 0/2 correct (SyntaxErrors) |
-| Test suite | 283 pass, 5 skip | 9 new tests (test_remote_streaming.py) vs Phase 2 |
+| Local base-model eval: 60 entries | Complete | 0/60 pass@1; 37 NameError, 23 SyntaxError; 19/60 truncated |
+| Positive control (extraction fidelity) | Complete | 3/3 known-correct kernels pass same path |
+| Pipeline fix: raw_text, name_error bucket | Complete | local_baseline_eval.py + 6 new tests |
+| 1536-token rerun: 12 smoke entries | Complete | 0/12 pass@1; 4 truncated (all looping) |
+| Truncation inspection + fp32 rerun | Complete | `!!!!` = fp16 NaN on MPS (confirmed); 3/4 no longer truncate under fp32 |
+| With-header verify (fp16+fp32 runs) | Complete | 0/6 (fp16) and 0/3 (fp32); deeper errors remain |
+| Test suite (agent/overnight2 state) | 288 pass, 2 skip | +3 transformers-guarded, 1 datasets-skip |
