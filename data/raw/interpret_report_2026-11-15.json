@@ -1,0 +1,1850 @@
+{
+  "label": "Docker, Triton interpreter mode, correctness only. No timings and no speed claim; not a GPU result.",
+  "environment": "Docker Desktop on macOS (8 GB VM, 10 CPUs), image docker/verify.Dockerfile (python:3.11-slim, torch 2.9.0 CPU, triton 3.5.0, TRITON_INTERPRET=1)",
+  "command": "python data/build_dataset.py --interpret --jobs 4 --resume --max-minutes 76",
+  "notes": "Run in two segments: an uncapped start was stopped after 37 entries and resumed from data/raw/progress_interpret.jsonl with a 76-minute cap; it finished all 300 inside the cap (second segment 4221 s wall, container memory.peak 8004440064 bytes). All 15 failures are SIGKILL (exit code -9) out-of-memory kills in the 8 GB VM, still OOM after one solo retry; 0 incorrect.",
+  "generated_at": "2026-11-16T00:19:30.073558+00:00",
+  "mode": "triton-interpreter (correctness only, CPU; no timings)",
+  "smoke": false,
+  "total": 300,
+  "passed": 285,
+  "partial": false,
+  "run_stats": {
+    "resumed": 37,
+    "oom_retried": 30,
+    "oom_recovered_on_retry": 15,
+    "not_run": []
+  },
+  "templates": {
+    "quantized_matmul/w8a16_pertensor": [
+      {
+        "id": "quantized_matmul__w8a16_pertensor__attn_proj_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__attn_proj_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__attn_proj_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__attn_proj_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__mlp_up_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__mlp_up_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__mlp_up_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__mlp_up_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__mlp_down_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__mlp_down_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__mlp_down_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__mlp_down_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__qkv_fused_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__qkv_fused_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__qkv_fused_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__qkv_fused_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__attn_proj_large_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__attn_proj_large_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__attn_proj_large_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_pertensor__attn_proj_large_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "quantized_matmul/w8a16_perchannel": [
+      {
+        "id": "quantized_matmul__w8a16_perchannel__attn_proj_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__attn_proj_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__attn_proj_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__attn_proj_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__mlp_up_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__mlp_up_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__mlp_up_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__mlp_up_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__mlp_down_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__mlp_down_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__mlp_down_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__mlp_down_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__qkv_fused_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__qkv_fused_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__qkv_fused_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__qkv_fused_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__attn_proj_large_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__attn_proj_large_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__attn_proj_large_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a16_perchannel__attn_proj_large_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "quantized_matmul/w8a8": [
+      {
+        "id": "quantized_matmul__w8a8__attn_proj_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__attn_proj_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__attn_proj_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__attn_proj_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__mlp_up_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__mlp_up_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__mlp_up_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__mlp_up_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__mlp_down_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__mlp_down_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__mlp_down_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__mlp_down_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__qkv_fused_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__qkv_fused_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__qkv_fused_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__qkv_fused_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__attn_proj_large_b1",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__attn_proj_large_b8",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__attn_proj_large_b32",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "quantized_matmul__w8a8__attn_proj_large_b128",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "attention/causal_prefill": [
+      {
+        "id": "attention__causal_prefill__b1_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b1_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b1_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b1_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b2_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b2_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b2_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b2_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b4_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b4_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b4_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b4_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b8_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b8_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b8_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b8_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b16_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b16_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b16_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__causal_prefill__b16_s2048",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      }
+    ],
+    "attention/cross_noncausal": [
+      {
+        "id": "attention__cross_noncausal__b1_skv256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b1_skv512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b1_skv1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b1_skv2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b2_skv256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b2_skv512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b2_skv1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b2_skv2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b4_skv256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b4_skv512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b4_skv1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b4_skv2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b8_skv256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b8_skv512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b8_skv1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b8_skv2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b16_skv256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b16_skv512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b16_skv1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__cross_noncausal__b16_skv2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "attention/gqa_causal_prefill": [
+      {
+        "id": "attention__gqa_causal_prefill__b1_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b1_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b1_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b1_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b2_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b2_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b2_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b2_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b4_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b4_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b4_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b4_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b8_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b8_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b8_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b8_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b16_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b16_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b16_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "attention__gqa_causal_prefill__b16_s2048",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      }
+    ],
+    "kv_cache/decode_attention_mha": [
+      {
+        "id": "kv_cache__decode_attention_mha__b1_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b1_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b1_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b1_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b2_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b2_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b2_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b2_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b4_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b4_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b4_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b4_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b8_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b8_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b8_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b8_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b16_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b16_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b16_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_mha__b16_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "kv_cache/decode_attention_gqa": [
+      {
+        "id": "kv_cache__decode_attention_gqa__b1_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b1_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b1_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b1_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b2_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b2_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b2_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b2_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b4_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b4_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b4_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b4_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b8_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b8_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b8_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b8_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b16_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b16_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b16_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__decode_attention_gqa__b16_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "kv_cache/cache_write": [
+      {
+        "id": "kv_cache__cache_write__b1_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b1_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b1_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b1_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b2_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b2_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b2_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b2_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b4_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b4_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b4_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b4_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b8_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b8_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b8_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b8_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b16_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b16_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b16_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "kv_cache__cache_write__b16_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "norm/rmsnorm": [
+      {
+        "id": "norm__rmsnorm__r1024_h2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r1024_h4096",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r1024_h8192",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r1024_h11008",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r1024_h12288",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r4096_h2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r4096_h4096",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r4096_h8192",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r4096_h11008",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r4096_h12288",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r16384_h2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r16384_h4096",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r16384_h8192",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r16384_h11008",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r16384_h12288",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r65536_h2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm__r65536_h4096",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      },
+      {
+        "id": "norm__rmsnorm__r65536_h8192",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      },
+      {
+        "id": "norm__rmsnorm__r65536_h11008",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      },
+      {
+        "id": "norm__rmsnorm__r65536_h12288",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      }
+    ],
+    "norm/layernorm": [
+      {
+        "id": "norm__layernorm__r1024_h2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r1024_h4096",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r1024_h8192",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r1024_h11008",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r1024_h12288",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r4096_h2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r4096_h4096",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r4096_h8192",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r4096_h11008",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r4096_h12288",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r16384_h2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r16384_h4096",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r16384_h8192",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r16384_h11008",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r16384_h12288",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r65536_h2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__layernorm__r65536_h4096",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      },
+      {
+        "id": "norm__layernorm__r65536_h8192",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      },
+      {
+        "id": "norm__layernorm__r65536_h11008",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      },
+      {
+        "id": "norm__layernorm__r65536_h12288",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      }
+    ],
+    "norm/rmsnorm_residual": [
+      {
+        "id": "norm__rmsnorm_residual__r1024_h2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r1024_h4096",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r1024_h8192",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r1024_h11008",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r1024_h12288",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r4096_h2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r4096_h4096",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r4096_h8192",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r4096_h11008",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r4096_h12288",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r16384_h2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r16384_h4096",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r16384_h8192",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r16384_h11008",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r16384_h12288",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      },
+      {
+        "id": "norm__rmsnorm_residual__r65536_h2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "norm__rmsnorm_residual__r65536_h4096",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      },
+      {
+        "id": "norm__rmsnorm_residual__r65536_h8192",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      },
+      {
+        "id": "norm__rmsnorm_residual__r65536_h11008",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      },
+      {
+        "id": "norm__rmsnorm_residual__r65536_h12288",
+        "passed": false,
+        "status": "crash",
+        "error": "no output from sandbox (exit code -9); stderr:\n"
+      }
+    ],
+    "rope/rotate_half": [
+      {
+        "id": "rope__rotate_half__b1_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b1_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b1_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b1_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b2_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b2_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b2_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b2_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b4_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b4_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b4_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b4_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b8_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b8_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b8_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b8_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b16_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b16_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b16_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__rotate_half__b16_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "rope/interleaved": [
+      {
+        "id": "rope__interleaved__b1_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b1_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b1_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b1_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b2_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b2_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b2_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b2_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b4_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b4_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b4_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b4_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b8_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b8_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b8_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b8_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b16_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b16_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b16_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__interleaved__b16_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "rope/fused_qk": [
+      {
+        "id": "rope__fused_qk__b1_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b1_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b1_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b1_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b2_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b2_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b2_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b2_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b4_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b4_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b4_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b4_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b8_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b8_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b8_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b8_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b16_s256",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b16_s512",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b16_s1024",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "id": "rope__fused_qk__b16_s2048",
+        "passed": true,
+        "status": "ok",
+        "error": null
+      }
+    ]
+  }
+}
