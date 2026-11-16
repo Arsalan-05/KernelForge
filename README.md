@@ -61,9 +61,12 @@ Import [`notebooks/kaggle_gpu_session.ipynb`](notebooks/kaggle_gpu_session.ipynb
 ```bash
 python scripts/gpu_session.py              # GPU-verify the dataset + baseline eval on held-out templates
 python scripts/gpu_session.py --finetune   # + QLoRA fine-tune and fine-tuned eval
+python scripts/gpu_session.py --budget-hours 11  # stop cleanly before Kaggle's 12 h wall clock
 ```
 
 All results end up in `kernelforge_outputs.zip`. Evaluation holds out whole templates (one op per category), so test scores measure unseen ops rather than memorised kernels.
+
+See [docs/handoff/KAGGLE_RUNBOOK.md](docs/handoff/KAGGLE_RUNBOOK.md) for the full step-by-step runbook, expected output files, and a post-session checklist.
 
 ## Run the demo
 
@@ -138,10 +141,14 @@ python data/build_dataset.py --device cuda            # generate + verify datase
 # Correctness-check all 15 templates with Triton's CPU interpreter (no GPU; needs Docker)
 docker build -f docker/verify.Dockerfile -t kernelforge-verify .
 docker run --rm -v "$PWD":/work kernelforge-verify python data/build_dataset.py --interpret --smoke --jobs 8
-python evaluation/baseline_eval.py --device cuda      # baseline eval (base model)
+python evaluation/baseline_eval.py --device cuda      # baseline eval (base model, greedy)
+python evaluation/baseline_eval.py --few-shot-source other_category --device cuda  # few-shot baseline
 python training/finetune.py --config training/configs/finetune_default.json
 python evaluation/finetuned_eval.py --adapter training/checkpoints/run_*/adapter --device cuda
 python evaluation/baseline_eval.py --dry-run --device cpu   # eval pipeline dry-run, no GPU/model
+
+# After the GPU session: generate report fragments for the paper
+python -m evaluation.report . --out docs/results/   # writes docs/results/table_*.tex
 ```
 
 ## Repo layout
