@@ -9,6 +9,8 @@ they're inspectable rather than silently dropped.
 Real verification (correctness + speedup) needs Linux + an NVIDIA GPU:
 
     python data/build_dataset.py --device cuda
+    python data/build_dataset.py --device cuda --resume          # continue a killed run
+    python data/build_dataset.py --device cuda --max-minutes 90  # stop cleanly, write a partial report
 
 Correctness-only check of every template on any machine with Docker, via
 Triton's CPU interpreter (no timings; writes only data/raw/interpret_report.json,
@@ -16,29 +18,217 @@ never the dataset files):
 
     docker run --rm -v "$PWD":/work kernelforge-verify \\
         python data/build_dataset.py --interpret --smoke --jobs 8
+
+Memory and robustness (why the run loop looks the way it does):
+  * Every verification runs in its own subprocess (verification/verify_kernel.py),
+    so all of its GPU/CPU memory goes back to the OS when that process exits.
+    Nothing accumulates between jobs, so there is no cache to clear in this process.
+  * CUDA runs are strictly one job at a time: two kernels sharing the GPU would
+    corrupt each other's timings, and serial runs leave the whole 16 GB to one job.
+  * An out-of-memory result is kept separate from "incorrect" and retried once,
+    alone, after the main pass (in interpreter mode the first try may have shared
+    RAM with --jobs other workers). What "passed" means is unchanged.
+  * Each result is appended to data/raw/progress_<mode>.jsonl the moment it
+    finishes. --resume skips IDs already recorded there, so a dead session only
+    loses the jobs that were in flight.
 """
 
+from __future__ import annotations
+
 import argparse
+import dataclasses
 import json
 import sys
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data.templates import GENERATORS, SMOKE_GENERATORS
 from kernelforge.dataset import template_of
-from verification.verify_kernel import verify_model_kernel
+from verification.verify_kernel import VerifyResult, verify_model_kernel
 
 VERIFIED_PATH = Path(__file__).parent / "verified" / "dataset.jsonl"
 REJECTED_PATH = Path(__file__).parent / "raw" / "rejected.jsonl"
 REPORT_PATH = Path(__file__).parent / "raw" / "generation_report.json"
 INTERPRET_REPORT_PATH = Path(__file__).parent / "raw" / "interpret_report.json"
+RAW_DIR = Path(__file__).parent / "raw"
 
 
 def _template_name(entry_id: str) -> str:
     return entry_id.split("__")[1]
+
+
+# --------------------------------------------------------------------------- #
+# Out-of-memory classification
+# --------------------------------------------------------------------------- #
+
+# Substrings (lower-cased) that mean "ran out of memory", not "computed the wrong thing":
+#   "out of memory"       torch.cuda.OutOfMemoryError / "CUDA error: out of memory"
+#   "outofmemoryerror"    the exception class name in a traceback
+#   "memoryerror"         Python MemoryError (e.g. an RLIMIT_AS cap in the sandbox)
+#   "exit code -9"        the sandbox process was SIGKILLed, which is what the
+#                         Linux/Docker OOM killer does
+_OOM_MARKERS = ("out of memory", "outofmemoryerror", "memoryerror", "exit code -9")
+
+
+def is_oom(result: VerifyResult) -> bool:
+    """True if the verification failed because it ran out of memory."""
+    if result.passed:
+        return False
+    error = (result.error or "").lower()
+    return any(marker in error for marker in _OOM_MARKERS)
+
+
+def _rejection_reason(result) -> str:
+    """Why an entry was rejected, so out-of-memory shapes aren't mistaken for broken templates."""
+    if is_oom(result):
+        return "oom"
+    if result.status == "ok" and result.correct is False:
+        return "incorrect"
+    if result.status == "ok" and result.correct:
+        return "not_passed"
+    return result.status
+
+
+# --------------------------------------------------------------------------- #
+# Incremental progress log (one JSON line per finished verification)
+# --------------------------------------------------------------------------- #
+
+def progress_path(device: str, interpret: bool) -> Path:
+    """One log per mode, so an interpreter run never resumes into a CUDA run (or vice versa)."""
+    return RAW_DIR / f"progress_{'interpret' if interpret else device}.jsonl"
+
+
+def load_progress(path: Path) -> dict[str, dict]:
+    """Read the progress log into {entry_id: record}. A later record for the same ID
+    wins (an OOM retry supersedes the first try). A half-written last line, left by
+    a session killed mid-write, is skipped rather than crashing the resume."""
+    records: dict[str, dict] = {}
+    if not path.exists():
+        return records
+    for line in path.read_text().splitlines():
+        try:
+            record = json.loads(line)
+            records[record["id"]] = record
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+    return records
+
+
+def append_progress(handle, entry_id: str, result: VerifyResult, retried: bool) -> dict:
+    """Write one finished verification and flush, so it survives the process dying next."""
+    record = {
+        "id": entry_id,
+        "retried": retried,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "result": dataclasses.asdict(result),
+    }
+    handle.write(json.dumps(record) + "\n")
+    handle.flush()
+    return record
+
+
+def result_from_record(record: dict) -> VerifyResult:
+    return VerifyResult(**record["result"])
+
+
+# --------------------------------------------------------------------------- #
+# Run loop
+# --------------------------------------------------------------------------- #
+
+def _empty_stats() -> dict:
+    return {"resumed": 0, "oom_retried": 0, "oom_recovered_on_retry": 0, "not_run": []}
+
+
+def run_entries(
+    entries: list[dict],
+    verify: Callable[[dict], VerifyResult],
+    progress_handle,
+    jobs: int = 1,
+    deadline: Optional[float] = None,
+    retried: bool = False,
+    on_result: Optional[Callable[[dict, VerifyResult], None]] = None,
+) -> dict[str, dict]:
+    """Verify `entries` with up to `jobs` workers and log each result as it finishes.
+
+    Entries that haven't *started* by `deadline` (a time.monotonic() value) are
+    left unrun; one already running is allowed to finish. Returns
+    {entry_id: progress record} for the entries that ran.
+    """
+    def run(entry):
+        if deadline is not None and time.monotonic() > deadline:
+            return entry, None
+        return entry, verify(entry)
+
+    done: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        # as_completed (not pool.map) so a finished result is logged right away
+        # instead of waiting behind a slower entry that was submitted earlier.
+        for future in as_completed([pool.submit(run, e) for e in entries]):
+            entry, result = future.result()
+            if result is None:
+                continue
+            done[entry["id"]] = append_progress(progress_handle, entry["id"], result, retried)
+            if on_result is not None:
+                on_result(entry, result)
+    return done
+
+
+def _print_result(entry: dict, result: VerifyResult, interpret: bool) -> None:
+    detail = "" if result.passed else f"  -> {(result.error or '').strip().splitlines()[-1][:200] if result.error else ''}"
+    speed = "" if interpret else f" speedup={result.speedup}"
+    print(f"[{entry['category']}] {entry['id']}: status={result.status} correct={result.correct}{speed}{detail}",
+          flush=True)
+
+
+def verify_all(
+    entries: list[dict],
+    verify: Callable[[dict], VerifyResult],
+    progress_file: Path,
+    resume: bool = False,
+    jobs: int = 1,
+    deadline: Optional[float] = None,
+    on_result: Optional[Callable[[dict, VerifyResult], None]] = None,
+) -> tuple[list[tuple[dict, VerifyResult]], dict]:
+    """Main pass, then one solo retry of each OOM, all logged to `progress_file`.
+
+    Returns ([(entry, result)] in entry order for every entry that has a result,
+    stats) where stats counts resumed / OOM-retried / not-run entries.
+    """
+    progress_file.parent.mkdir(parents=True, exist_ok=True)
+    wanted = {e["id"] for e in entries}
+    done = {k: v for k, v in load_progress(progress_file).items() if k in wanted} if resume else {}
+    if not resume:
+        progress_file.write_text("")  # fresh run: drop any stale log
+    resumed = len(done)
+    if resume:
+        print(f"Resuming: {resumed}/{len(entries)} entries already recorded in {progress_file}", flush=True)
+
+    with open(progress_file, "a") as handle:
+        todo = [e for e in entries if e["id"] not in done]
+        done.update(run_entries(todo, verify, handle, jobs=jobs, deadline=deadline, on_result=on_result))
+
+        # Retry each OOM once, alone. `retried` is stored so a resumed run does
+        # the retry if the first session died before reaching it, but never twice.
+        oom = [e for e in entries
+               if e["id"] in done and not done[e["id"]]["retried"] and is_oom(result_from_record(done[e["id"]]))]
+        if oom:
+            print(f"\nRetrying {len(oom)} out-of-memory entries one at a time", flush=True)
+            done.update(run_entries(oom, verify, handle, jobs=1, deadline=deadline, retried=True,
+                                    on_result=on_result))
+
+    results = [(e, result_from_record(done[e["id"]])) for e in entries if e["id"] in done]
+    stats = {
+        "resumed": resumed,
+        "oom_retried": len(oom),
+        "oom_recovered_on_retry": sum(1 for e in oom if result_from_record(done[e["id"]]).passed),
+        "not_run": [e["id"] for e in entries if e["id"] not in done],
+    }
+    return results, stats
 
 
 def main() -> None:
@@ -51,6 +241,10 @@ def main() -> None:
                         help="correctness-only via Triton's CPU interpreter; never writes the dataset files")
     parser.add_argument("--jobs", type=int, default=1,
                         help="parallel verifications (interpreter only; GPU timing runs must stay serial)")
+    parser.add_argument("--resume", action="store_true",
+                        help="skip entries already recorded in data/raw/progress_<mode>.jsonl by an earlier run")
+    parser.add_argument("--max-minutes", type=float, default=None,
+                        help="stop starting new verifications after this long and write a partial report")
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=30)
     parser.add_argument("--timeout", type=float, default=60.0)
@@ -65,8 +259,8 @@ def main() -> None:
         cat_entries = generators[category]()
         entries.extend(cat_entries[: args.limit] if args.limit else cat_entries)
 
-    def run(entry):
-        return entry, verify_model_kernel(
+    def verify(entry):
+        return verify_model_kernel(
             entry["pytorch_reference"],
             entry["triton_kernel"],
             device=args.device,
@@ -78,22 +272,24 @@ def main() -> None:
             interpret=args.interpret,
         )
 
-    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-        results = []
-        for entry, result in pool.map(run, entries):
-            results.append((entry, result))
-            detail = "" if result.passed else f"  -> {(result.error or '').strip().splitlines()[-1][:200] if result.error else ''}"
-            speed = "" if args.interpret else f" speedup={result.speedup}"
-            print(f"[{entry['category']}] {entry['id']}: status={result.status} correct={result.correct}{speed}{detail}",
-                  flush=True)
+    deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes else None
+    results, stats = verify_all(
+        entries, verify, progress_path(args.device, args.interpret),
+        resume=args.resume, jobs=args.jobs, deadline=deadline,
+        on_result=lambda e, r: _print_result(e, r, args.interpret),
+    )
+    if stats["not_run"]:
+        print(f"\nTime budget reached: {len(stats['not_run'])} entries not run "
+              f"(rerun with --resume to finish them).", flush=True)
 
     if args.interpret:
-        _write_interpret_report(results, args)
+        _write_interpret_report(results, args, stats)
     else:
-        _write_dataset(results, args)
+        _write_dataset(results, args, stats)
 
 
-def _write_interpret_report(results, args) -> None:
+def _write_interpret_report(results, args, stats: Optional[dict] = None) -> None:
+    stats = stats or _empty_stats()
     per_template = {}
     for entry, result in results:
         per_template.setdefault(f"{entry['category']}/{_template_name(entry['id'])}", []).append({
@@ -107,34 +303,25 @@ def _write_interpret_report(results, args) -> None:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": "triton-interpreter (correctness only, CPU; no timings)",
         "smoke": args.smoke,
-        "total": len(results),
+        "total": len(results) + len(stats["not_run"]),
         "passed": passed,
+        "partial": bool(stats["not_run"]),
+        "run_stats": stats,
         "templates": per_template,
     }
     INTERPRET_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     INTERPRET_REPORT_PATH.write_text(json.dumps(report, indent=2))
 
-    print(f"\n=== Interpreter check: {passed}/{len(results)} passed ===")
+    print(f"\n=== Interpreter check: {passed}/{report['total']} passed ===")
     for name, rows in per_template.items():
         ok = sum(r["passed"] for r in rows)
         print(f"  {'PASS' if ok == len(rows) else 'FAIL'}  {name:<42} {ok}/{len(rows)}")
     print(f"\nReport: {INTERPRET_REPORT_PATH}")
-    sys.exit(0 if passed == len(results) else 1)
+    sys.exit(0 if passed == report["total"] else 1)
 
 
-def _rejection_reason(result) -> str:
-    """Why an entry was rejected, so out-of-memory shapes aren't mistaken for broken templates."""
-    error = (result.error or "").lower()
-    if "out of memory" in error or "outofmemoryerror" in error or "exit code -9" in error:
-        return "oom"
-    if result.status == "ok" and result.correct is False:
-        return "incorrect"
-    if result.status == "ok" and result.correct:
-        return "not_passed"
-    return result.status
-
-
-def _write_dataset(results, args) -> None:
+def _write_dataset(results, args, stats: Optional[dict] = None) -> None:
+    stats = stats or _empty_stats()
     VERIFIED_PATH.parent.mkdir(parents=True, exist_ok=True)
     REJECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -182,7 +369,10 @@ def _write_dataset(results, args) -> None:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "device": args.device,
         "smoke": args.smoke,
-        "total_generated": len(results),
+        "total_generated": len(results) + len(stats["not_run"]),
+        # partial = the time budget ran out; not_run lists what --resume would still verify
+        "partial": bool(stats["not_run"]),
+        "run_stats": stats,
         "per_category": {
             c: {
                 "generated": verified_count[c] + rejected_count[c],
@@ -216,6 +406,8 @@ def _write_dataset(results, args) -> None:
     print(f"{'TOTAL':<18} {len(results):>10} {total_verified:>10} {len(results) - total_verified:>10}")
     print(f"\nVerified dataset: {VERIFIED_PATH} ({total_verified} entries)")
     print(f"Rejected entries: {REJECTED_PATH} ({len(results) - total_verified} entries)")
+    if stats["not_run"]:
+        print(f"Not run (budget): {len(stats['not_run'])} entries; rerun with --resume")
     print(f"Full report:      {REPORT_PATH}")
 
 

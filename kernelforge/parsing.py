@@ -21,20 +21,52 @@ class ParsedOutput:
         return bool(self.optimization_explanation and self.optimization_explanation.strip())
 
 
-def _strip_code_fences(text: str) -> str:
+# A complete fenced block: ```python\n ... \n```
+_FENCED_BLOCK = re.compile(r"```[\w+-]*[ \t]*\n(.*?)\s*```", flags=re.DOTALL)
+# An opening fence line on its own, used when the closing fence never arrived.
+_OPENING_FENCE = re.compile(r"```[\w+-]*[ \t]*\n")
+# An inline label such as "Explanation:" or "**Explanation:**" at the start of prose.
+_EXPLANATION_LABEL = re.compile(r"^[#>*_ \t]*explanation[*_ \t]*:[*_ \t]*", flags=re.IGNORECASE)
+
+
+def _pick_fenced_block(text: str) -> re.Match | None:
+    """The fenced block that defines ModelNew, else the first one.
+
+    General-purpose models sometimes echo the reference in its own block
+    before the kernel; that block has `class Model` but no `ModelNew`.
+    """
+    blocks = list(_FENCED_BLOCK.finditer(text))
+    for block in blocks:
+        if "ModelNew" in block.group(1):
+            return block
+    return blocks[0] if blocks else None
+
+
+def _split_code_and_prose(text: str) -> tuple[str, str]:
+    """Return (code, prose after the code) for a kernel section.
+
+    Handles: a bare module, a fenced module, prose before the fence, prose
+    after the fence, and an unclosed fence (generation cut off at
+    max_new_tokens), in which case everything after the fence line is code.
+    """
     text = text.strip()
-    fenced = re.match(r"```[\w+-]*[ \t]*\n(.*?)\n[ \t]*```", text, flags=re.DOTALL)
-    if fenced:
-        # Prose after the closing fence isn't part of the module.
-        return fenced.group(1).strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        return "\n".join(lines).strip()
-    return text
+    block = _pick_fenced_block(text)
+    if block:
+        return block.group(1).strip(), text[block.end():].strip()
+    opening = _OPENING_FENCE.search(text)
+    if opening:
+        return text[opening.end():].strip(), ""
+    # No opening fence; drop a stray closing fence at the end, if any.
+    return re.sub(r"\n?[ \t]*```[ \t]*\Z", "", text).strip(), ""
+
+
+def _strip_code_fences(text: str) -> str:
+    return _split_code_and_prose(text)[0]
+
+
+def _clean_explanation(text: str) -> str | None:
+    text = _EXPLANATION_LABEL.sub("", text.strip(), count=1).strip()
+    return text or None
 
 
 def parse_model_output(text: str) -> ParsedOutput:
@@ -48,7 +80,8 @@ def parse_model_output(text: str) -> ParsedOutput:
         return ParsedOutput(None, None, raw)
 
     # Section headers may carry markdown decoration from general-purpose
-    # models: "### kernel:", "**Explanation:**".
+    # models: "### kernel:", "**Explanation:**". A header must sit on its own
+    # line, so a "# kernel: ..." comment inside the code is not a header.
     header = r"(?:^|\n)[#>*_ \t]*{name}[*_ \t]*:[*_ \t]*\n"
     kernel_match = re.search(
         header.format(name="kernel") + r"(.*?)(?=" + header.format(name="explanation") + r"|\Z)",
@@ -62,20 +95,24 @@ def parse_model_output(text: str) -> ParsedOutput:
     )
 
     if kernel_match:
-        kernel = _strip_code_fences(kernel_match.group(1).strip())
-        explanation = explanation_match.group(1).strip() if explanation_match else None
-        return ParsedOutput(kernel or None, explanation or None, raw)
+        kernel, after_code = _split_code_and_prose(kernel_match.group(1))
+        if explanation_match:
+            explanation = explanation_match.group(1).strip() or None
+        else:
+            # No "explanation:" header line, but prose after the closing fence
+            # (e.g. "**Explanation:** The kernel fuses ...") is the explanation.
+            explanation = _clean_explanation(after_code)
+        return ParsedOutput(kernel or None, explanation, raw)
 
-    # Fallback: first fenced Python block is the kernel; remainder is explanation.
-    fence_match = re.search(r"```(?:python)?\s*\n(.*?)```", raw, flags=re.DOTALL | re.IGNORECASE)
-    if fence_match:
-        kernel = fence_match.group(1).strip()
-        remainder = raw[fence_match.end() :].strip()
-        explanation = remainder or None
-        return ParsedOutput(kernel, explanation, raw)
+    # Fallback: the fenced Python block (preferring one with ModelNew) is the
+    # kernel; prose after it is the explanation.
+    block = _pick_fenced_block(raw)
+    if block:
+        kernel = block.group(1).strip()
+        return ParsedOutput(kernel or None, _clean_explanation(raw[block.end():]), raw)
 
     # Last resort: if it looks like Python with triton imports, treat whole thing as kernel.
     if "triton" in raw.lower() and "modelnew" in raw.lower():
-        return ParsedOutput(raw, None, raw)
+        return ParsedOutput(_strip_code_fences(raw), None, raw)
 
     return ParsedOutput(None, raw if raw else None, raw)

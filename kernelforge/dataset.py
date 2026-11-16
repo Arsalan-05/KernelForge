@@ -55,6 +55,33 @@ def load_training_data(
     return []
 
 
+def load_template_candidates() -> list[dict]:
+    """All 300 *unverified* template candidates (data/templates), for CPU dry runs only.
+
+    They have the same ids, categories and templates as the GPU-verified
+    dataset will, so a dry run exercises the real 180/20/100 template split
+    and real prompt lengths. Never report metrics computed on these.
+    """
+    from data.templates import GENERATORS  # needs the repo root on sys.path
+
+    return [entry for make in GENERATORS.values() for entry in make()]
+
+
+def load_eval_entries(path: Path | str | None, *, dry_run: bool) -> tuple[list[dict], str]:
+    """Entries for an eval or training script, plus a label saying where they came from.
+
+    Real runs use only the verified dataset: falling back to the 3 schema
+    examples on a GPU run would produce a misleading report. Dry runs fall
+    back to the unverified template candidates.
+    """
+    entries = load_dataset_jsonl(path, verified_only=True)
+    if entries:
+        return entries, "verified dataset"
+    if dry_run:
+        return load_template_candidates(), "UNVERIFIED template candidates (dry run only)"
+    return [], "none"
+
+
 def split_dataset(
     entries: list[dict],
     *,
@@ -149,6 +176,41 @@ def make_split(entries: list[dict], strategy: str = "template", seed: int = 42, 
     if strategy == "random":
         return split_dataset(entries, seed=seed, **ratios)
     raise ValueError(f"unknown split strategy {strategy!r}; use 'template' or 'random'")
+
+
+def few_shot_picker(train_entries: list[dict], source: str = "other_category"):
+    """Returns example_for(entry): a solved TRAIN entry to show as a few-shot turn.
+
+    Pass only the train split, so a test answer can never leak into a prompt.
+    source="other_category" (default) picks from the next category in sorted
+    order, so the example shows the format and Triton style without solving a
+    close relative of the task. source="same_category" picks a sibling
+    template of the same family (with the template split, never the held-out
+    one), which is a much stronger hint. The choice is deterministic (lowest
+    id) so reruns see identical prompts.
+    """
+    if source not in ("other_category", "same_category"):
+        raise ValueError(f"unknown few-shot source {source!r}")
+    first_by_category: dict[str, dict] = {}
+    for entry in sorted(train_entries, key=lambda e: e["id"]):
+        first_by_category.setdefault(entry["category"], entry)
+    categories = sorted(first_by_category)
+    if not categories:
+        raise ValueError("few-shot needs a non-empty train split")
+
+    def example_for(entry: dict) -> dict:
+        if source == "same_category":
+            if entry["category"] not in first_by_category:
+                raise ValueError(f"no train example in category {entry['category']!r}")
+            return first_by_category[entry["category"]]
+        others = [c for c in categories if c != entry["category"]]
+        if not others:
+            raise ValueError("other_category few-shot needs train entries from another category")
+        # Next category after this one, cycling; spreads examples across families.
+        later = [c for c in others if c > entry["category"]]
+        return first_by_category[(later or others)[0]]
+
+    return example_for
 
 
 def interleave_by_category(entries: list[dict]) -> list[dict]:

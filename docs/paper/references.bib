@@ -1,0 +1,201 @@
+% references.bib -- KernelForge paper skeleton.
+%
+% RULE: every entry here was checked against a primary source (arXiv abstract page,
+% official proceedings, or the artifact's own page) on 2026-11-15. The source used is
+% recorded in docs/paper/SOURCES.md. Anything not fully verified lives in
+% docs/paper/UNVERIFIED.md and must NOT be cited.
+%
+% Venues are listed only where the proceedings / conference site confirmed them;
+% otherwise the arXiv preprint is cited.
+
+% ---------------------------------------------------------------- benchmarks
+@inproceedings{ouyang2025kernelbench,
+  title     = {{KernelBench}: Can {LLMs} Write Efficient {GPU} Kernels?},
+  author    = {Ouyang, Anne and Guo, Simon and Arora, Simran and Zhang, Alex L. and Hu, William and R{\'e}, Christopher and Mirhoseini, Azalia},
+  booktitle = {Proceedings of the 42nd International Conference on Machine Learning},
+  series    = {Proceedings of Machine Learning Research},
+  volume    = {267},
+  pages     = {47356--47415},
+  year      = {2025},
+  note      = {arXiv:2502.10517},
+  url       = {https://proceedings.mlr.press/v267/ouyang25a.html}
+}
+
+@inproceedings{li2025tritonbench,
+  title     = {{TritonBench}: Benchmarking Large Language Model Capabilities for Generating {Triton} Operators},
+  author    = {Li, Jianling and Li, Shangzhan and Gao, Zhenye and Shi, Qi and Li, Yuxuan and Wang, Zefan and Huang, Jiacheng and Wang, Haojie and Wang, Jianrong and Han, Xu and Liu, Zhiyuan and Sun, Maosong},
+  booktitle = {Findings of the Association for Computational Linguistics: ACL 2025},
+  pages     = {23053--23066},
+  year      = {2025},
+  doi       = {10.18653/v1/2025.findings-acl.1183},
+  note      = {arXiv:2502.14752}
+}
+
+% ---------------------------------------------------------------- kernel-generation models / systems
+@misc{fisches2025kernelllm,
+  title        = {{KernelLLM}: Making Kernel Development More Accessible},
+  author       = {Fisches, Zacharias V. and Paliskara, Sahan and Guo, Simon and Zhang, Alex and Spisak, Joe and Cummins, Chris and Leather, Hugh and Synnaeve, Gabriel and Isaacson, Joe and Markosyan, Aram and Saroufim, Mark},
+  year         = {2025},
+  howpublished = {Model release (Hugging Face model card), \url{https://huggingface.co/facebook/KernelLLM}},
+  note         = {Software release; no peer-reviewed paper}
+}
+
+@article{baronio2025kevin,
+  title   = {Kevin: Multi-Turn {RL} for Generating {CUDA} Kernels},
+  author  = {Baronio, Carlo and Marsella, Pietro and Pan, Ben and Guo, Simon and Alberti, Silas},
+  journal = {arXiv preprint arXiv:2507.11948},
+  year    = {2025}
+}
+
+@article{li2025autotriton,
+  title   = {{AutoTriton}: Automatic {Triton} Programming with Reinforcement Learning in {LLMs}},
+  author  = {Li, Shangzhan and Wang, Zefan and He, Ye and Li, Yuxuan and Shi, Qi and Li, Jianling and Hu, Yonggang and Che, Wanxiang and Han, Xu and Liu, Zhiyuan and Sun, Maosong},
+  journal = {arXiv preprint arXiv:2507.05687},
+  year    = {2025}
+}
+
+@article{woo2025tritonrl,
+  title   = {{TritonRL}: Training {LLMs} to Think and Code {Triton} Without Cheating},
+  author  = {Woo, Jiin and Zhu, Shaowei and Nie, Allen and Jia, Zhen and Wang, Yida and Park, Youngsuk},
+  journal = {arXiv preprint arXiv:2510.17891},
+  year    = {2025}
+}
+
+@article{liu2026drkernel,
+  title   = {Dr. {Kernel}: Reinforcement Learning Done Right for {Triton} Kernel Generations},
+  author  = {Liu, Wei and Xu, Jiawei and Li, Yingru and Zheng, Longtao and Li, Tianjian and Liu, Qian and He, Junxian},
+  journal = {arXiv preprint arXiv:2602.05885},
+  year    = {2026}
+}
+
+@article{wang2025geak,
+  title   = {Geak: Introducing {Triton} Kernel {AI} Agent \& Evaluation Benchmarks},
+  author  = {Wang, Jianghui and Joshi, Vinay and Majumder, Saptarshi and Chao, Xu and Ding, Bin and Liu, Ziqiong and Brahma, Pratik Prabhanjan and Li, Dong and Liu, Zicheng and Barsoum, Emad},
+  journal = {arXiv preprint arXiv:2507.23194},
+  year    = {2025}
+}
+
+@article{lange2025robustkbench,
+  title   = {Towards Robust Agentic {CUDA} Kernel Benchmarking, Verification, and Optimization},
+  author  = {Lange, Robert Tjarko and Sun, Qi and Prasad, Aaditya and Faldor, Maxence and Tang, Yujin and Ha, David},
+  journal = {arXiv preprint arXiv:2509.14279},
+  year    = {2025}
+}
+
+@article{hsu2024liger,
+  title   = {Liger Kernel: Efficient {Triton} Kernels for {LLM} Training},
+  author  = {Hsu, Pin-Lun and Dai, Yun and Kothapalli, Vignesh and Song, Qingquan and Tang, Shao and Zhu, Siyu and Shimizu, Steven and Sahni, Shivam and Ning, Haowen and Chen, Yanning},
+  journal = {arXiv preprint arXiv:2410.10989},
+  year    = {2024}
+}
+
+% ---------------------------------------------------------------- execution-feedback repair
+@article{chen2023selfdebug,
+  title   = {Teaching Large Language Models to Self-Debug},
+  author  = {Chen, Xinyun and Lin, Maxwell and Sch{\"a}rli, Nathanael and Zhou, Denny},
+  journal = {arXiv preprint arXiv:2304.05128},
+  year    = {2023}
+}
+
+@article{shinn2023reflexion,
+  title   = {Reflexion: Language Agents with Verbal Reinforcement Learning},
+  author  = {Shinn, Noah and Cassano, Federico and Berman, Edward and Gopinath, Ashwin and Narasimhan, Karthik and Yao, Shunyu},
+  journal = {arXiv preprint arXiv:2303.11366},
+  year    = {2023}
+}
+
+% ---------------------------------------------------------------- fine-tuning
+@inproceedings{hu2022lora,
+  title     = {{LoRA}: Low-Rank Adaptation of Large Language Models},
+  author    = {Hu, Edward J. and Shen, Yelong and Wallis, Phillip and Allen-Zhu, Zeyuan and Li, Yuanzhi and Wang, Shean and Wang, Lu and Chen, Weizhu},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2022},
+  note      = {arXiv:2106.09685},
+  url       = {https://openreview.net/forum?id=nZeVKeeFYf9}
+}
+
+@inproceedings{dettmers2023qlora,
+  title     = {{QLoRA}: Efficient Finetuning of Quantized {LLMs}},
+  author    = {Dettmers, Tim and Pagnoni, Artidoro and Holtzman, Ari and Zettlemoyer, Luke},
+  booktitle = {Advances in Neural Information Processing Systems 36 (NeurIPS 2023)},
+  year      = {2023},
+  note      = {arXiv:2305.14314}
+}
+
+@misc{unsloth2023,
+  title        = {Unsloth},
+  author       = {Han, Daniel and Han, Michael and {Unsloth team}},
+  year         = {2023},
+  howpublished = {Software, \url{https://github.com/unslothai/unsloth}}
+}
+
+@article{hui2024qwen25coder,
+  title   = {{Qwen2.5-Coder} Technical Report},
+  author  = {Hui, Binyuan and Yang, Jian and Cui, Zeyu and others},
+  journal = {arXiv preprint arXiv:2409.12186},
+  year    = {2024}
+}
+
+% ---------------------------------------------------------------- kernels and the ops they implement
+@inproceedings{tillet2019triton,
+  title     = {Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations},
+  author    = {Tillet, Philippe and Kung, H. T. and Cox, David},
+  booktitle = {Proceedings of the 3rd ACM SIGPLAN International Workshop on Machine Learning and Programming Languages (MAPL)},
+  pages     = {10--19},
+  year      = {2019},
+  doi       = {10.1145/3315508.3329973}
+}
+
+@inproceedings{dao2022flashattention,
+  title     = {{FlashAttention}: Fast and Memory-Efficient Exact Attention with {IO}-Awareness},
+  author    = {Dao, Tri and Fu, Daniel Y. and Ermon, Stefano and Rudra, Atri and R{\'e}, Christopher},
+  booktitle = {Advances in Neural Information Processing Systems 35 (NeurIPS 2022)},
+  year      = {2022},
+  note      = {arXiv:2205.14135}
+}
+
+@inproceedings{dao2024flashattention2,
+  title     = {{FlashAttention-2}: Faster Attention with Better Parallelism and Work Partitioning},
+  author    = {Dao, Tri},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2024},
+  note      = {arXiv:2307.08691}
+}
+
+@misc{dao2023flashdecoding,
+  title        = {Flash-Decoding for Long-Context Inference},
+  author       = {Dao, Tri and Haziza, Daniel and Massa, Francisco and Sizov, Grigory},
+  year         = {2023},
+  month        = oct,
+  howpublished = {Blog post, \url{https://crfm.stanford.edu/2023/10/12/flashdecoding.html}}
+}
+
+@article{milakov2018online,
+  title   = {Online Normalizer Calculation for Softmax},
+  author  = {Milakov, Maxim and Gimelshein, Natalia},
+  journal = {arXiv preprint arXiv:1805.02867},
+  year    = {2018}
+}
+
+@inproceedings{ainslie2023gqa,
+  title     = {{GQA}: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints},
+  author    = {Ainslie, Joshua and Lee-Thorp, James and de Jong, Michiel and Zemlyanskiy, Yury and Lebr{\'o}n, Federico and Sanghai, Sumit},
+  booktitle = {Conference on Empirical Methods in Natural Language Processing (EMNLP)},
+  year      = {2023},
+  note      = {arXiv:2305.13245}
+}
+
+@article{su2021roformer,
+  title   = {{RoFormer}: Enhanced Transformer with Rotary Position Embedding},
+  author  = {Su, Jianlin and Lu, Yu and Pan, Shengfeng and Murtadha, Ahmed and Wen, Bo and Liu, Yunfeng},
+  journal = {arXiv preprint arXiv:2104.09864},
+  year    = {2021}
+}
+
+@inproceedings{zhang2019rmsnorm,
+  title     = {Root Mean Square Layer Normalization},
+  author    = {Zhang, Biao and Sennrich, Rico},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2019},
+  note      = {arXiv:1910.07467}
+}

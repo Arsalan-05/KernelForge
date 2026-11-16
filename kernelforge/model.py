@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from kernelforge.prompts import SYSTEM_PROMPT, build_messages
+from kernelforge.prompts import build_messages
 
 
 @dataclass
@@ -20,6 +20,96 @@ class GenerationConfig:
     top_p: float = 0.95
     load_in_4bit: bool = True
     max_seq_length: int = 8192
+    # None = keep the model's bundled value (Qwen2.5 ships 1.05). The eval
+    # scripts pin 1.0 so no hidden penalty shapes the measured outputs.
+    repetition_penalty: float | None = None
+
+
+def generation_kwargs(config: GenerationConfig, temperature: float | None = None,
+                      num_sequences: int = 1, pad_token_id: int | None = None) -> dict:
+    """The keyword arguments KernelGenerator passes to model.generate()."""
+    temperature = config.temperature if temperature is None else temperature
+    kwargs: dict = {"max_new_tokens": config.max_new_tokens}
+    if pad_token_id is not None:
+        kwargs["pad_token_id"] = pad_token_id
+    if config.repetition_penalty is not None:
+        kwargs["repetition_penalty"] = config.repetition_penalty
+    if temperature > 0:
+        kwargs.update(do_sample=True, temperature=temperature, top_p=config.top_p)
+    else:
+        kwargs["do_sample"] = False  # greedy decoding: same prompt, same output (pass@1 eval)
+    if num_sequences > 1:
+        kwargs.update(num_return_sequences=num_sequences, do_sample=True)
+    return kwargs
+
+
+def effective_settings(kwargs: dict, model_generation_config=None) -> dict:
+    """The sampling settings generate() actually uses.
+
+    transformers deep-copies the model's bundled generation_config and updates
+    it with the call's kwargs, so anything we don't pass (e.g. Qwen's top_k=20)
+    still applies. Sampling-only values are reported as None under greedy
+    decoding, where they have no effect. Without a model (dry runs) only the
+    kwargs are known, and unset values are None.
+    """
+    if model_generation_config is not None:
+        import copy
+
+        merged = copy.deepcopy(model_generation_config)
+        merged.update(**kwargs)
+        get = lambda key: getattr(merged, key, None)  # noqa: E731
+    else:
+        get = kwargs.get
+    sampling = bool(get("do_sample"))
+    return {
+        "do_sample": sampling,
+        "temperature": get("temperature") if sampling else None,
+        "top_k": get("top_k") if sampling else None,
+        "top_p": get("top_p") if sampling else None,
+        "repetition_penalty": get("repetition_penalty"),
+        "max_new_tokens": get("max_new_tokens"),
+    }
+
+
+def unsloth_available() -> bool:
+    """True if Unsloth imports cleanly.
+
+    Unsloth can be installed yet fail at import (it patches torch/transformers
+    and checks the GPU), raising errors other than ImportError. Any failure
+    means: use the transformers + PEFT path instead.
+    """
+    try:
+        import unsloth  # noqa: F401
+    except Exception as exc:  # broad on purpose, see docstring
+        print(f"Unsloth unavailable ({type(exc).__name__}: {str(exc)[:200]}); using transformers + PEFT.")
+        return False
+    return True
+
+
+def has_chat_template(tokenizer) -> bool:
+    return bool(getattr(tokenizer, "chat_template", None))
+
+
+def render_prompt(tokenizer, messages: list[dict]) -> str:
+    """Prompt text up to where the assistant starts answering.
+
+    Training (training/finetune.py) builds its prompt with this same function,
+    so the fine-tuned model sees byte-identical prompts at train and test time.
+    """
+    if has_chat_template(tokenizer):
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    # Base models without a chat template (e.g. StarCoder2) get a plain transcript.
+    turns = "\n\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages[1:])
+    return f"{messages[0]['content']}\n\n{turns}\n\nAssistant:"
+
+
+def encode_text(tokenizer, text: str) -> list[int]:
+    """Token ids for already-rendered text.
+
+    Chat templates already insert BOS where the model needs it, so the
+    tokenizer must not add another (DeepSeek/Llama would get a double BOS).
+    """
+    return tokenizer(text, add_special_tokens=not has_chat_template(tokenizer))["input_ids"]
 
 
 class KernelGenerator:
@@ -30,15 +120,16 @@ class KernelGenerator:
         self._model = None
         self._tokenizer = None
         self._backend = None
+        self.last_hit_token_limit: bool | None = None
 
     def load(self) -> None:
         if self._model is not None:
             return
 
-        try:
+        if unsloth_available():
             self._load_unsloth()
             self._backend = "unsloth"
-        except ImportError:
+        else:
             self._load_transformers()
             self._backend = "transformers"
 
@@ -71,7 +162,8 @@ class KernelGenerator:
             tokenizer.pad_token = tokenizer.eos_token
 
         quant_config = None
-        if self.config.load_in_4bit:
+        # bitsandbytes 4-bit needs CUDA; on CPU (smoke runs) load full precision.
+        if self.config.load_in_4bit and torch.cuda.is_available():
             try:
                 quant_config = BitsAndBytesConfig(
                     load_in_4bit=True,
@@ -102,36 +194,34 @@ class KernelGenerator:
         return self._encode_messages(build_messages(description, pytorch_reference))
 
     def _encode_messages(self, messages: list[dict]) -> dict:
-        if hasattr(self._tokenizer, "apply_chat_template"):
-            prompt = self._tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-        else:
-            turns = "\n\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages[1:])
-            prompt = f"{SYSTEM_PROMPT}\n\n{turns}\n\nAssistant:"
+        import torch
 
-        inputs = self._tokenizer(prompt, return_tensors="pt")
-        return {k: v.to(self._model.device) for k, v in inputs.items()}
+        ids = encode_text(self._tokenizer, render_prompt(self._tokenizer, messages))
+        input_ids = torch.tensor([ids], device=self._model.device)
+        return {"input_ids": input_ids, "attention_mask": torch.ones_like(input_ids)}
 
-    def _generate_kwargs(self, temperature: float | None = None) -> dict:
-        temperature = self.config.temperature if temperature is None else temperature
-        return {
-            "max_new_tokens": self.config.max_new_tokens,
-            "temperature": temperature,
-            "top_p": self.config.top_p,
-            "do_sample": temperature > 0,
-            "pad_token_id": self._tokenizer.eos_token_id,
-        }
+    def _generate_kwargs(self, temperature: float | None = None, num_sequences: int = 1) -> dict:
+        return generation_kwargs(self.config, temperature, num_sequences, self._tokenizer.eos_token_id)
 
-    def generate(self, description: str, pytorch_reference: str) -> str:
+    def effective_generation_settings(self, temperature: float | None = None, num_sequences: int = 1) -> dict:
+        """Settings generate()/stream_chat() use for this temperature, merged with the model's defaults."""
+        self.load()
+        return effective_settings(self._generate_kwargs(temperature, num_sequences),
+                                  getattr(self._model, "generation_config", None))
+
+    def generate(self, description: str, pytorch_reference: str, temperature: float | None = None,
+                 example: dict | None = None) -> str:
+        """One completion. temperature=0 decodes greedily; `example` adds a solved few-shot turn."""
         self.load()
         import torch
 
-        inputs = self._encode_prompt(description, pytorch_reference)
+        inputs = self._encode_messages(build_messages(description, pytorch_reference, example))
         with torch.no_grad():
-            output_ids = self._model.generate(**inputs, **self._generate_kwargs())
+            output_ids = self._model.generate(**inputs, **self._generate_kwargs(temperature))
 
         new_tokens = output_ids[0, inputs["input_ids"].shape[1] :]
+        # Lets eval reports flag outputs cut off at the cap (likely parse/syntax failures).
+        self.last_hit_token_limit = len(new_tokens) >= self.config.max_new_tokens
         return self._tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
     def stream(self, description: str, pytorch_reference: str) -> Iterator[str]:
@@ -201,9 +291,7 @@ class KernelGenerator:
 
         streamer = BatchTextStreamer(self._tokenizer, num_sequences, self._tokenizer.eos_token_id)
         inputs = self._encode_messages(messages)
-        kwargs = self._generate_kwargs(temperature)
-        if num_sequences > 1:
-            kwargs.update(num_return_sequences=num_sequences, do_sample=True)
+        kwargs = self._generate_kwargs(temperature, num_sequences)
 
         def _run() -> None:
             try:

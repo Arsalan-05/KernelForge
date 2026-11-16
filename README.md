@@ -31,22 +31,23 @@ to 4 candidates in one batched generation and verifies each one, sharing a singl
 identical kernels. The fastest correct kernel wins. If none passes, the exact harness feedback (for
 example "6599/20480 elements outside tolerance; max abs error 0.00195 at index (1, 1, 1, 33)", or the
 traceback) goes back to the model for up to 2 repair rounds. This is the multi-turn refinement idea
-behind Kevin-32B, run at inference time instead of trained with RL.
+behind Kevin-32B (a CUDA model), run at inference time instead of trained with RL.
 
 ## Current status
 
 The **demo studio and kernel search are built and run on the base model**; launch them on a
-Kaggle/Colab GPU for a shareable link. All 15 dataset templates were fixed and **pass Triton's CPU
-interpreter** (correctness only, run locally in Docker). GPU verification of the 300 candidates is the
-next step. Fine-tuning and evaluation code is written but **has not been run yet**, so there are no
-result numbers to report.
+Kaggle/Colab GPU for a shareable link. The dataset was verified with the Triton CPU interpreter
+(correctness only, no GPU result): **285/300 shapes pass, 15 out of memory in an 8 GB VM** — the
+15 OOM shapes are the largest attention and norm shapes; whether they fit on a 16 GB T4 is untested.
+GPU verification is the next step. Fine-tuning and evaluation code is written but **has not been run
+yet**, so there are no result numbers to report.
 
 | Piece | State |
 |---|---|
 | Verification harness | Done, GPU-validated; GPU mode (correctness + speedup) and interpreter mode (CPU, correctness only) |
 | Demo studio + kernel search (best-of-N, repair, result cache, `/stats`) | Built; 84 tests (83 on macOS, plus 1 interpreter test that runs in Docker); first live GPU session + GIF pending |
 | Public deployment (Railway: Dockerfile + `railway.json`, hosted-model option, code policy, rate limits) | Built; interpreter-only (Railway has no GPU) |
-| Dataset (15 templates × 20 shapes, 5 categories) | Templates fixed; 15/15 pass the interpreter; GPU verification pending |
+| Dataset (15 templates × 20 shapes, 5 categories) | Triton interpreter correctness: 285/300 pass, 15 OOM in 8 GB VM (no GPU result); GPU verification pending |
 | Fine-tuning (QLoRA, `training/finetune.py`) | Code written, not yet run |
 | Evaluation (`evaluation/`) | Code written, waiting on dataset + adapter |
 
@@ -60,9 +61,12 @@ Import [`notebooks/kaggle_gpu_session.ipynb`](notebooks/kaggle_gpu_session.ipynb
 ```bash
 python scripts/gpu_session.py              # GPU-verify the dataset + baseline eval on held-out templates
 python scripts/gpu_session.py --finetune   # + QLoRA fine-tune and fine-tuned eval
+python scripts/gpu_session.py --budget-hours 11  # stop cleanly before Kaggle's 12 h wall clock
 ```
 
 All results end up in `kernelforge_outputs.zip`. Evaluation holds out whole templates (one op per category), so test scores measure unseen ops rather than memorised kernels.
+
+See [docs/handoff/KAGGLE_RUNBOOK.md](docs/handoff/KAGGLE_RUNBOOK.md) for the full step-by-step runbook, expected output files, and a post-session checklist.
 
 ## Run the demo
 
@@ -137,10 +141,14 @@ python data/build_dataset.py --device cuda            # generate + verify datase
 # Correctness-check all 15 templates with Triton's CPU interpreter (no GPU; needs Docker)
 docker build -f docker/verify.Dockerfile -t kernelforge-verify .
 docker run --rm -v "$PWD":/work kernelforge-verify python data/build_dataset.py --interpret --smoke --jobs 8
-python evaluation/baseline_eval.py --device cuda      # baseline eval (base model)
+python evaluation/baseline_eval.py --device cuda      # baseline eval (base model, greedy)
+python evaluation/baseline_eval.py --few-shot-source other_category --device cuda  # few-shot baseline
 python training/finetune.py --config training/configs/finetune_default.json
 python evaluation/finetuned_eval.py --adapter training/checkpoints/run_*/adapter --device cuda
 python evaluation/baseline_eval.py --dry-run --device cpu   # eval pipeline dry-run, no GPU/model
+
+# After the GPU session: generate report fragments for the paper
+python -m evaluation.report . --out docs/results/   # writes docs/results/table_*.tex
 ```
 
 ## Repo layout
