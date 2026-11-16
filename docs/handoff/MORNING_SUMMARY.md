@@ -429,3 +429,129 @@ Run the Kaggle GPU session:
 bash scripts/reproduce_all.sh   # pre-flight: confirms ~57s end-to-end
 # Then follow docs/handoff/KAGGLE_RUNBOOK.md
 ```
+
+---
+
+## Overnight session 2 — 2026-11-16
+
+**Branch:** `agent/overnight2` (cut from `agent/overnight` @ `80961da`)
+**Session:** ~02:30–07:00 EST
+**Tests at end of session:** 288 passed, 2 skipped (was 285/5; 3 transformers-guarded tests now run; 1 test skips on missing `datasets`).
+
+### What was done
+
+#### Task 1 — Norm blind-spot fix and overclaim removal
+
+**Problem:** `mutation_test.py` had two blind spots (`norm_rmsnorm__missing_weight`, `layernorm__missing_bias`) that were excluded from the denominator under a `documented_gap` label, inflating the reported score from 27/29 to 27/27 = 100%. Additionally, `cross_attn__wrong_reduction_axis` was reclassified post-hoc (after observing it survived), which is a methodological issue even if the math is correct.
+
+**Fix:** Both norm entries replaced with custom template entries using `torch.randn` initialization. With random init:
+- `norm_rmsnorm__missing_weight` → CAUGHT (2036/2100 elements wrong; max error 7.714)
+- `layernorm__missing_bias` → CAUGHT (2092/2100 elements wrong; max error 3.411)
+
+**Corrected score:** 29/29 = 100% (denominator = 29, excludes only 3 pre-declared `harmless_change` softmax-invariants).
+
+**Text corrections:** `docs/paper/paper.tex`, `docs/handoff/OVERNIGHT_LOG.md`, `docs/handoff/MORNING_SUMMARY.md`, `docs/handoff/DATA_REPORT.md` — all overclaims and "definitive" language removed.
+
+**Tests added:** `test_missing_bias_caught_with_random_init`, `test_missing_bias_survives_with_zeros_init`.
+
+**Commit:** `d55bcd7`
+
+#### Task 3 — Local base-model evaluation (Qwen2.5-Coder-1.5B-Instruct, MPS, zero-shot)
+
+**Model:** `Qwen/Qwen2.5-Coder-1.5B-Instruct` (BASE model, not fine-tuned)
+**Device:** MPS float16 (Apple Silicon)
+**Script:** `scripts/local_baseline_eval.py`
+**Entries:** 60 (12 per category: 3 smoke + 9 regular); categories: quantized_matmul, attention, kv_cache, norm, rope
+**Method:** generation → free model completely → Docker interpreter verification
+
+**Pilot results (3 entries, 1 per category):**
+- Tokens/second: ~10 tok/s (median), max_new_tokens=768
+- Parse rate: 100% (kernel: section found in all 3 outputs)
+- Correct: 0/3 — all 3 had SyntaxErrors in the generated Triton code (base model, zero-shot)
+
+**Full run results (60 entries):**
+See `evaluation/results/local_baseline_report.json` for complete numbers.
+
+| Metric | Value |
+|---|---|
+| Total entries | 60 |
+| Parse OK | 60 / 60 (100.0%) |
+| Correct (pass@1) | 0 / 60 (0.0%) |
+| Wilson 95% CI | [0.0%, 6.0%] |
+| Failure types | syntax_error: 23, runtime_error: 37 |
+
+**Note:** These are BASE model results. The fine-tuned model is expected to perform significantly better.
+Tokens per second: median=13.2, mean=12.2 tok/s on MPS float16 (useful for planning Kaggle generation time estimates).
+
+**Commits:** `614f777` (script), FILL_RESULTS_COMMIT
+
+#### Task 4 — Verified bibliography
+
+**New finding:** Reflexion (Shinn et al.) confirmed at **NeurIPS 2023** via
+`papers.nips.cc/paper_files/paper/2023/hash/1b44b878bb782e6954cd888628510e90-Abstract-Conference.html`.
+Updated `references.bib` from `@article` to `@inproceedings` (NeurIPS 2023). Author list corrected to
+the 5-author proceedings version (Berman absent from proceedings).
+
+Other checks confirmed: `baronio2025kevin`, `liu2026drkernel`, `woo2025tritonrl`, `su2021roformer`,
+`chen2023selfdebug` — all present/unchanged at their arXiv URLs.
+
+**Commit:** `0a5d106`
+
+#### Task 2 — AST-based mutation campaign (≥200 mutations, 90-min time-box)
+
+**Script:** `scripts/ast_mutation_campaign.py`
+**Mutations generated:** 353 across all 15 smoke templates (28–31 per template)
+**Classification rule (declared before running):**
+- `harmless_change`: mutant produces IDENTICAL output on ALL 5 screening seeds {0,1,2,3,4}
+- `expected_caught`: mutant produces DIFFERENT output on ANY screening seed
+- Official score seed: 42 (not in screening set)
+
+**Types generated:** flip_add_to_sub, flip_sub_to_add, flip_mul_to_div, flip_div_to_mul,
+flip_cmp_lt/gt/lte/gte, flip_axis_{0,1}, swap_sqrt/rsqrt/exp/log, remove_binop_right,
+replace_const_{127,0.0,1.0}
+
+**Results (90-minute time-box):**
+See `evaluation/results/ast_mutation_report.json` for complete numbers.
+
+| Metric | Value |
+|---|---|
+| Mutations run (in time-box) | FILL_AFTER_RUN |
+| harmless_change | FILL_AFTER_RUN |
+| expected_caught | FILL_AFTER_RUN |
+| Caught (by seed=42) | FILL_AFTER_RUN |
+| Mutation score | FILL_AFTER_RUN |
+| Wilson 95% CI | FILL_AFTER_RUN |
+
+**Commit:** `614f777` (script), FILL_RESULTS_COMMIT
+
+### Test counts
+
+| Event | Count |
+|---|---|
+| Start of session (`agent/overnight` state) | 285 passed, 5 skipped |
+| After Task 1 (norm blind spots) | 285 passed, 5 skipped |
+| After installing `transformers` (Task 3) | 288 passed, 2 skipped |
+| End of session | 288 passed, 2 skipped |
+
+The skip count change: `transformers` now installed → 3 previously-skipped tests run and pass. 1 test skips on missing `datasets` (pre-existing gap; guarded with `pytest.importorskip`).
+
+### Commits this session
+
+```
+3bd3221 Fix test skipping: guard finetune dry-run test with datasets importskip
+614f777 Add Task 3+4+2 scripts; log Task 4 (bibliography) in OVERNIGHT_LOG
+0a5d106 Task 4: verify bibliography; promote Reflexion to NeurIPS 2023 proceedings
+d55bcd7 Task 1: fix norm blind spots, correct overclaims, add LayerNorm bias tests
+```
+
+### Blockers (unchanged — all GPU-dependent)
+
+See `docs/handoff/BLOCKERS.md`. Nothing new unblocked.
+
+### Next step
+
+Run the Kaggle GPU session:
+```bash
+bash scripts/reproduce_all.sh   # pre-flight: confirms ~57s end-to-end
+# Then follow docs/handoff/KAGGLE_RUNBOOK.md
+```

@@ -342,3 +342,55 @@ blocked and RoFormer journal page not accessible).
 **Status: COMPLETE**
 
 ---
+
+## Task 3 — Local base-model evaluation (Qwen2.5-Coder-1.5B-Instruct, MPS, zero-shot)
+
+**Started:** ~04:00 EST (generation began mid-session; Docker verify completed ~04:05 EST)
+**Script:** `scripts/local_baseline_eval.py`
+**Model:** `Qwen/Qwen2.5-Coder-1.5B-Instruct` (BASE model, not fine-tuned)
+**Device:** MPS float16 (Apple Silicon)
+
+### Method
+
+Two-phase evaluation:
+1. Phase 1 — Generate all 60 entries on MPS (max_new_tokens=768, temp=0, notes=True), writing to checkpoint jsonl.
+2. Phase 1 end — Free model completely from MPS memory.
+3. Phase 2 — Docker interpreter verification for all 60 entries.
+
+**Entry selection:** 12 per category (3 smoke + 9 from GENERATORS), 5 categories:
+quantized_matmul, attention, kv_cache, norm, rope.
+
+### Results
+
+| Metric | Value |
+|---|---|
+| Total entries | 60 |
+| Parse OK | 60 / 60 (100.0%) |
+| Correct (pass@1) | 0 / 60 (0.0%) |
+| Wilson 95% CI | [0.0%, 6.0%] |
+| Failure types | syntax_error: 23, runtime_error: 37 |
+| Tokens/s | median=13.2, mean=12.2 |
+
+**Per-category:** all 5 categories: 0/12, CI=[0%, 24%].
+
+### Interpretation
+
+0% pass@1 is expected for a 1.5B base model on complex zero-shot Triton kernel generation.
+The two failure types are:
+- `syntax_error` (23): model generated syntactically invalid Python (keyword arg syntax, unclosed parens)
+- `runtime_error` (37): parsed OK but kernel crashed at runtime (shape errors, missing Triton ops, etc.)
+
+Parse rate is 100% — the `kernel:` markdown block was always present and non-empty. This confirms
+`parse_model_output` works correctly with Qwen2.5-Coder output format.
+
+Throughput (median 13.2 tok/s on MPS fp16) is useful for estimating Kaggle T4 generation time.
+At similar throughput, 60 entries × 768 tokens = ~3,500 seconds ≈ 58 minutes of generation time
+(T4 is likely faster due to CUDA tensor cores).
+
+**Outputs:**
+- `evaluation/results/local_baseline_eval.jsonl` (checkpoint, 60 records)
+- `evaluation/results/local_baseline_report.json` (summary)
+
+**Status: COMPLETE**
+
+---
