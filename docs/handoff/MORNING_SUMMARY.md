@@ -253,3 +253,38 @@ Output of `git branch -a` at end of session:
   remotes/origin/HEAD -> origin/main
   remotes/origin/main
 ```
+
+---
+
+## Merge into main — results
+
+Performed after the overnight session. All three merges succeeded with no conflicts (disjoint file sets).
+
+| Merge | Commit | Strategy |
+|---|---|---|
+| `agent/merged` → `main` | `ee802ae` | ort, no conflicts |
+| `agent/extras` → `main` | `d1656a2` | ort, no conflicts |
+| `agent/ui` → `main` | `cabef55` | ort, no conflicts |
+
+**Test suite on main after all merges:** `272 passed, 5 skipped, 0 failed`
+
+The 3 extra tests (vs. 269 on `agent/extras`) come from the `GET /results` tests added on `agent/ui`.
+
+**Deploy verification:**
+- `Dockerfile` line 27: `COPY . .` — report file will be included
+- `.dockerignore` excludes `rejected.jsonl` and `generation_report.json` but NOT `interpret_report_2026-11-15.json` — file will reach the container
+- `data/raw/interpret_report_2026-11-15.json` is tracked and present on main
+- No `.env` files or secrets tracked (`git ls-files | grep -iE "\.env$|secret|key"` → nothing)
+- No wording says "11 of 15" or "4 templates have OOM shapes" anywhere on main
+- All interpreter results correctly labelled "correctness only, no GPU result"
+
+**Blockers:** none — all three merges completed cleanly.
+
+**`agent/phase2` branch** created from this point on main (commit `cabef55`).
+
+### To push when ready
+
+```bash
+git remote set-url --push origin https://github.com/Arsalan-05/KernelForge.git
+git push origin main
+```
