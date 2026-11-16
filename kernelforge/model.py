@@ -6,7 +6,7 @@ import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Iterator
 
 from kernelforge.prompts import build_messages
 

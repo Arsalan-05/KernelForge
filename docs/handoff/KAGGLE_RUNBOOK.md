@@ -2,6 +2,29 @@
 
 This runbook covers running a full KernelForge session on a Kaggle T4 GPU (16 GB VRAM, 12 h wall clock) from setup to artifact download.
 
+**Related docs:**
+- `docs/handoff/T4_FIT.md` — per-shape VRAM estimates for all 300 kernel entries (estimate only; T4 fit is untested).
+- `docs/handoff/SMOKE_TEST.md` — CPU smoke-test results: what ran, what was skipped, and why.
+
+---
+
+## 0. Time Budget (Estimates — Untested on T4)
+
+| Stage | Estimated time | Notes |
+|---|---|---|
+| `env` | < 1 min | GPU check, python/triton version |
+| `harness` | 1–2 min | Verifier smoke check, one kernel |
+| `dataset` | 4–5 h | 300 kernels × (compile + verify); 15 may OOM (counted, not fatal) |
+| `baseline` | 1–2 h | 100 prompts, greedy, 2048 max tokens |
+| `finetune` | ~1 h | QLoRA, 1.5B, 3 epochs, batch=1, grad_accum=8 (`FINETUNE=True` only) |
+| `eval` | ~1 h | 100 prompts on the fine-tuned adapter (`FINETUNE=True` only) |
+| **Total (no FT)** | **~6–7 h** | Well within 12 h |
+| **Total (+ FT)** | **~8–9 h** | Still within 12 h |
+
+These are rough estimates based on typical Triton compile times and 1.5B model inference speed.
+Actual times will vary. If running short on time, use `--eval-limit 25` to score 25 prompts
+instead of 100.
+
 ---
 
 ## 0. Pre-flight (local, no GPU needed)
