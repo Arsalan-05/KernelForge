@@ -145,7 +145,7 @@ Then restart the studio with `KERNELFORGE_ADAPTER_PATH=training/outputs/ft_r16` 
 |---|---|---|---|
 | `agent/merged` | 231 | 5 | GPU + transformers skips |
 | `agent/extras` | 269 | 5 | +38 new tests (ablations, stats, harness, leakage) |
-| `agent/ui` | 231 | 5 | UI changes have no browser-automation tests |
+| `agent/ui` | 234 | 5 | +3 tests for `GET /results` (present, missing, malformed report) |
 
 ---
 
@@ -159,3 +159,97 @@ Then restart the studio with `KERNELFORGE_ADAPTER_PATH=training/outputs/ft_r16` 
 | `docs/handoff/INTEGRATION_REPORT.md` | Per-task record of what the overnight session did |
 | `data/raw/interpret_report_2026-11-15.json` | Canonical source for the 285/300 and 15 OOM facts |
 | `evaluation/report/README.md` | Exact format of the LaTeX fragments and how to regenerate them |
+
+---
+
+## How to merge into main (safest order)
+
+Merge in this order: `agent/merged` → `agent/extras` → `agent/ui`. Each merge is a fast-forward or a pure-additive merge with no shared files between the branch being merged and the ones already in.
+
+```bash
+git checkout main
+
+# 1 — merge agent/merged first (the integration base; all prior agents are already in here)
+git merge --no-ff agent/merged -m "Merge agent/merged: GPU session, dataset, verification, eval, fine-tuning, paper skeleton"
+
+# 2 — merge agent/extras (experiment matrix, pass@k, harness hardening, leakage checker, pre-flight)
+git merge --no-ff agent/extras -m "Merge agent/extras: ablation matrix, pass@k estimator, split leakage checker, pre-flight check"
+
+# 3 — merge agent/ui last (Studio UI upgrade, GET /results, accessibility, saved settings)
+git merge --no-ff agent/ui -m "Merge agent/ui: results tab, honest labels, accessibility, no-layout-jumps, saved settings"
+```
+
+**Which branch to review most carefully: `agent/ui`.**
+
+`agent/ui` is the only branch that modifies files served live by the Railway deploy (`app/backend/main.py`, `app/web/`). A mistake here is immediately visible to anyone hitting the public URL. Review every change in `app/` before merging.
+
+**Likely conflicts between agent/extras and agent/ui:**
+
+There are **no expected conflicts**. The two branches were both cut from `agent/merged` at the same commit and touch entirely disjoint file sets:
+
+- `agent/extras` touches: `evaluation/`, `scripts/`, `tests/test_report.py`, `tests/test_verify_kernel.py`, `tests/test_ablations.py`, `tests/test_split_leakage.py`
+- `agent/ui` touches: `app/backend/main.py`, `app/web/`, `tests/test_app.py`, `docs/handoff/UI_REPORT.md`
+
+The `/results` tests were placed in `tests/test_app.py` (not `tests/test_report.py`) specifically to keep the test files disjoint. If `git merge` does raise a conflict, it will be in `tests/test_app.py` only (if extras somehow touched it — it does not).
+
+After all three merges, run `pytest` to confirm 234+ tests pass.
+
+---
+
+## Railway deploy risk list
+
+The following items in `agent/ui` could affect the live Railway deploy. Review each before merging or pushing.
+
+| Risk | Detail | Severity |
+|---|---|---|
+| **New `GET /results` endpoint** | Added to `app/backend/main.py`. No new dependencies; reads a local file. Safe if the file is absent (returns `{interpreter: null, gpu: null}`). | Low |
+| **Report file exists only locally** | `data/raw/interpret_report_2026-11-15.json` is git-ignored but force-added locally. Railway will not have it unless it is committed to the repo or placed in the Docker image. The endpoint handles this gracefully (returns `null`). | Low — handled |
+| **`_ROOT` path constant** | `app/backend/main.py` now defines `_ROOT = Path(__file__).parent.parent.parent` and derives `_RESULTS_REPORT` from it. If Railway's working directory or Docker `WORKDIR` differs, the path may resolve incorrectly. Verify with a one-shot `python -c "from app.backend.main import _RESULTS_REPORT; print(_RESULTS_REPORT)"` in the Railway shell. | Low |
+| **No new Python dependencies** | The `/results` endpoint uses only `json` and `pathlib` (stdlib). No new entries in `requirements.txt`. | None |
+| **No new environment variables** | The UI changes add `localStorage` state client-side only. No new `KERNELFORGE_*` vars are read server-side. | None |
+| **Hosted-model label change** | `renderKernel()` now reads `model_variant` from the `/generate` response and updates the compare-pane label. Railway uses `KERNELFORGE_LLM_MODEL`; the `/health` endpoint already returns `model_variant: "base"` or `"fine-tuned"`. The label will display whatever the backend reports — no silent wrong label. | Low |
+| **localStorage settings key** | `kernelforge.settings.v1` is written to the browser's localStorage. No server-side effect. If a returning user has stale data under a different key it is silently ignored. | None |
+| **CSS `min-height` additions** | `min-height: 400px` on tab panels prevents layout jump. Pure additive CSS; no breakage risk. | None |
+
+**Summary:** No new packages, no new environment variables, no schema migrations. The only runtime change that touches the server is the new `GET /results` route, which is safe to deploy before the report file exists.
+
+---
+
+## Session timing
+
+All times are US/Eastern (UTC-5).
+
+| Event | Timestamp |
+|---|---|
+| First commit tonight | `2026-11-15 17:33:16 -0500` — "build_dataset: incremental progress log, --resume, solo OOM retry, time budget" |
+| Last commit tonight | `2026-11-15 21:04:45 -0500` — "Add tests for GET /results: present report, missing report, malformed report" (on `agent/ui`) |
+| **Total session** | **3 hours 31 minutes** |
+
+61 commits were made across all branches during this session.
+
+---
+
+## Worktree and branch state
+
+Output of `git worktree list` at end of session:
+
+```
+/Users/Arsalan Amir Ali/Developer/GitHub/KernelForge 58e2588 [agent/merged]
+```
+
+(No separate worktrees — all branch work was done by switching branches in the main worktree.)
+
+Output of `git branch -a` at end of session:
+
+```
+  agent/a
+  agent/b
+  agent/c
+  agent/d
+  agent/extras
+* agent/merged
+  agent/ui
+  main
+  remotes/origin/HEAD -> origin/main
+  remotes/origin/main
+```
