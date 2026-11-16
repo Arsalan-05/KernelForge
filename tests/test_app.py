@@ -1,6 +1,8 @@
 """Tests for the demo backend's request path (no GPU or model download required)."""
 
 import json
+import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -293,3 +295,79 @@ def test_catalog_never_uses_the_requested_op_as_its_example():
             example = catalog.example_for(ref)
             assert not example["id"].startswith(t.id + "__"), t.id
             assert example["category"] == t.category
+
+
+# ---------------------------------------------------------------------------
+# GET /results — coverage data from the interpreter report
+# ---------------------------------------------------------------------------
+
+def test_results_with_present_report(client, monkeypatch, tmp_path):
+    """When the report file exists, /results returns structured coverage data."""
+    report = {
+        "mode": "triton-interpreter (correctness only, CPU; no timings)",
+        "total": 40,
+        "passed": 38,
+        "generated_at": "2026-11-15T00:00:00",
+        "templates": {
+            "norm/rmsnorm": [
+                {"id": "norm__rmsnorm__r128_h256", "passed": True, "status": "ok", "error": None},
+                {"id": "norm__rmsnorm__r65536_h4096", "passed": False, "status": "crash", "error": "OOM"},
+            ] + [{"id": f"norm__rmsnorm__r{i}", "passed": True, "status": "ok", "error": None} for i in range(18)],
+            "rope/rotate_half": [
+                {"id": f"rope__rotate_half__r{i}", "passed": True, "status": "ok", "error": None}
+                for i in range(20)
+            ],
+        },
+    }
+    report_file = tmp_path / "report.json"
+    report_file.write_text(json.dumps(report))
+    monkeypatch.setattr(main, "_RESULTS_REPORT", report_file)
+
+    resp = client.get("/results")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    interp = body["interpreter"]
+    assert interp is not None
+    assert interp["total"] == 40
+    assert interp["passed"] == 38
+    assert interp["mode"] == report["mode"]
+    assert body["gpu"] is None
+
+    # Per-category structure
+    by_cat = interp["by_category"]
+    assert "norm" in by_cat
+    assert by_cat["norm"]["total"] == 20
+    assert by_cat["norm"]["passed"] == 19
+    assert by_cat["norm"]["oom"] == 1
+    assert len(by_cat["norm"]["templates"]) == 1
+    assert by_cat["norm"]["templates"][0]["name"] == "rmsnorm"
+
+    assert "rope" in by_cat
+    assert by_cat["rope"]["passed"] == 20
+    assert by_cat["rope"]["oom"] == 0
+
+
+def test_results_with_missing_report(client, monkeypatch, tmp_path):
+    """When the report file is absent, /results returns interpreter: null and gpu: null."""
+    absent = tmp_path / "no_such_file.json"
+    monkeypatch.setattr(main, "_RESULTS_REPORT", absent)
+
+    resp = client.get("/results")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["interpreter"] is None
+    assert body["gpu"] is None
+
+
+def test_results_with_malformed_report(client, monkeypatch, tmp_path):
+    """When the report file exists but is not valid JSON, /results returns interpreter: null."""
+    bad_file = tmp_path / "bad.json"
+    bad_file.write_text("{ this is not json }")
+    monkeypatch.setattr(main, "_RESULTS_REPORT", bad_file)
+
+    resp = client.get("/results")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["interpreter"] is None
+    assert body["gpu"] is None
