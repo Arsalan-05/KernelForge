@@ -427,3 +427,122 @@ def test_verify_result_passed_property():
     assert VerifyResult(status="ok", correct=False).passed is False
     assert VerifyResult(status="error", correct=None).passed is False
     assert VerifyResult(status="timeout", correct=None).passed is False
+
+
+# --- Mutation-test coverage (discovered in scripts/mutation_test.py) ----------
+
+MODEL_RMSNORM_RANDOM_WEIGHT = """
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    \"\"\"RMSNorm with randomly-initialised weight (not all-ones).\"\"\"
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        # Seed before construction so ModelNew gets the same random weight.
+        self.weight = nn.Parameter(torch.randn(hidden_size))
+
+    def forward(self, x):
+        variance = x.pow(2).mean(-1, keepdim=True)
+        x = x * torch.rsqrt(variance + self.eps)
+        return x * self.weight
+
+def get_inputs():
+    return [torch.randn(4, 32)]
+
+def get_init_inputs():
+    return [32]
+"""
+
+MODEL_RMSNORM_MISSING_WEIGHT = """
+import torch
+import torch.nn as nn
+
+class ModelNew(nn.Module):
+    \"\"\"RMSNorm with the weight multiplication omitted (broken mutant).\"\"\"
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.randn(hidden_size))  # same RNG call order
+
+    def forward(self, x):
+        variance = x.pow(2).mean(-1, keepdim=True)
+        x = x * torch.rsqrt(variance + self.eps)
+        return x  # BUG: weight not applied
+"""
+
+MODEL_RMSNORM_ONES_WEIGHT = """
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    \"\"\"RMSNorm with all-ones weight (the template default).\"\"\"
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+
+    def forward(self, x):
+        variance = x.pow(2).mean(-1, keepdim=True)
+        x = x * torch.rsqrt(variance + self.eps)
+        return x * self.weight
+
+def get_inputs():
+    return [torch.randn(4, 32)]
+
+def get_init_inputs():
+    return [32]
+"""
+
+MODEL_RMSNORM_MISSING_WEIGHT_ONES = """
+import torch
+import torch.nn as nn
+
+class ModelNew(nn.Module):
+    \"\"\"RMSNorm with weight skipped but default ones init (gap mutant).\"\"\"
+    def __init__(self, hidden_size, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+
+    def forward(self, x):
+        variance = x.pow(2).mean(-1, keepdim=True)
+        x = x * torch.rsqrt(variance + self.eps)
+        return x  # BUG: weight not applied — but weight is all-ones so result is same
+"""
+
+
+def test_missing_weight_caught_with_random_init():
+    """The harness catches a missing weight multiplication when weight != ones.
+
+    This confirms the harness logic is sound; the limitation is that template
+    entries initialise their weights to ones by default, making this mutation
+    undetectable at their default init (see test below).
+    """
+    result = verify_model_kernel(
+        MODEL_RMSNORM_RANDOM_WEIGHT, MODEL_RMSNORM_MISSING_WEIGHT,
+        device="cpu", seed=7, warmup=0, iters=1,
+    )
+    assert result.status == "ok"
+    assert result.correct is False, (
+        "Expected the harness to catch missing weight multiplication "
+        "when weight is randomly initialised (not all-ones)"
+    )
+
+
+def test_missing_weight_survives_with_ones_init():
+    """Documents the all-ones weight gap: when both Model and ModelNew initialise
+    their weight parameter to ones, skipping the multiplication is undetectable
+    because ones * x == x.  The harness correctly reports the outputs as equal;
+    the limitation is in the template initialisation, not the harness logic.
+    """
+    result = verify_model_kernel(
+        MODEL_RMSNORM_ONES_WEIGHT, MODEL_RMSNORM_MISSING_WEIGHT_ONES,
+        device="cpu", seed=0, warmup=0, iters=1,
+    )
+    assert result.status == "ok"
+    assert result.correct is True, (
+        "Expected the harness to pass the all-ones mutant "
+        "(x * ones == x, so the gap is in the template init, not the harness)"
+    )

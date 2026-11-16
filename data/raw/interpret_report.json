@@ -1,9 +1,16 @@
 {
-  "generated_at": "2026-09-29T18:11:21.177087+00:00",
+  "generated_at": "2026-11-16T02:52:29.055707+00:00",
   "mode": "triton-interpreter (correctness only, CPU; no timings)",
   "smoke": true,
   "total": 15,
   "passed": 15,
+  "partial": false,
+  "run_stats": {
+    "resumed": 0,
+    "oom_retried": 0,
+    "oom_recovered_on_retry": 0,
+    "not_run": []
+  },
   "templates": {
     "quantized_matmul/w8a16_pertensor": [
       {
