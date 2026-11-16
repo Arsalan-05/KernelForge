@@ -22,6 +22,6 @@ primary source, add it to `references.bib`, and log it in `SOURCES.md`.
 - **KernelBook dataset (GPUMODE):** named on the KernelLLM card. No separate paper read.
 - **KernelBench-v2, TritonForge:** mentioned in `data/SCHEMA.md`. Not checked.
 - **CUDA-L1** and other CUDA-RL work: not checked.
-- **Venues not confirmed:** Self-Debugging (possibly ICLR 2024), Reflexion (possibly NeurIPS 2023), RoFormer (possibly Neurocomputing 2024). Cited as arXiv preprints only.
+- **Venues not confirmed:** Self-Debugging (possibly ICLR 2024; could not access OpenReview on 2026-11-16, cited as arXiv only), RoFormer (possibly Neurocomputing 2024; arXiv page shows no journal on 2026-11-16, cited as arXiv only). **Reflexion confirmed NeurIPS 2023** (papers.nips.cc/paper/2023/hash/1b44b878bb782e6954cd888628510e90, checked 2026-11-16) — updated in references.bib to @inproceedings.
 - **Rejection-sampling fine-tuning / STaR / RFT** for the Future-work section: not checked. Future work describes the idea without a citation.
 - **Hardware facts about the T4** (Turing, no native bf16, 16 GB, FP16 tensor-core peak): not cited from an NVIDIA datasheet. The paper only states "16 GB" and "fp16 training as configured". Add an NVIDIA datasheet citation if more hardware detail is needed.

@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
-from typing import Iterator, Optional
+from typing import Iterator, NamedTuple, Optional
 
 import httpx
 
@@ -22,6 +22,13 @@ _DONE = object()
 
 class RemoteGenerationError(RuntimeError):
     pass
+
+
+class UsageData(NamedTuple):
+    """Real token counts returned by the API in the final SSE chunk."""
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: Optional[float]
 
 
 class RemoteChatGenerator:
@@ -69,13 +76,14 @@ class RemoteChatGenerator:
             "temperature": temperature,
             "top_p": self.top_p,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "text/event-stream"}
         try:
             with self._client.stream("POST", f"{self.base_url}/chat/completions",
                                      json=body, headers=headers) as resp:
                 if resp.status_code >= 400:
-                    detail = resp.read().decode(errors="replace")[:300]
+                    detail = resp.read().decode(errors="replace")
                     raise RemoteGenerationError(f"HTTP {resp.status_code} from the model API: {detail}")
                 for line in resp.iter_lines():
                     if stop.is_set():
@@ -91,6 +99,14 @@ class RemoteChatGenerator:
                         continue
                     if chunk.get("error"):
                         raise RemoteGenerationError(f"model API error: {chunk['error']}")
+                    # Capture real token usage from the final chunk (stream_options.include_usage)
+                    if chunk.get("usage"):
+                        u = chunk["usage"]
+                        out.put((index, UsageData(
+                            prompt_tokens=u.get("prompt_tokens", 0),
+                            completion_tokens=u.get("completion_tokens", 0),
+                            cost_usd=u.get("cost"),
+                        )))
                     for choice in chunk.get("choices") or []:
                         text = (choice.get("delta") or {}).get("content")
                         if text:
@@ -113,6 +129,10 @@ class RemoteChatGenerator:
         for t in threads:
             t.start()
 
+        # Populated with UsageData from the final SSE chunk of each sequence.
+        # Callers can read self.last_usage[seq_index] after iterating.
+        self.last_usage: dict[int, UsageData] = {}
+
         errors: dict[int, Exception] = {}
         remaining = num_sequences
         try:
@@ -122,6 +142,8 @@ class RemoteChatGenerator:
                     remaining -= 1
                 elif isinstance(item, Exception):
                     errors[index] = item
+                elif isinstance(item, UsageData):
+                    self.last_usage[index] = item
                 else:
                     yield index, item
         finally:

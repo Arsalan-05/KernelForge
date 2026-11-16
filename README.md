@@ -45,7 +45,7 @@ yet**, so there are no result numbers to report.
 | Piece | State |
 |---|---|
 | Verification harness | Done, GPU-validated; GPU mode (correctness + speedup) and interpreter mode (CPU, correctness only) |
-| Demo studio + kernel search (best-of-N, repair, result cache, `/stats`) | Built; 84 tests (83 on macOS, plus 1 interpreter test that runs in Docker); first live GPU session + GIF pending |
+| Demo studio + kernel search (best-of-N, repair, result cache, `/stats`) | Built; 283 tests pass on macOS (5 skipped: need triton or transformers); first live GPU session pending |
 | Public deployment (Railway: Dockerfile + `railway.json`, hosted-model option, code policy, rate limits) | Built; interpreter-only (Railway has no GPU) |
 | Dataset (15 templates × 20 shapes, 5 categories) | Triton interpreter correctness: 285/300 pass, 15 OOM in 8 GB VM (no GPU result); GPU verification pending |
 | Fine-tuning (QLoRA, `training/finetune.py`) | Code written, not yet run |

@@ -17,7 +17,7 @@ the source first and add the claim here.
 | `lange2025robustkbench` | arxiv.org/abs/2509.14279; sakana.ai/ai-cuda-engineer | Sakana AI. Agentic PyTorch→CUDA pipeline with evolutionary meta-generation and LLM-based verifiers; argues existing kernel benchmarks have "exploitable loopholes"; introduces robust-kbench. Uses frontier LLMs at test time, no fine-tuning mentioned. |
 | `hsu2024liger` | arxiv.org/abs/2410.10989 | Open-source Triton kernels for LLM *training*; fusion and input chunking; ~20% throughput, ~60% memory reduction vs HuggingFace implementations. |
 | `chen2023selfdebug` | arxiv.org/abs/2304.05128 | Few-shot prompting teaches an LLM to debug its own code from execution results. |
-| `shinn2023reflexion` | arxiv.org/abs/2303.11366 | Agents improve by verbally reflecting on task feedback, without weight updates. |
+| `shinn2023reflexion` | arxiv.org/abs/2303.11366; NeurIPS 2023 proceedings page confirmed 2026-11-16: papers.nips.cc/paper_files/paper/2023/hash/1b44b878bb782e6954cd888628510e90-Abstract-Conference.html | Agents improve by verbally reflecting on task feedback, without weight updates. NeurIPS 2023 author list: Shinn, Cassano, Gopinath, Narasimhan, Yao (5 authors; Berman present in arXiv v1 but not in proceedings). |
 | `hu2022lora` | arxiv.org/abs/2106.09685; ICLR 2022 virtual site | Frozen weights + trainable low-rank matrices per layer. |
 | `dettmers2023qlora` | arxiv.org/abs/2305.14314; NeurIPS 2023 proceedings | Backprop through a frozen 4-bit model into LoRA adapters; NF4, double quantization, paged optimizers. |
 | `unsloth2023` | github.com/unslothai/unsloth (README citation block) | Software for faster/lower-memory fine-tuning. Cited as software. |

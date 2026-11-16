@@ -24,7 +24,7 @@ This is the single plan for the project. It replaces `PROJECT PLAN.md` (build ro
 
 **What has not happened yet, stated plainly:** no GPU-verified dataset entries (`data/verified/dataset.jsonl` is empty), no baseline numbers, no fine-tuned adapter, no evaluation results. The interpreter pass means the kernels compute the right thing; it says nothing about speed.
 
-**Tests:** 84 tests. 83 pass on macOS; the 84th (interpreter mode on a real Triton kernel) needs Triton and passes inside `docker/verify.Dockerfile`.
+**Tests:** 272 tests pass on macOS (5 skipped: 4 require `transformers`, 1 requires `triton`). The triton skip passes inside `docker/verify.Dockerfile`.
 
 ---
 

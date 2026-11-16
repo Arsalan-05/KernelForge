@@ -257,6 +257,7 @@ def test_time_limit_callback_saves_adapter_and_stops(tmp_path):
 
 def test_finetune_dry_run_time_limit_writes_logs_into_run_folder(tmp_path, monkeypatch):
     """End to end on a tiny random model; needs the Qwen tokenizer in the local HF cache."""
+    pytest.importorskip("datasets", reason="datasets not installed")
     try:
         from transformers import AutoTokenizer
 

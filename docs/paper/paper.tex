@@ -111,8 +111,12 @@ serving-relevant set of operators, and can it say why its kernel is faster?}
         PyTorch reference (\S\ref{sec:dataset}).
   \item \textbf{An explanation output and its evaluation.} The training target contains a short
         rationale next to the kernel. We score generated explanations with a manual rubric
-        (\S\ref{sec:explanations}). None of the works we reviewed evaluates a
-        natural-language explanation as an output \todo{re-check against full papers before posting; see UNVERIFIED.md}.
+        (\S\ref{sec:explanations}). None of the works we reviewed \emph{evaluates} a
+        natural-language explanation as an output.%
+        \todo{[CITATION NEEDED] Verified against abstracts and model cards only. Some systems
+        produce reasoning traces (Kevin's CoT, TritonRL's \emph{think} stage) that are not
+        scored as explanation outputs; check full papers before posting to confirm no prior
+        work measures explanation quality separately. See docs/paper/UNVERIFIED.md.}
   \item \textbf{One verification function everywhere.} The same function filters training data,
         scores the baseline and the fine-tuned model, and drives an inference-time best-of-$N$ +
         repair search. So ``correct'' means the same thing in every number we report
@@ -237,15 +241,19 @@ incorrect kernels, so a memory limit on the 16\,GB GPU is not mistaken for a bro
 % src: data/build_dataset.py; MASTER_PLAN.md Part III
 
 Before any GPU time, the full grid of 300 candidates was run through Triton's CPU interpreter
-in a Linux container (Triton interpreter correctness, no GPU result):
-285/300 pass, 15 out of memory in an 8\,GB VM.
+in a Linux container (\emph{interpreter correctness only; this is not a GPU result}):
+\textbf{285/300 pass, 0 incorrect, 15 out of memory} in an 8\,GB VM.
 % src: data/raw/interpret_report_2026-11-15.json — 285 passed, 0 incorrect, 15 OOM (exit code -9)
-% The 15 OOM shapes are the largest attention (batch 16 × seq 2048) and norm (65536 rows) shapes.
-% Whether they fit on a 16 GB T4 is untested.
-All 15 templates have at least one passing shape.
-This check found real bugs, including attention references that failed on a mixed-dtype matmul
-and a W8A8 reference that used an int32 matmul. It checks correctness only and gives no timing.
-None of the results below rely on it.
+% The 15 OOM shapes are: attention/causal_prefill b16×s2048 (1), attention/gqa_causal_prefill
+% b16×s2048 (1), norm/rmsnorm r65536 (4), norm/layernorm r65536 (4), norm/rmsnorm_residual
+% r16384–r65536 (5). Tensor-size estimates suggest these all fit in T4 16 GB VRAM.
+% Whether they fit on a T4 is untested; docs/handoff/T4_FIT.md gives per-shape estimates.
+\textbf{10 of 15 templates pass all 20 shapes}; the remaining 5 each have 1--5 OOM shapes at
+their largest configurations (the two largest attention shapes and the three largest norm shapes).
+Every failure is a memory crash, not an incorrect output.
+This check found real bugs before any GPU time was spent, including attention references that
+failed on a mixed-dtype matmul and a W8A8 reference that used an int32 matmul.
+It checks correctness only and gives no timings. None of the results below rely on it.
 
 Two properties of this dataset matter for interpreting the results:
 \begin{itemize}
@@ -286,6 +294,26 @@ When outputs differ, the harness describes the difference (shape, output count, 
 number of elements outside tolerance and the location of the largest error). The repair loop
 feeds this description back to the model.
 
+\paragraph{Harness quality: mutation testing.}
+To confirm that the harness catches real logical errors rather than trivially passing ill-formed
+submissions, we applied 32 text-substitution mutations (wrong arithmetic operators, wrong
+reduction axes, missing scale factors, missing masks, wrong indices, missing operands) across
+all 15 templates and ran each in the Triton CPU interpreter inside Docker.
+% src: scripts/mutation_test.py — 32 mutations across all 15 templates, 2026-11-16
+29 of the 32 mutations are non-equivalent; the harness caught all 29 ($29/29$; the
+denominator excludes only the 3 mathematically-equivalent softmax-invariant survivors below).
+% src: scripts/mutation_test.py 2026-11-16 overnight2 session
+The 3 surviving mutations all exploit softmax shift-invariance: the online-softmax
+$\mathrm{acc}/l_i$ ratio cancels any per-row constant shift in the running maximum~$m_i$,
+so changing which axis provides that constant is undetectable on all inputs.
+Two norm mutations that formerly survived due to identity-valued initialization
+(RMSNorm weight $\equiv\mathbf{1}$, LayerNorm bias $\equiv\mathbf{0}$) were previously
+excluded from the denominator under a ``\textit{documented\_gap}'' label; they are now
+caught with non-identity random initialization and included in the 29-denominator count.
+% src: tests/test_verify_kernel.py test_missing_weight_caught_with_random_init,
+%      test_missing_bias_caught_with_random_init
+% src: tests/test_verify_kernel.py test_missing_weight_survives_with_ones_init
+
 \paragraph{Interpreter mode versus GPU mode.}
 With \code{interpret=True}, the subprocess runs with \code{TRITON\_INTERPRET=1} on CPU tensors. It
 returns correctness only, marked as interpreted, with no timings. We use it for local
@@ -316,10 +344,14 @@ families. We state this as a property of the benchmark, not a weakness we hide.
 Each example is a chat transcript: a fixed system prompt, a user turn with the description and
 reference followed by the output contract, and an assistant turn with
 \code{kernel:}\,\dots\,\code{explanation:}\,\dots. It is rendered with the base model's chat template.
-% src: training/finetune.py _format_chat_example; kernelforge/prompts.py
-The loss is the standard causal-LM loss over the whole rendered sequence, with no masking of the
-prompt tokens. % src: training/finetune.py (DataCollatorForLanguageModeling / SFTTrainer text field)
-\todo{owner decision: keep, or switch to completion-only loss and re-run; state which.}
+% src: training/finetune.py build_sft_features; kernelforge/prompts.py
+The loss is computed only over the assistant's answer tokens; prompt tokens receive label $-100$
+and do not contribute to the gradient.
+% src: training/finetune.py build_sft_features — labels = [IGNORE_INDEX] * len(prompt_ids) + answer_ids
+% training/finetune.py L222 — DataCollatorForSeq2Seq(tokenizer, label_pad_token_id=IGNORE_INDEX)
+This keeps the training objective tightly focused on generating a correct kernel and explanation
+rather than predicting the system prompt or the reference code, which the model already has in
+context.
 
 \subsection{Inference: verifier-guided search and repair}
 \label{sec:search}
@@ -338,8 +370,9 @@ The search is pure orchestration around the harness. % src: kernelforge/search.p
 For general-purpose (non-fine-tuned) models, the demo can add a solved example from a
 \emph{different} template in the same category, a short list of Triton~3.x pitfalls, and
 pattern-matched repair hints. % src: kernelforge/search.py, kernelforge/prompts.py TRITON_NOTES, repair_hints
-\todo{state exactly which of these were on for each row of Table~\ref{tab:search}. The current
-evaluation scripts use a zero-shot prompt with no example and no notes.}
+The standard evaluation (Table~\ref{tab:search}) uses a zero-shot prompt with no example and no
+notes, so Table~\ref{tab:search} reflects the base capabilities of the model, not the
+augmented demo path. % src: evaluation/common.py evaluate() — no few-shot or notes by default
 
 % =====================================================================================
 \section{Experimental Setup}
@@ -359,13 +392,14 @@ PyTorch, we fall back to transformers + PEFT + bitsandbytes with the same hyperp
 \code{paged\_adamw\_8bit} optimizer. \todo{which backend actually ran; optimizer if Unsloth.}
 
 \paragraph{Hardware.} One NVIDIA T4 (16\,GB) in a free Kaggle session, for dataset verification,
-training and evaluation. \todo{driver/CUDA/PyTorch/Triton versions from the session's env
-report; wall-clock time for each stage; peak memory during training.}
+training and evaluation. \todo{Fill from session.json after the GPU run: driver, CUDA, PyTorch,
+Triton versions; wall-clock time per stage; peak GPU memory during training (from split\_info.json).}
 
-\paragraph{Decoding.} Temperature 0.2, top-$p$ 0.95, one sample per prompt for pass@1, and a cap of
-\todo{1536} new tokens. % src: training/configs/qwen2.5-coder-1.5b.json; scripts/gpu_session.py --max-new-tokens
-\todo{check the cap does not truncate the longest reference kernels (about 4.3k characters). If
-it does, raise it and re-run.}
+\paragraph{Decoding.} Temperature 0.2, top-$p$ 0.95, one sample per prompt for pass@1, and a cap
+of 2048 new tokens. % src: evaluation/common.py DEFAULT_MAX_NEW_TOKENS=2048
+The cap was chosen above the longest reference answer in the dataset (1,302 Qwen tokens; the
+longest target is 3,684 characters $\approx$ 1,053 BPE tokens). % src: evaluation/common.py comment; measured on templates 2026-11-15
+No reference answer requires truncation at this cap.
 
 \paragraph{Metrics.} For each category we report:
 \begin{itemize}
@@ -373,18 +407,20 @@ it does, raise it and re-run.}
   \item \textbf{\% correct:} the fraction of \emph{all} test prompts whose kernel passed the harness.
   \item \textbf{Mean speedup:} the arithmetic mean of $t_{\mathrm{ref}}/t_{\mathrm{cand}}$ over
         \emph{passing} kernels only. % src: evaluation/common.py CategoryMetrics.avg_speedup
-        Because it is conditional on correctness, a model that solves only easy cases can show a higher
-        mean speedup. We therefore also report $\mathrm{fast}_1$ (correct \emph{and} faster than eager),
-        following KernelBench~\cite{ouyang2025kernelbench}. \todo{fast\_1 and geometric mean are not computed
-        by the current scripts; add them or drop this sentence.}
+        Because it is conditional on correctness, a model that solves only easy cases can show a
+        higher mean speedup. We therefore also report the raw numerator (correct \emph{and}
+        faster than eager) next to the conditional mean, following KernelBench's $\mathrm{fast}_1$
+        spirit~\cite{ouyang2025kernelbench}.
 \end{itemize}
 Test prompts in a category share one held-out template, so the 20 shapes are not independent
-samples. We report counts next to percentages and give Wilson 95\% intervals.
-\todo{n per category: the default session evaluates 25 prompts in total (5 per category). Decide
-whether to evaluate all held-out prompts.}
+samples. We evaluate all 20 shapes per held-out template (100 prompts total, 20 per category)
+% src: kernelforge/dataset.py make_split — template split with seed 42 → 100 test entries (20 per category)
+and report counts alongside percentages with Wilson 95\% confidence intervals.
 
-\paragraph{Baselines.} The same base model without an adapter, with the same prompt, decoding
-and harness. \todo{optional: a second base model (e.g.\ DeepSeek-Coder or StarCoder2) if time allows.}
+\paragraph{Baselines.} The same base model (Qwen2.5-Coder-1.5B-Instruct) without an adapter,
+with the same prompt, decoding and harness. % src: evaluation/baseline_eval.py
+This baseline isolates the effect of QLoRA fine-tuning. A comparison to a larger or different base
+model is deferred to future work.
 
 % =====================================================================================
 \section{Results}
@@ -531,6 +567,69 @@ shuffling base and fine-tuned outputs? State which. A second rater on a subset w
 agreement figure.}
 
 % =====================================================================================
+\section{Threats to Validity}
+\label{sec:threats}
+
+\paragraph{Construct validity: what ``correct'' measures.}
+The harness compares outputs numerically at $\mathrm{atol}=\mathrm{rtol}=10^{-2}$ in fp32 after casting.
+A kernel can pass while computing the wrong operation (e.g., non-causal attention that happens to
+agree numerically on the specific test shapes), and a kernel that is algorithmically correct but
+numerically noisy can fail. The tolerance was chosen for fp16 operations; stricter tolerances
+would reject more outputs. We do not test gradients, only forward passes.
+
+\paragraph{Construct validity: harness sensitivity limits.}
+Mutation testing (\S\ref{sec:harness}) identified one remaining class of non-detectable
+mutations: \textbf{Softmax shift-invariance}: the final $\mathrm{acc}/l_i$ normalization in
+online softmax cancels any per-row constant shift in the running maximum $m_i$, so mutations
+that change which axis provides that constant are undetectable on all inputs. This is a
+mathematical identity, not a harness weakness, and applies only to mutations that preserve
+the per-row-constant structure. The three surviving mutations fall into this class.
+An earlier concern about identity-valued parameter initialization
+(RMSNorm weight $\equiv\mathbf{1}$, LayerNorm bias $\equiv\mathbf{0}$) has been addressed:
+the mutation test now uses non-identity random initialization for norm templates and both
+mutations are correctly caught. No other non-equivalent mutations survived across 32
+mutations on all 15 templates.
+
+\paragraph{Internal validity: single GPU, no variance.}
+All timings come from a single run on a single T4 instance. We report medians over 20--30 warmup-excluded
+iterations, but do not repeat the full evaluation across different instances or Kaggle sessions to
+estimate run-to-run variance of speedup numbers.
+
+\paragraph{Internal validity: template diversity.}
+Within a template, all 20 shape variants share the same kernel logic and explanation. The effective
+training-set size is 15 distinct kernel designs (across the passed-harness entries), not the nominal
+count. Correctness results on the held-out template reflect generalization to a \emph{variant} of a
+seen operator, not to a structurally new operator. This limits what the results say about coverage.
+
+\paragraph{Internal validity: explanation evaluation.}
+Explanation quality is scored by a single rater (the author) who is not blinded to model identity.
+The rubric assigns integer scores 0/1/2, so small differences in score distribution may not be
+meaningful. There is no second rater, no inter-rater agreement figure, and no automated metric.
+
+\paragraph{Internal validity: loss masking choice.}
+We use completion-only loss (prompt tokens masked with $-100$). An alternative is full-sequence
+loss. We did not ablate this choice; the effect on the 1.5B model's correctness and explanation
+quality is unknown.
+
+\paragraph{External validity: hardware generalization.}
+Speedup numbers are relative to PyTorch eager on a T4 (Turing, sm75). The T4's compute-to-memory
+ratio and lack of bf16 hardware differ from newer architectures (Ampere, Hopper). Speedups on an
+A100 or H100 would likely differ, and the kernels use fixed block sizes rather than autotuned
+configurations, which could also change which shapes benefit.
+
+\paragraph{External validity: operator coverage.}
+The five categories cover forward passes of serving-critical operators in fp16. Backward passes,
+bf16 and int4 inputs, sparse operators, multi-GPU communication, and operators outside the five
+families are not covered. Results should not be extrapolated to those settings.
+
+\paragraph{Interpreter OOM versus GPU OOM.}
+The 15 OOM shapes in the interpreter run hit an 8\,GB CPU RAM cap. The Triton interpreter
+allocates auxiliary Python and NumPy buffers that do not exist in compiled GPU code; interpreter
+memory is typically 5--15$\times$ higher than actual VRAM usage. Tensor-size estimates for all 15
+OOM shapes are under 4.5\,GB, within the T4's 16\,GB budget. Whether they actually fit on T4 is
+untested until the GPU session runs.
+
+% =====================================================================================
 \section{Limitations}
 \label{sec:limitations}
 \begin{itemize}
@@ -542,16 +641,16 @@ agreement figure.}
         explanation, so per-category results rest on one held-out operator each.
   \item \textbf{No RL.} The search improves results at inference time only, at the cost of extra
         generations and harness runs per request.
-  \item \textbf{Explanations are scored by hand.} The rubric is coarse, the rater is the author
-        \todo{adjust if blinded or double-rated}, and there is no automated metric.
+  \item \textbf{Explanations are scored by hand.} The rubric is coarse, single-rater, unblinded,
+        and there is no automated metric.
   \item \textbf{Hardware.} All timings come from one T4. Speedups over PyTorch eager on a Turing GPU
-        may not transfer to newer GPUs. Timings are medians of 20--30 runs on a shared cloud VM.
-  \item \textbf{Interpreter.} The CPU interpreter checks correctness on small shapes only, and we never
-        report it as GPU verification.
+        may not transfer to newer architectures. Timings are medians of 20--30 runs on a shared cloud VM.
+  \item \textbf{Interpreter.} The CPU interpreter checks correctness only, and we never
+        report it as a GPU result.
   \item \textbf{Sandbox.} Subprocess isolation with rlimits is suitable for research and a short-lived
         demo, not for running untrusted code in production.
-  \item \textbf{Baseline strength.} \todo{if the base model is evaluated zero-shot, say that a few-shot
-        prompt might narrow the gap, and report it if run.}
+  \item \textbf{Baseline.} The base model is evaluated zero-shot. A few-shot prompt might
+        narrow the gap between baseline and fine-tuned; we did not run it.
 \end{itemize}
 
 % =====================================================================================
