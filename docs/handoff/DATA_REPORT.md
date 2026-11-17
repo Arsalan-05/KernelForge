@@ -694,4 +694,19 @@ Adapter saved to: `training/checkpoints/run_20261117T072658Z/adapter`
 
 ### B.4 — 0.5B fine-tuned eval
 
-**→ Results to be added when eval completes.**
+**COMPLETE** — Source: `evaluation/results/held_out_ft_0.5b_p4.json`.  
+Adapter: `training/checkpoints/run_20261117T072658Z/adapter` (10/33 steps, ~0.95 epochs).
+
+| Metric | Base (B.2) | Fine-tuned (B.4) | Change |
+|---|---|---|---|
+| Total entries | 20 | 20 | — |
+| Parsed (kernel extracted) | 16/20 (80%) | **20/20 (100%)** | **+20 pp** |
+| Truncated | 6/20 (30%) | 4/20 (20%) | −10 pp |
+| **pass@1 (no header)** | **0/20 = 0.000** | **0/20 = 0.000** | same |
+| Wilson 95% CI | [0.000, 0.161] | [0.000, 0.161] | — |
+| Median tok/s | 21.3 | 17.6 | −3.7 (adapter) |
+
+Error distribution shifted from "cannot generate code" to "generates structured code with
+format/API errors": parse rate 80% → 100%, zero NameErrors (base had 3), kv_cache prose → code,
+2 rope entries reached Triton interpreter runtime. The <1-epoch pilot demonstrates the adapter
+learned Triton code structure but not the full ModelNew contract.

@@ -20,7 +20,7 @@ no RL.
 | Canonical held-out split (`data/held_out_split.json`) | Done: 180 train / 20 val / 100 test (5 held-out templates, 1 per category); 12 no-leakage tests pass |
 | 0.5B base eval (MPS pilot, 20 entries) | Done: **0/20 pass@1** (95% CI [0.0%, 16.1%]); 80% parse rate, 30% truncated; 0.5B local LoRA MPS pilot |
 | 0.5B LoRA fine-tuning (MPS pilot) | Done: 10/33 steps (~0.95 epochs); loss 1.3384→0.7778; adapter at `training/checkpoints/run_20261117T072658Z/adapter` |
-| 0.5B fine-tuned eval (MPS pilot, 20 entries) | In progress; results pending |
+| 0.5B fine-tuned eval (MPS pilot, 20 entries) | Done: **0/20 pass@1** (95% CI [0.0%, 16.1%]); **100% parse rate** (was 80% base); 2 reach Triton interpreter |
 | QLoRA fine-tuning (`training/finetune.py`) | Code written; **not yet run on T4**; 0.5B MPS pilot complete (10 steps); dry-run passes |
 | Mutation testing | 29/29 non-equivalent mutations caught; 3 surviving mutations are mathematically equivalent (softmax shift-invariance) |
 | Demo UI (`app/`) | Built; runs on base model; Kaggle/Colab GPU needed |
