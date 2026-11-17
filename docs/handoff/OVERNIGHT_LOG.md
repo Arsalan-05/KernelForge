@@ -153,14 +153,21 @@ Started 02:19 EST after B.2 completed. Run: `run_20261117T071859Z`.
   for every unique input shape (batch_size=1 → 42 different lengths → 42 compilations).
   Killed at step 1/33 (estimated 90 min for all steps vs 60-min budget).
 - Attempt 4 (`padding="max_length"` on MPS): **RUNNING** — run_20261117T072658Z.
-  All batches padded to 1536 tokens → single MPS compilation on step 1; steps 2+ ~10 s.
+  All batches padded to 1536 tokens. Step 1 took **267 s** (model load 41 s + 226 s compute).
+  Estimated ~267 s/step = 60 min budget → **~13/33 steps before time-limit saves adapter**.
+  Steps 2+ take ~267s since MPS has the kernel compiled but computation is the bottleneck.
 
 **Data note:** 138/180 train examples dropped (longer than 1536 tokens). Only 42 survive.
 Most template candidates tokenize to 1537–1905 tokens (prompt + full Triton kernel).
-The 42 survivors are primarily the simpler/shorter kernels (norm__rmsnorm_residual,
-quantized_matmul__w4a16, kv_cache__cache_write at small shapes, some rope variants).
+267 s/step = 4 micro-batches × ~67 s each (1 forward + 1 backward at 1536 tokens fp32 on MPS).
 
-**→ Loss curve and final checkpoint path to be filled when training completes**
+**Pilot limitations:**
+- Only 42/180 training examples survive the 1536-token filter (23%)
+- ~13/33 optimizer steps complete (40% of planned training) in the 60-min budget
+- Fine-tuning is on unverified template candidates (no GPU-verified correct solutions)
+- Results labeled "0.5B local LoRA MPS pilot" — supplementary only
+
+**→ Loss curve and adapter checkpoint to be filled when training completes (~03:30 EST)**
 
 #### B.4 — 0.5B fine-tuned eval (pending)
 
