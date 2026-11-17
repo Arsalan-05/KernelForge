@@ -173,8 +173,9 @@ Started 02:19 EST after B.2 completed. Run: `run_20261117T071859Z`.
   for every unique input shape (batch_size=1 → 42 different lengths → 42 compilations).
   Killed at step 1/33 (estimated 90 min for all steps vs 60-min budget).
 - Attempt 4 (`padding="max_length"` on MPS): **RUNNING** — run_20261117T072658Z.
-  All batches padded to 1536 tokens. Step 1: **267 s**. Step 2: **336 s** (thermal throttle).
-  Steps slowing due to MPS/chip thermal throttling. Revised estimate: **~9-10/33 steps in 60 min**.
+  All batches padded to 1536 tokens. Step 1: **267 s**. Step 2: **336 s** (thermal throttle, +69s).
+  Thermal throttling trend: +~70s per step. Revised estimate: **~7-8/33 steps in 60 min**.
+  (Steps cumulative: 308, 644, 1049, 1523, 2066, 2678, 3359, >3600 → adapter saved after step 7-8.)
   Training tok/s (step 2): 5.573 (training forward+backward throughput, 4 micro-batches × 1536 tok).
 
 **Data note:** 138/180 train examples dropped (longer than 1536 tokens). Only 42 survive.
