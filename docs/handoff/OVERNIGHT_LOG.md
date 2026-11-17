@@ -4,7 +4,34 @@
 
 ## Leakage Audit + 0.5B MPS Pilot Session (2026-11-17, branch `agent/overnight3`)
 
-**IN PROGRESS — updated throughout session**
+**IN PROGRESS — session summary will be prepended here when complete**
+
+### Session Summary (to be filled at session end ~06:00 EST)
+
+| Item | Status | Key numbers / source |
+|---|---|---|
+| Phase A: Leakage audit + canonical split | COMPLETE | 30/60 contaminated; split 180/20/100; 12 tests pass |
+| Phase A: held_out_eval.py + mps_lora_0.5b.json | COMPLETE | committed f3b4731 |
+| Phase B: 0.5B base eval (20 entries, Docker) | PENDING results | eval/results/held_out_base_0.5b_p4.json |
+| Phase B: 0.5B LoRA fine-tuning | PENDING | stop by 03:30 EST |
+| Phase B: 0.5B fine-tuned eval | PENDING | eval/results/held_out_ft_0.5b_p4.json |
+| Phase C: Claims audit | COMPLETE | No unverified claims found |
+| Phase C: README updated | COMPLETE | test count 321→332; split row added |
+| Phase C: paper.tex split \todo{} | COMPLETE | resolved with actual template names |
+| Phase C: torch_dtype→dtype deprecation | COMPLETE | 3 files fixed (committed 3efc5c7) |
+| Phase C: DATA_REPORT sections 6+7 | COMPLETE | committed ee7a857 |
+| Phase C: Full test suite | COMPLETE | **332 passed, 1 skipped** |
+| Phase C: Final OVERNIGHT_LOG summary | PENDING | fill numbers once B.2 completes |
+
+**Commits this session (agent/overnight3):**
+- `f3b4731` Phase A: leakage audit, canonical split, held-out eval script
+- `7fb1724` finetune: add MPS support
+- `072d60f` OVERNIGHT_LOG: Phase A complete
+- `269bae9` finetune: configurable save_steps/eval_steps
+- `3efc5c7` Phase C: README split row, paper split todo, fix torch_dtype→dtype
+- `a3d4bad` OVERNIGHT_LOG: Phase B pilot, Phase C claims audit
+- `ee7a857` DATA_REPORT: sections 6+7
+- *(more commits to come after B.2 results, training, fine-tuned eval)*
 
 Branch created from `agent/overnight2`. Time-box: 01:30–06:00 EST.
 
