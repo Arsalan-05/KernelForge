@@ -60,11 +60,72 @@ in the training distribution.
 
 ### Phase B — 0.5B MPS LoRA Pilot (IN PROGRESS)
 
-**→ See results below as they are added**
+All results labeled **"0.5B local LoRA MPS pilot"**. These are supplementary to the main 1.5B Kaggle experiment.
 
-### Phase C — Docs, Claims, Tests
+#### B.1 — Script validation pilot (1.5B model, 5 entries, --no-verify)
 
-**→ Pending**
+Completed 01:50 EST. Purpose: confirm `held_out_eval.py` schema end-to-end without Docker.
+
+| Entry | tok/s | Completion tokens | Truncated |
+|---|---|---|---|
+| quantized_matmul__w8a16_perchannel__attn_proj_b1 | 7.82 | 701 | No |
+| attention__gqa_causal_prefill__b16_s1024 | 5.01 | 1536 | **Yes** |
+| kv_cache__decode_attention_gqa__b16_s1024 | 1.81 | 379 | No |
+| norm__rmsnorm_residual__r1024_h11008 | 5.26 | 544 | No |
+| rope__interleaved__b16_s1024 | 5.01 | 672 | No |
+
+Median 1.5B tok/s on MPS: **5.01**. Report: `evaluation/results/held_out_base_report.json`.
+
+#### B.2 — 0.5B base eval (20 entries, with Docker verification)
+
+**IN PROGRESS** — PID 1972, started 01:51 EST.
+Model: `Qwen/Qwen2.5-Coder-0.5B-Instruct`, MPS fp32, `--per-category 4` (20 entries total).
+Early tok/s: 15.9–23.2 (3–4× faster than 1.5B, as expected from model size).
+Output: `evaluation/results/held_out_base_0.5b_p4.json`.
+
+**→ Results to be filled in when eval completes**
+
+#### B.3 — 0.5B LoRA fine-tuning (pending)
+
+Config: `training/configs/mps_lora_0.5b.json` (lora_r=8, lr=3e-4, 3 epochs, fp32 on MPS).
+Will start after B.2 completes. Stop by 03:30 EST regardless.
+
+#### B.4 — 0.5B fine-tuned eval (pending)
+
+Will run `scripts/held_out_eval.py --model ... --adapter ... --per-category 4` after training.
+
+### Phase C — Docs, Claims, Tests (IN PROGRESS)
+
+#### Claims audit (complete)
+Grepped `docs/paper/paper.tex`, `README.md`, `docs/*.md`, `notebooks/*.ipynb` for:
+`"100%"`, `"state-of-the-art"`, `"SOTA"`, `"outperform"`, `"speedup"` claims.
+
+**Findings (2026-11-17):**
+- `docs/paper/paper.tex`: All result cells are `\todo{}`. No unverified performance numbers.
+  The 0/60 baseline (line 441-442) and 285/300 dataset (line 249) are sourced from actual runs.
+  The 5.9 tok/s at line 458 refers to the 1.5B model on MPS (from `fp32_baseline_report.json`).
+- `README.md`: States "there are no speedup measurements"; 0/60 CI values match report JSON.
+  No SOTA claims. Test count updated 321→332.
+- `docs/handoff/OVERNIGHT_LOG.md`: Historical references to "100%" are correction narratives
+  (e.g., mutation test denominator fix from 27/27→29/29). Not unverified claims.
+- `notebooks/*.ipynb`: No speedup or performance claims found.
+- `MASTER_PLAN.md:349`: "Not broad SOTA" — explicitly states the project does NOT claim SOTA.
+- `docs/paper/SOURCES.md`: "state of the art" attributed to cited paper's authors, not ours.
+
+**No unverified claims found in main docs.** No changes required beyond those below.
+
+#### Paper updates (committed separately)
+- `docs/paper/paper.tex` line 337-340: Resolved `\todo{}` for held-out templates — replaced with
+  actual template names and counts from `data/held_out_split.json` + reference to 12 tests.
+
+#### README updates (committed separately)
+- Added held-out split row to status table: 180/20/100, 12 tests
+- Updated test count: 321 → 332
+- Added `held_out_split.json` and `held_out_eval.py` to repo layout section
+- Added leakage context to base model numbers section: 30/60 contaminated; 0/15 clean test entries
+
+#### Full test suite
+**→ Pending** (will run before final commit)
 
 ---
 
