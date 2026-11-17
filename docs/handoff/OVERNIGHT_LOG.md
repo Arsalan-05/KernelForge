@@ -162,13 +162,13 @@ Started 02:19 EST after B.2 completed. Run: `run_20261117T071859Z`.
   for every unique input shape (batch_size=1 → 42 different lengths → 42 compilations).
   Killed at step 1/33 (estimated 90 min for all steps vs 60-min budget).
 - Attempt 4 (`padding="max_length"` on MPS): **RUNNING** — run_20261117T072658Z.
-  All batches padded to 1536 tokens. Step 1 took **267 s** (model load 41 s + 226 s compute).
-  Estimated ~267 s/step = 60 min budget → **~13/33 steps before time-limit saves adapter**.
-  Steps 2+ take ~267s since MPS has the kernel compiled but computation is the bottleneck.
+  All batches padded to 1536 tokens. Step 1: **267 s**. Step 2: **336 s** (thermal throttle).
+  Steps slowing due to MPS/chip thermal throttling. Revised estimate: **~9-10/33 steps in 60 min**.
+  Training tok/s (step 2): 5.573 (training forward+backward throughput, 4 micro-batches × 1536 tok).
 
 **Data note:** 138/180 train examples dropped (longer than 1536 tokens). Only 42 survive.
 Most template candidates tokenize to 1537–1905 tokens (prompt + full Triton kernel).
-267 s/step = 4 micro-batches × ~67 s each (1 forward + 1 backward at 1536 tokens fp32 on MPS).
+267-336 s/step (and rising) = 4 micro-batches × ~70-84 s each (1 forward + 1 backward at 1536 tok).
 
 **Pilot limitations:**
 - Only 42/180 training examples survive the 1536-token filter (23%)
