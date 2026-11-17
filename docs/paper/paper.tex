@@ -70,7 +70,11 @@ Every training example, every evaluation score, and every kernel shown in our de
 the same subprocess verification harness. It follows KernelBench's \code{Model}/\code{ModelNew}
 contract and checks correctness against the PyTorch reference and measures speedup.
 We evaluate on held-out templates, so no test operator appears in training at any shape.
-On this split, fine-tuning changes kernel correctness from \todo{X\%} to \todo{Y\%}
+On a local 60-entry subset (fp32, MPS, same prompt), the base model scores 0/60
+(pass@1 = 0.0\%, 95\% Wilson CI [0.0\%, 6.0\%]) before any fine-tuning; every failure
+is a missing import (\code{NameError}) or truncated syntax.
+On the held-out template test set (GPU evaluation), fine-tuning changes kernel correctness
+from \todo{X\%} to \todo{Y\%}
 \todo{and mean speedup of correct kernels from A$\times$ to B$\times$}. Training-free best-of-4
 sampling with one round of harness-feedback repair reaches \todo{Z\%}. On a manual 0/1/2
 rubric, \todo{N} of \todo{M} sampled explanations name the specific technique.
@@ -426,7 +430,35 @@ model is deferred to future work.
 \section{Results}
 \label{sec:results}
 
-\todo{Write this section only after the tables are filled. Lead with the weakest category.}
+% Pre-fine-tuning floor: verified locally 2026-11-16 on 60 entries (fp32, MPS).
+% GPU test-set numbers are TODO; fill from kaggle_base_eval_report.json and
+% kaggle_finetuned_eval_report.json after the GPU run.
+\paragraph{Pre-fine-tuning baseline (local, fp32, 60 entries).}
+Before the GPU run we evaluated the base model locally (fp32, Apple MPS, 60 entries
+drawn uniformly across the five categories, same prompt as training, \code{max\_new\_tokens=1536},
+temperature 0). This provides a reproducible pre-FT floor independent of GPU availability.
+
+\textbf{No-header pass@1: 0/60 (0.000; 95\% CI [0.000, 0.060]).}
+\textbf{With-header pass@1: 0/50 (0.000).}
+% src: evaluation/results/fp32_baseline_report.json — 2026-11-16
+
+\noindent Dominant failure modes (no fine-tuning):
+\begin{itemize}
+  \item 50/60: \code{NameError: name 'triton' is not defined} — model omits all Triton imports.
+        Adding the import header (\code{import triton; import triton.language as tl}) raises this
+        to a secondary \code{NameError} or \code{TypeError} in 50/50 cases: the model hallucinates
+        API calls such as \code{tl.const(int)} and assumes \code{class ModelNew(nn.Module)} without
+        importing \code{torch.nn}.
+  \item 10/60: \code{SyntaxError} — invalid default-argument expressions or truncated output
+        (4 of 60 entries hit the 1536-token cap before closing all open brackets).
+\end{itemize}
+Every failure is structural (missing imports or malformed syntax), not a numerical mismatch.
+This confirms the pre-FT floor seen in the literature for small code models on specialized APIs.
+Degenerate output (repeating single characters): 0/60.
+Median tokens/s: 5.9 (fp32 on MPS; T4 with 4-bit NF4 will be faster).
+
+\todo{Write main Results paragraphs after tables are filled. Lead with the weakest category. Replace
+the paragraph above with the GPU baseline numbers from kaggle\_base\_eval\_report.json.}
 
 \begin{table}[t]
 \centering
@@ -520,8 +552,25 @@ Source: \code{split\_info.json} and \code{train\_log.json} in the session output
 \label{tab:training}
 \end{table}
 
-\paragraph{Failure modes.} \todo{Categorize failing outputs: unparseable, harness error (e.g.\
-compile or shape error), wrong numerics, timeout. Give counts per model. Show 3--5 concrete examples,
+\paragraph{Failure modes (base model, local fp32 run, 60 entries).}
+% src: evaluation/results/fp32_baseline_report.json — 2026-11-16
+% GPU failure-mode table is TODO; fill from kaggle_base_eval_report.json.
+No-header failures: 50 \code{NameError} (83\%), 10 \code{SyntaxError} / truncation (17\%).
+With-header (import added) failures: 37 secondary \code{NameError} (74\%), 13 \code{TypeError} (26\%).
+Specific observed errors:
+\begin{itemize}
+  \item \code{NameError: name 'triton' is not defined} — 50/60 outputs omit Triton imports entirely.
+  \item \code{NameError: name 'tl' is not defined} with header — model uses \code{tl.const(int)} or
+        \code{tl.matrix\_multiply}, which do not exist in Triton 3.x.
+  \item \code{TypeError} — model writes \code{class ModelNew(nn.Module)} without importing
+        \code{torch.nn as nn}, or calls \code{\_\_init\_\_(self, ...)} with the wrong signature.
+  \item \code{SyntaxError} from truncation — 4 outputs hit the 1536-token cap mid-expression.
+\end{itemize}
+Degenerate output (repeating characters, possible fp16 NaN): 0/60 on fp32 MPS.
+No NaN instability was observed; the degenerate-output guard from \code{kernelforge/parsing.py}
+triggers if more than 50\% of the last 300 generated characters are a single repeated character.
+
+\todo{Categorize failing outputs for the fine-tuned model. Show 3--5 concrete examples,
 good and bad, in an appendix.}
 
 % =====================================================================================
@@ -610,6 +659,18 @@ meaningful. There is no second rater, no inter-rater agreement figure, and no au
 We use completion-only loss (prompt tokens masked with $-100$). An alternative is full-sequence
 loss. We did not ablate this choice; the effect on the 1.5B model's correctness and explanation
 quality is unknown.
+
+\paragraph{Internal validity: generation precision and degenerate-output risk.}
+Training and GPU evaluation use 4-bit NF4 quantization with fp16 compute
+(\code{BitsAndBytesConfig(load\_in\_4bit=True, bnb\_4bit\_compute\_dtype=torch.float16)}).
+On Apple MPS with \emph{full} fp16 weights (not 4-bit), we observed a known degenerate-output
+failure mode where the model repeats a single character (\texttt{!}) indefinitely, consistent
+with fp16 NaN propagation. This was \emph{not} observed in the local fp32 baseline (0/60
+degenerate outputs). On T4 CUDA with 4-bit quantization the NaN risk is low, but we guard against
+it explicitly: any output where more than 50\% of the last 300 characters are a single repeated
+character is flagged \code{degenerate\_output} rather than verified, and an overall rate above
+10\% causes the evaluation script to exit with an error.
+% src: kernelforge/parsing.py is_degenerate_output; scripts/kaggle_eval.py DEGENERATE_RATE_THRESHOLD
 
 \paragraph{External validity: hardware generalization.}
 Speedup numbers are relative to PyTorch eager on a T4 (Turing, sm75). The T4's compute-to-memory
