@@ -18,7 +18,8 @@ no RL.
 | Dataset (15 templates × 20 shapes = 300 candidates) | CPU interpreter check: 285/300 pass, 0 incorrect, 15 OOM; GPU verification pending |
 | Base-model eval (fp32, local, 60 entries) | Done: **0/60 pass@1** (95% CI [0.0%, 6.0%]); every failure is a missing import or syntax error |
 | Canonical held-out split (`data/held_out_split.json`) | Done: 180 train / 20 val / 100 test (5 held-out templates, 1 per category); 12 no-leakage tests pass |
-| QLoRA fine-tuning (`training/finetune.py`) | Code written; **not yet run on T4**; dry-run passes (`python training/finetune.py --dry-run`) |
+| 0.5B base eval (MPS pilot, 20 entries) | Done: **0/20 pass@1** (95% CI [0.0%, 16.1%]); 80% parse rate, 30% truncated; 0.5B local LoRA MPS pilot |
+| QLoRA fine-tuning (`training/finetune.py`) | Code written; **not yet run on T4**; local MPS pilot with 0.5B in progress; dry-run passes |
 | Mutation testing | 29/29 non-equivalent mutations caught; 3 surviving mutations are mathematically equivalent (softmax shift-invariance) |
 | Demo UI (`app/`) | Built; runs on base model; Kaggle/Colab GPU needed |
 | Deployment (Railway) | Dockerfile + `railway.json` done; interpreter-only (no GPU on Railway) |

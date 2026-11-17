@@ -278,8 +278,15 @@ def train(config: dict, backend: str, train_entries: list[dict], val_entries: li
         args=training_args,
         train_dataset=Dataset.from_list(train_feats),
         eval_dataset=Dataset.from_list(val_feats) if val_feats else None,
-        # Pads input_ids with pad_token_id and labels with -100 (only matters for batch > 1).
-        data_collator=DataCollatorForSeq2Seq(tokenizer, padding=True, label_pad_token_id=IGNORE_INDEX),
+        # On MPS, padding=True means every batch has a unique seq-length → MPS recompiles Metal
+        # kernels per step (163 s/step). Padding to max_seq_length fixes all batches to the same
+        # shape so MPS only compiles once. This costs ~20% extra FLOPs but saves 20× on MPS.
+        data_collator=DataCollatorForSeq2Seq(
+            tokenizer,
+            padding="max_length" if mps else True,
+            max_length=max_len if mps else None,
+            label_pad_token_id=IGNORE_INDEX,
+        ),
         callbacks=[time_limit, gpu_log],
     )
     try:
