@@ -633,11 +633,50 @@ fine-tuning pipeline locally without T4 access.
 
 ### B.2 — 0.5B base eval (20 entries, with Docker)
 
-**IN PROGRESS** — will be filled when evaluation completes.
+**COMPLETE** — Finished 02:12 EST.
 
 Script: `scripts/held_out_eval.py --model Qwen/Qwen2.5-Coder-0.5B-Instruct --per-category 4`  
 Output: `evaluation/results/held_out_base_0.5b_p4.json`
 
-Early generation stats: 15.9–23.1 tok/s (most entries), 4.3 tok/s for b16_s256 (thermal throttle).
+| Metric | Value |
+|---|---|
+| Total entries | 20 (4 per category × 5 categories) |
+| Parsed (kernel extracted) | 16 / 20 (80%) |
+| Truncated at max_new_tokens=1536 | 6 / 20 (30%) |
+| Degenerate output (>50% rep char) | 0 / 20 |
+| **pass@1 (no import header)** | **0 / 20 = 0.000** |
+| **Wilson 95% CI** | **[0.000, 0.161]** |
+| pass@1 (with import header) | 0 / 3 tested = 0.000 |
+| Median tok/s (MPS fp32) | 21.3 |
+| Mean tok/s | 18.5 |
 
-**→ Results will be added to OVERNIGHT_LOG when complete.**
+**Error breakdown (no_header, 20 entries):**
+- `syntax_error`: 13 (mostly `SyntaxError: unterminated string literal` from truncated output)
+- `other` (no kernel extracted): 4
+- `name_error`: 3 (`NameError: name 'triton' is not defined`)
+
+**Per-category results (all 0/4):**
+
+| Category | n | pass@1 | Wilson CI |
+|---|---|---|---|
+| quantized_matmul | 4 | 0.0 | [0.000, 0.490] |
+| attention | 4 | 0.0 | [0.000, 0.490] |
+| kv_cache | 4 | 0.0 | [0.000, 0.490] |
+| norm | 4 | 0.0 | [0.000, 0.490] |
+| rope | 4 | 0.0 | [0.000, 0.490] |
+
+**Interpretation:** The 0.5B base model cannot reliably complete Triton kernels within
+1536 tokens. 30% of outputs are truncated (unterminated string). The NameError pattern
+shows the model generates Triton API calls without `import triton`. Adding the import
+header does not help (TypeError remains). The base model establishes a 0.000 baseline
+for the LoRA fine-tuning comparison.
+
+### B.3 — 0.5B LoRA fine-tuning
+
+**IN PROGRESS** — Started 02:19 EST. Run: `training/checkpoints/run_20261117T071859Z`.
+
+Config: lora_r=8, lora_alpha=16, lr=3e-4, 3 epochs, fp32 on MPS, max_seq_length=1536.  
+Training data: 42/180 examples survive the 1536-token filter (most kernels tokenize to 1537–1905 tokens).  
+Steps: 33 total.
+
+**→ Loss curve and fine-tuned eval results to be added when B.3/B.4 complete.**

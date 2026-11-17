@@ -261,6 +261,8 @@ def train(config: dict, backend: str, train_entries: list[dict], val_entries: li
         fp16=cuda,          # T4 supports fp16; MPS/CPU use fp32
         bf16=False,         # T4 has no bf16; Ampere+ only
         # Unsloth applies its own gradient checkpointing in get_peft_model.
+        # MPS: gradient_checkpointing breaks PEFT (inputs lose requires_grad); keep cuda-only.
+        # Use max_seq_length=1024 in config to fit within MPS memory instead.
         gradient_checkpointing=cuda and backend == "transformers",
         optim="paged_adamw_8bit" if cuda and backend == "transformers" else "adamw_torch",
         seed=config.get("seed", 42),

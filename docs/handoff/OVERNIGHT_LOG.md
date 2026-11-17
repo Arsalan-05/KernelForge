@@ -106,17 +106,58 @@ Median 1.5B tok/s on MPS: **5.01**. Report: `evaluation/results/held_out_base_re
 
 #### B.2 — 0.5B base eval (20 entries, with Docker verification)
 
-**IN PROGRESS** — PID 1972, started 01:51 EST.
+**COMPLETE** — Finished 02:12 EST. Source: `evaluation/results/held_out_base_0.5b_p4.json`.
 Model: `Qwen/Qwen2.5-Coder-0.5B-Instruct`, MPS fp32, `--per-category 4` (20 entries total).
-Early tok/s: 15.9–23.2 (3–4× faster than 1.5B, as expected from model size).
-Output: `evaluation/results/held_out_base_0.5b_p4.json`.
 
-**→ Results to be filled in when eval completes**
+| Metric | Value |
+|---|---|
+| Total entries | 20 |
+| Parsed (kernel extracted) | 16 / 20 (80%) |
+| Truncated (hit 1536-token limit) | 6 / 20 (30%) |
+| Degenerate output | 0 / 20 |
+| **pass@1 (no import header)** | **0 / 20 = 0.0** |
+| **Wilson 95% CI** | **[0.000, 0.161]** |
+| pass@1 (with import header, 3 entries tested) | 0 / 3 (all TypeError) |
+| Median tok/s | 21.3 |
+| Mean tok/s | 18.5 |
 
-#### B.3 — 0.5B LoRA fine-tuning (pending)
+**Error breakdown (no_header):**
+- `syntax_error`: 13 — mostly "unterminated string literal" (truncated outputs)
+- `other` (no kernel extracted): 4
+- `name_error`: 3 — `NameError: name 'triton' is not defined` (missing import)
+
+**Top error messages:**
+1. `SyntaxError: unterminated string literal (detected at line 3)`: 7
+2. `no kernel extracted`: 4
+3. `SyntaxError: unterminated string literal (detected at line 1)`: 3
+4. `NameError: name 'triton' is not defined`: 3
+5. `SyntaxError: unterminated string literal (detected at line 12)`: 2
+6. `SyntaxError: invalid syntax`: 1
+
+**Per-category** (all 0/4, CI [0.000, 0.490] for each):
+quantized_matmul, attention, kv_cache, norm, rope — all 0/4 pass@1.
+
+**Interpretation:** The 0.5B base model cannot generate syntactically complete Triton kernels at max_new_tokens=1536. 30% of outputs are truncated (unterminated string). The NameError pattern shows the base model generates Triton code without `import triton`, indicating it knows the API but not the import. The with_header pass rate is also 0/3 (TypeError — wrong shapes or dtypes), suggesting syntactic completeness is not the binding constraint. No degenerate outputs.
+
+#### B.3 — 0.5B LoRA fine-tuning (IN PROGRESS)
 
 Config: `training/configs/mps_lora_0.5b.json` (lora_r=8, lr=3e-4, 3 epochs, fp32 on MPS).
-Will start after B.2 completes. Stop by 03:30 EST regardless.
+Started 02:19 EST after B.2 completed. Run: `run_20261117T071859Z`.
+
+**OOM history and fix:**
+- Attempt 1 (max_seq_length=2048): OOM at step 1 — MPS allocated 18.35/20.13 GiB.
+  Cross-entropy logits + attention patterns at seq=2048 exceeded unified memory limit.
+- Attempt 2 (gradient_checkpointing=True, max_seq_length=1024): RuntimeError at backward pass.
+  PEFT LoRA + gradient_checkpointing breaks requires_grad on inputs; not supported on MPS.
+- Attempt 3 (max_seq_length=1536): **RUNNING**.
+  138/180 train examples dropped (longer than 1536 tokens) → 42 examples survive → 33 steps.
+  Longest surviving example: 1536 tokens exactly (hits the limit).
+
+**Data note:** Most template candidates tokenize to 1537–1905 tokens (prompt + kernel).
+The 42 examples that survive are primarily shorter kernels (norm, rope, some quantized_matmul).
+This is a known limitation of local MPS training without gradient checkpointing.
+
+**→ Loss curve and final checkpoint path to be filled when training completes**
 
 #### B.4 — 0.5B fine-tuned eval (pending)
 
