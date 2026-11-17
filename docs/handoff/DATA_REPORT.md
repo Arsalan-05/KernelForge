@@ -420,3 +420,136 @@ missing imports.
 | Truncation inspection + fp32 rerun | Complete | `!!!!` = fp16 NaN on MPS (confirmed); 3/4 no longer truncate under fp32 |
 | With-header verify (fp16+fp32 runs) | Complete | 0/6 (fp16) and 0/3 (fp32); deeper errors remain |
 | Test suite (agent/overnight2 state) | 288 pass, 2 skip | +3 transformers-guarded, 1 datasets-skip |
+| **fp32 baseline (60 entries, notes=False)** | **Complete** | **0/60 no-header; 0/50 with-header** |
+
+---
+
+## 5. FP32 Baseline — Training-Prompt Evaluation (2026-11-16)
+
+**Goal:** Establish a reproducible base-model pass@1 on all 60 evaluation entries
+using the same prompt format as fine-tuning (`notes=False`) and fp32 inference
+to avoid the fp16 NaN degeneration observed on MPS.
+
+**Script:** `scripts/fp32_baseline_eval.py`  
+**Branch:** `agent/overnight2`  
+**Model:** `Qwen/Qwen2.5-Coder-1.5B-Instruct` (1.5 B, fp32 weights, MPS)  
+**Prompt format:** `build_messages(description, pytorch_reference)` — `notes=False`;
+identical to `training/finetune.py` and `KernelGenerator.generate()`  
+**max_new_tokens:** 1536  
+**Verification:** Docker interpreter (`kernelforge-verify:latest`,
+`TRITON_INTERPRET=1`, 90 s timeout)  
+**Hardware:** Apple M-series MPS, ~20 GB swap in use, ~20 MB free RAM
+
+### Two Numbers
+
+| Pass | n | Correct | pass@1 | 95% Wilson CI |
+|---|---|---|---|---|
+| No-header | 60 | 0 | 0.000 | [0.000, 0.060] |
+| With-header (NameError entries only) | 50 | 0 | 0.000 | n/a |
+
+Adding `import torch\nimport triton\nimport triton.language as tl` before the
+kernel did not fix any entry. Failures had deeper structural problems.
+
+### Per-Category (no-header)
+
+| Category | n | Correct | pass@1 | 95% Wilson CI |
+|---|---|---|---|---|
+| quantized_matmul | 12 | 0 | 0.000 | [0.000, 0.242] |
+| attention | 12 | 0 | 0.000 | [0.000, 0.242] |
+| kv_cache | 12 | 0 | 0.000 | [0.000, 0.242] |
+| norm | 12 | 0 | 0.000 | [0.000, 0.242] |
+| rope | 12 | 0 | 0.000 | [0.000, 0.242] |
+
+All five categories fail uniformly.
+
+### Truncation and Degenerate Output
+
+- **Truncated (hit 1536-token cap):** 4 entries — all large `layernorm` shapes
+  (`norm__layernorm__r1024_h{2048,4096,8192}`) and `kv_cache__decode_attention_gqa__b1_s1024`
+- **Degenerate output (fp16 NaN guard):** 0 — no `!!!!` repetition observed; fp32
+  mode produces no NaN degeneration
+
+### No-Header Error Breakdown
+
+| Error | Count |
+|---|---|
+| `NameError: name 'triton' is not defined` | 50 |
+| `SyntaxError: invalid syntax (maybe meant '==' or ':=')` | 6 |
+| `SyntaxError: '(' was never closed` | 3 |
+| `SyntaxError: '[' was never closed` | 1 |
+
+### With-Header Error Breakdown (50 entries tested)
+
+| Error bucket | Count |
+|---|---|
+| name_error (various NameErrors) | 37 |
+| type_error (AttributeError / TypeError) | 13 |
+
+### Qualitative Failure Analysis
+
+**NameError: triton (50 entries, no-header)**  
+The model outputs `### Kernel:` followed immediately by `@triton.jit def ...` —
+no `import triton`, no `import torch`, no `class ModelNew`. It treats the
+response as a bare code snippet with imports already in scope and writes only
+the Triton JIT function body. Even with the import header prepended, most of
+these entries still fail because `class ModelNew` is absent.
+
+**SyntaxError: invalid syntax (6 entries)**  
+Observed patterns: (a) `grid=(expr, 1)` used as a default argument inside
+`@triton.jit def f(..., grid=(n//b, 1)):` — Python does not allow complex
+default-arg expressions; (b) `tl.load(ptr, align_to=tl.cacheline_size)` with
+`cacheline_size` referenced without parentheses, causing a downstream
+assignment `y = t<newline>...` that the parser sees as invalid.
+
+**SyntaxError: unclosed `(` or `[` (4 entries)**  
+All truncated entries: 1536 tokens reached mid-expression. The model was
+writing a long kernel and hit the cap with an open parenthesis or bracket.
+
+**NameError: name 'nn' is not defined (with-header)**  
+Model wrote `class ModelNew(nn.Module):` — shorthand that requires
+`import torch.nn as nn`. The prepended header adds `import torch` but not the
+`as nn` alias.
+
+**NameError: name 'ModelNew' is not defined (with-header, majority)**  
+After adding imports, Python can now execute the file — but `ModelNew` is
+still not defined because the model generated only the Triton JIT function and
+no `class ModelNew(torch.nn.Module)` wrapper. The harness requires `ModelNew`.
+
+**NameError: name 'seq_len' / 'max_seq_len' / 'batch_size' (with-header, rope)**  
+The rope kernels' `ModelNew.forward()` uses `seq_len` or `max_seq_len` as bare
+names at module load time (not received as forward arguments). The model placed
+them as module-level assumptions — not defined at import.
+
+**AttributeError: candidate_module.py does not define required attribute 'ModelNew' (with-header)**  
+The model defined no class at all, or defined a class with a different name.
+Structurally the same root cause as the NameError: ModelNew group.
+
+**TypeError: const() takes no arguments (with-header)**  
+The model used `tl.const(int)` as a type annotation — a hallucinated Triton
+API. The correct annotation is `tl.constexpr`. This is a factual error about
+the Triton API surface.
+
+### Comparison to Previous fp16 Results
+
+The earlier fp16 runs (Session 2, `agent/overnight`) produced the same 0/60
+result but were confounded by NaN degeneration (`!!!!` output) on MPS. That
+session used `notes=True`, which does not match the training prompt. The fp32
+run here:
+
+- Eliminates fp16 NaN: 0 degenerate outputs
+- Uses `notes=False` to match `finetune.py` exactly
+- Runs all 60 entries (not 12 smoke) with a single consistent configuration
+- Confirms **0/60 pass@1 is the true base-model floor** before fine-tuning
+
+### Interpretation
+
+The 1.5 B base model does not know the KernelForge response format: it omits
+required imports, does not emit `class ModelNew`, and sometimes hallucinates
+Triton API calls (`tl.const`, `tl.cacheline_size`, `tl.types`). This is
+expected — the model has not been fine-tuned yet. These numbers are the
+pre-training baseline against which the QLoRA adapter's pass@1 will be
+compared on Kaggle.
+
+**Expected improvement after fine-tuning:** pass@1 > 0.000 (any correct kernel
+demonstrates the adapter learned the format). The 15 smoke entries are the
+simplest shapes and most likely to pass first.

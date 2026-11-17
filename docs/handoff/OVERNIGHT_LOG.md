@@ -2,6 +2,50 @@
 
 ---
 
+## FP32 Baseline Evaluation Session (2026-11-16, branch `agent/overnight2`)
+
+Full 60-entry baseline on `Qwen/Qwen2.5-Coder-1.5B-Instruct` (fp32, MPS, `notes=False`).
+
+### Results
+
+| Pass | n | Correct | pass@1 | 95% CI |
+|---|---|---|---|---|
+| No-header | 60 | 0 | 0.000 | [0.000, 0.060] |
+| With-header | 50 | 0 | 0.000 | n/a |
+
+- Truncated (1536-token cap): 4 entries (3 large `layernorm`, 1 `kv_cache_gqa`)
+- Degenerate (fp16 NaN): 0 — fp32 mode is clean
+- Generation: ~1 h 55 min at 5–8 tok/s; no crashes; process ran to 60/60
+
+### Dominant failure modes
+
+- **50/60 no-header:** `NameError: name 'triton'` — model skips all imports, writes only `@triton.jit def ...`
+- **6/60 no-header:** `SyntaxError: invalid syntax` — complex default-arg expressions or `align_to=tl.cacheline_size` (missing `()`)
+- **4/60 no-header:** `SyntaxError: unclosed ( or [` — truncated mid-expression at 1536 tokens
+- **37/50 with-header:** `NameError: 'ModelNew'` — model never wrote `class ModelNew(torch.nn.Module)`
+- **13/50 with-header:** `AttributeError`/`TypeError` — hallucinated Triton API (`tl.const(int)`, `tl.cacheline_size`, `tl.types`), or wrong class name
+
+### Key artifacts
+
+- `scripts/fp32_baseline_eval.py` — evaluation script (staged in this session)
+- `evaluation/results/fp32_baseline_eval.jsonl` — 60 verified records
+- `evaluation/results/fp32_baseline_report.json` — full report with Wilson CIs
+
+### Reproducibility (Task 4)
+
+Fresh-clone test passed: `git clone --depth 1 -b agent/overnight2 file:///...` →
+`python3 -m venv .venv && pip install -r requirements.txt` →
+`pytest`: **319 passed, 2 skipped** →
+`bash scripts/reproduce_all.sh`: **All steps PASSED**
+
+### Commits (this session)
+
+- fp32_baseline_eval.py + results  
+- DATA_REPORT section 5 + OVERNIGHT_LOG summary  
+- KAGGLE_RUNBOOK expected base-model numbers
+
+---
+
 ## Kaggle Fine-Tuning Safety Session (2026-11-16, branch `agent/overnight2`)
 
 Four tasks completed before the Kaggle run. All 319 tests pass. No push.

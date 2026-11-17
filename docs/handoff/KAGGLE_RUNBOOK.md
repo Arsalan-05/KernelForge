@@ -54,6 +54,34 @@ If running short on time, use `--eval-limit 25` to score 25 prompts instead of 1
 
 ---
 
+## 2b. Expected Base-Model Numbers (Verified 2026-11-16)
+
+These numbers were measured locally on `Qwen/Qwen2.5-Coder-1.5B-Instruct` in fp32
+on MPS, using `notes=False` (the same prompt as finetune.py and the Kaggle baseline).
+They are the pre-fine-tuning floor to compare against.
+
+| Metric | Value | Notes |
+|---|---|---|
+| No-header pass@1 | **0/60 = 0.000** | 95% CI [0.000, 0.060] |
+| With-header pass@1 | **0/50 = 0.000** | NameError entries only; still 0 |
+| Truncation rate | 4/60 = 6.7% | Large layernorm + kv_cache entries hit 1536-token cap |
+| Degenerate output | 0/60 | fp32 on MPS; no fp16 NaN `!!!!` repetition |
+| tok/s (MPS, fp32) | median 5.9, mean 6.1 | T4 with 4-bit will be faster |
+
+**What to expect from the Kaggle baseline stage:**  
+The base model (before fine-tuning) will very likely score 0/N on T4 as well.
+The 4-bit NF4 baseline on T4 may differ slightly (quantization vs. fp32), but
+the structural failures — missing imports, missing `class ModelNew`, hallucinated
+Triton API — are independent of precision. Any pass@1 > 0.000 from the fine-tuned
+adapter would confirm the adapter learned the response format.
+
+**Dominant failure modes (no fine-tuning):**
+- 50/60: `NameError: name 'triton' is not defined` — model omits all imports
+- 10/60: `SyntaxError` — invalid default-arg expressions or truncation
+- After adding import header: model still missing `class ModelNew` in 37/50 cases
+
+---
+
 ## 3. Kaggle Setup
 
 ### 3.1 Create a new Kaggle notebook
