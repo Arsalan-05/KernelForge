@@ -1,0 +1,80 @@
+{
+  "model": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+  "dtype": "float32",
+  "prompt": "notes=False (training prompt, identical to finetune.py)",
+  "max_new_tokens": 1536,
+  "total_entries": 60,
+  "truncated": 4,
+  "degenerate_output": 0,
+  "no_header": {
+    "correct": 0,
+    "pass_at_1": 0.0,
+    "wilson_95_ci": [
+      0.0,
+      0.0602
+    ],
+    "error_buckets": {
+      "name_error": 50,
+      "syntax_error": 10
+    },
+    "top_errors": {
+      "NameError: name 'triton' is not defined": 50,
+      "SyntaxError: invalid syntax. Maybe you meant '==' or ':=' instead of '='?": 6,
+      "SyntaxError: '(' was never closed": 3,
+      "SyntaxError: '[' was never closed": 1
+    }
+  },
+  "with_header": {
+    "entries_tested": 50,
+    "correct": 0,
+    "pass_at_1": 0.0,
+    "error_buckets": {
+      "name_error": 37,
+      "type_error": 13
+    }
+  },
+  "per_category": {
+    "quantized_matmul": {
+      "n": 12,
+      "no_header_correct": 0,
+      "with_header_any_correct": 0,
+      "pass_at_1_no_header": 0.0,
+      "wilson_lo": 0.0,
+      "wilson_hi": 0.2425
+    },
+    "attention": {
+      "n": 12,
+      "no_header_correct": 0,
+      "with_header_any_correct": 0,
+      "pass_at_1_no_header": 0.0,
+      "wilson_lo": 0.0,
+      "wilson_hi": 0.2425
+    },
+    "kv_cache": {
+      "n": 12,
+      "no_header_correct": 0,
+      "with_header_any_correct": 0,
+      "pass_at_1_no_header": 0.0,
+      "wilson_lo": 0.0,
+      "wilson_hi": 0.2425
+    },
+    "norm": {
+      "n": 12,
+      "no_header_correct": 0,
+      "with_header_any_correct": 0,
+      "pass_at_1_no_header": 0.0,
+      "wilson_lo": 0.0,
+      "wilson_hi": 0.2425
+    },
+    "rope": {
+      "n": 12,
+      "no_header_correct": 0,
+      "with_header_any_correct": 0,
+      "pass_at_1_no_header": 0.0,
+      "wilson_lo": 0.0,
+      "wilson_hi": 0.2425
+    }
+  },
+  "tokens_per_second_median": 5.9,
+  "tokens_per_second_mean": 6.1
+}
