@@ -13,7 +13,7 @@
 | Phase A: Leakage audit + canonical split | COMPLETE | 30/60 contaminated; split 180/20/100; 12 tests pass |
 | Phase A: held_out_eval.py + mps_lora_0.5b.json | COMPLETE | committed f3b4731 |
 | Phase B: 0.5B base eval (20 entries, Docker) | COMPLETE | 0/20 pass@1 CI [0.000, 0.161]; 16/20 parsed, 6 trunc |
-| Phase B: 0.5B LoRA fine-tuning | IN PROGRESS | run_20261117T072658Z; 42/180 examples (1536 filter), 33 steps |
+| Phase B: 0.5B LoRA fine-tuning | COMPLETE | run_20261117T072658Z; 10/33 steps (~0.95 epochs); loss 1.3384→0.7778 |
 | Phase B: 0.5B fine-tuned eval | PENDING | eval/results/held_out_ft_0.5b_p4.json |
 | Phase C: Claims audit | COMPLETE | No unverified claims found |
 | Phase C: README updated | COMPLETE | test count 321→332; split row added |
@@ -159,36 +159,45 @@ quantized_matmul, attention, kv_cache, norm, rope — all 0/4 pass@1.
 - `norm__rmsnorm_residual` entries: shorter kernels, 1002–1100 tokens, model attempts code with
   import missing or syntax errors from truncation.
 
-#### B.3 — 0.5B LoRA fine-tuning (IN PROGRESS)
+#### B.3 — 0.5B LoRA fine-tuning (COMPLETE)
 
 Config: `training/configs/mps_lora_0.5b.json` (lora_r=8, lr=3e-4, 3 epochs, fp32 on MPS).
-Started 02:19 EST after B.2 completed. Run: `run_20261117T071859Z`.
+Started ~02:19 EST after B.2 completed. Run: `run_20261117T072658Z`.
 
 **OOM history and fix:**
 - Attempt 1 (max_seq_length=2048): OOM at step 1 — MPS allocated 18.35/20.13 GiB.
   Cross-entropy logits + attention patterns at seq=2048 exceeded unified memory limit.
 - Attempt 2 (gradient_checkpointing=True, max_seq_length=1024): RuntimeError at backward pass.
   PEFT LoRA + gradient_checkpointing breaks requires_grad on inputs; not supported on MPS.
-- Attempt 3 (max_seq_length=1536): OOM avoided, but 163 s/step — MPS recompiles Metal kernels
-  for every unique input shape (batch_size=1 → 42 different lengths → 42 compilations).
+- Attempt 3 (max_seq_length=1536, padding=True): OOM avoided, but 163 s/step — MPS recompiles
+  Metal kernels for every unique input shape (batch_size=1 → 42 different lengths).
   Killed at step 1/33 (estimated 90 min for all steps vs 60-min budget).
-- Attempt 4 (`padding="max_length"` on MPS): **RUNNING** — run_20261117T072658Z.
-  All batches padded to 1536 tokens. Step 1: **267 s**. Step 2: **336 s** (thermal throttle, +69s).
-  Thermal throttling trend: +~70s per step. Revised estimate: **~7-8/33 steps in 60 min**.
-  (Steps cumulative: 308, 644, 1049, 1523, 2066, 2678, 3359, >3600 → adapter saved after step 7-8.)
-  Training tok/s (step 2): 5.573 (training forward+backward throughput, 4 micro-batches × 1536 tok).
+- **Attempt 4** (`padding="max_length"` on MPS): SUCCESS — run_20261117T072658Z.
+  All batches padded to 1536 tokens → single Metal kernel compilation at step 1.
 
-**Data note:** 138/180 train examples dropped (longer than 1536 tokens). Only 42 survive.
+**Step timing (thermal throttling on M-series under sustained MPS load):**
+- Step 1: 267 s, Step 2: 326 s, Step 3: 424 s, Steps 4–10: ~387–404 s (plateau)
+- Training tok/s range: 3.79–5.87 (MPS forward+backward, 4 micro-batches × 1536 tok)
+- 60-min budget → `--max-minutes 60` → adapter saved at step 10/33
+
+**Loss curve (from `train_log.json`):**
+
+| Step | Epoch | Loss | Grad Norm | LR |
+|---|---|---|---|---|
+| 5 | 0.476 | 1.3384 | 0.7953 | 2.806e-4 |
+| 10 | 0.952 | 0.7778 | 1.0412 | 2.323e-4 |
+
+Train runtime: 3846.68 s (~64 min). Train loss (mean): 1.0581.
+Adapter: `training/checkpoints/run_20261117T072658Z/adapter`
+
+**Data note:** 138/180 train examples dropped (longer than 1536 tokens). 42 survive.
 Most template candidates tokenize to 1537–1905 tokens (prompt + full Triton kernel).
-267-336 s/step (and rising) = 4 micro-batches × ~70-84 s each (1 forward + 1 backward at 1536 tok).
 
 **Pilot limitations:**
 - Only 42/180 training examples survive the 1536-token filter (23%)
-- ~13/33 optimizer steps complete (40% of planned training) in the 60-min budget
+- 10/33 optimizer steps completed (~0.95 epochs, 29% of 3-epoch plan)
 - Fine-tuning is on unverified template candidates (no GPU-verified correct solutions)
 - Results labeled "0.5B local LoRA MPS pilot" — supplementary only
-
-**→ Loss curve and adapter checkpoint to be filled when training completes (~03:30 EST)**
 
 #### B.4 — 0.5B fine-tuned eval (pending)
 
