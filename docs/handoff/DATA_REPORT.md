@@ -673,11 +673,25 @@ for the LoRA fine-tuning comparison.
 
 ### B.3 — 0.5B LoRA fine-tuning
 
-**IN PROGRESS** — Final run started 02:26 EST. Run: `training/checkpoints/run_20261117T072658Z`.
+**COMPLETE** — Run: `training/checkpoints/run_20261117T072658Z`.
 
 Config: lora_r=8, lora_alpha=16, lr=3e-4, 3 epochs, fp32 on MPS, max_seq_length=1536,
 padding="max_length" (all batches fixed to 1536 tokens for MPS kernel compilation stability).  
 Training data: 42/180 examples survive the 1536-token filter (most kernels tokenize to 1537–1905 tokens).  
-Steps planned: 33. Actual: ~14 (60-min budget; 267 s/step).
+Steps planned: 33. Actual: **10** (60-min budget; `--max-minutes 60`).
 
-**→ Loss curve and fine-tuned eval results to be added when B.3/B.4 complete.**
+**Loss curve (from `train_log.json`):**
+
+| Step | Epoch | Loss | Grad Norm | LR |
+|---|---|---|---|---|
+| 5 | 0.476 | 1.3384 | 0.7953 | 2.806e-4 |
+| 10 | 0.952 | 0.7778 | 1.0412 | 2.323e-4 |
+
+Train runtime: 3846.68 s (~64 min). Train loss (mean over steps 1-10): 1.0581.  
+Step times: 267 s (step 1) → 326 s (step 2) → 424 s (step 3) → ~400 s plateau (thermal throttle on M-series).  
+Training tok/s range: 3.79–5.87 tok/s (MPS forward+backward, 4 micro-batches × 1536 tok each).  
+Adapter saved to: `training/checkpoints/run_20261117T072658Z/adapter`
+
+### B.4 — 0.5B fine-tuned eval
+
+**→ Results to be added when eval completes.**
