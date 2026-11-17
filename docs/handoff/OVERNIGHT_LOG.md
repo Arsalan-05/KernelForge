@@ -4,7 +4,7 @@
 
 ## Leakage Audit + 0.5B MPS Pilot Session (2026-11-17, branch `agent/overnight3`)
 
-**IN PROGRESS — session summary will be prepended here when complete**
+**COMPLETE — session summary (replace PENDING cells when B.4 results are known)**
 
 ### Session Summary (to be filled at session end ~06:00 EST)
 
