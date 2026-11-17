@@ -2,6 +2,90 @@
 
 ---
 
+## Kaggle Pre-flight + Paper + README + Claims Audit Session (2026-11-17, branch `agent/overnight2`)
+
+4-hour time-boxed session covering 5 tasks: Kaggle pre-flight hardening, paper
+updates with verified numbers, README rewrite, claims audit, test suite.
+
+### Changes
+
+#### Task 1: Kaggle Pre-flight Hardening
+
+**training/finetune.py** (commit `87f8383`):
+- `save_strategy="steps"`, `save_steps=50`, `save_total_limit=3`
+  → saves every ~8 min on T4; 3 most recent checkpoints kept
+- `make_gpu_log_callback()`: writes `{step, loss, tokens_per_second, gpu_memory_allocated_gb}`
+  to `training/run_*/gpu_training_log.jsonl` per optimizer step
+- `train(resume_from_checkpoint=...)` + `--resume-from-checkpoint` CLI arg (`"last"` shorthand)
+- Dry-run still passes: `python training/finetune.py --dry-run`
+
+**scripts/kaggle_eval.py** (new, commit `2308e59`):
+- Evaluates base or fine-tuned model on the same 60-entry subset as `fp32_baseline_eval.py`
+- Device: CUDA → 4-bit NF4; MPS/CPU → fp32
+- Report schema identical to `fp32_baseline_report.json` (adds `adapter`, `quantization`)
+- Exits 1 with FATAL if `degenerate_output / total > 10%`
+- `--pilot --no-verify` dry-run passes on CPU (3 entries, no Docker)
+
+**notebooks/kaggle_gpu_session.ipynb** (commit `7a9140b`):
+- Cell 1: added VRAM estimates table (stated assumptions: 4-bit NF4, paged AdamW, batch=1)
+  - Total training estimate: ~4–6 GB (well within T4's 16 GB)
+- Cell 8 (new): final comparison eval via `kaggle_eval.py`; prints side-by-side table
+
+**docs/handoff/KAGGLE_RUNBOOK.md** (commit `4fb67ee`):
+- §9b: documents checkpoint saving, resume-from-checkpoint, GpuLogCallback, kaggle_eval.py
+
+**Not exercised on CPU (requires T4 GPU):**
+- 4-bit NF4 loading path in `kaggle_eval.py`
+- Resume-from-checkpoint with actual checkpoint directories
+- Real `gpu_memory_allocated_gb` values (None on CPU)
+- T4 step timing (tok/s estimate uses fixed 512 tokens/step heuristic; real value may differ)
+
+#### Task 2: Paper Updates
+
+**docs/paper/paper.tex** (commit `9b1e8bd`):
+- Abstract: added sentence citing 0/60 pre-FT floor, 95% CI [0, 6%]
+- §5 Results: replaced bare TODO with verified paragraph; failure breakdown from report
+- Failure modes: 50 NameError / 10 SyntaxError; 37/13 secondary with header; 0 degenerate
+- Threats §: new paragraph on fp16 NaN / degenerate-output detection
+- All GPU test-set numbers remain `\todo{}` until the Kaggle run
+- LaTeX braces and environments checked (balanced, no pdflatex available)
+
+#### Task 3: README Rewrite
+
+**README.md** (commit `8a65cd1`):
+- Removed "GPU-validated" claim (harness is interpreter-tested; GPU run pending)
+- Updated test count (321 collected → `~319 passed, 2 skipped` in README)
+- Added base-model numbers table (0/60 fp32 local, CI [0, 6%])
+- Status table shows actual state; stated clearly: no GPU results, no fine-tuned numbers
+- Exact verified commands from a fresh clone
+
+#### Task 4: Claims Audit
+
+Findings:
+- `README.md` (old, line 47): "GPU-validated" for the harness — **fixed** in rewrite
+- `MASTER_PLAN.md` (lines 17, 108, 165, 173): "GPU-validated" — internal planning doc;
+  line 173 cites a specific vector-add test; left as-is (internal doc)
+- `DOCUMENTATION.md` (line 17): "GPU-validated" — internal doc; left as-is
+- Notebooks: no unsupported claims found
+- `docs/`: no "state-of-the-art", no spurious "100%", no speedup claims
+- `paper.tex`: "faster than" is a metric description, not a claim
+
+#### Task 5: Tests + Commits
+
+Test suite: **320 passed, 1 skipped** (43 s)
+All changes committed in 6 small commits (87f8383 through 4fb67ee).
+
+### What was NOT done
+
+- Kaggle GPU session (requires a live T4 session)
+- Fine-tuned result numbers (GPU run required)
+- Paper §5 main results, tables — all remain `\todo{}` until GPU run
+- Paper PDF compilation (pdflatex not installed on this machine)
+- `kaggle_eval.py` with Docker verification (--no-verify only on CPU)
+- Resume-from-checkpoint path: requires a real checkpoint directory on T4
+
+---
+
 ## FP32 Baseline Evaluation Session (2026-11-16, branch `agent/overnight2`)
 
 Full 60-entry baseline on `Qwen/Qwen2.5-Coder-1.5B-Instruct` (fp32, MPS, `notes=False`).
