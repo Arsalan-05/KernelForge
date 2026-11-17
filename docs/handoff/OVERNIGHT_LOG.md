@@ -2,6 +2,72 @@
 
 ---
 
+## Leakage Audit + 0.5B MPS Pilot Session (2026-11-17, branch `agent/overnight3`)
+
+**IN PROGRESS — updated throughout session**
+
+Branch created from `agent/overnight2`. Time-box: 01:30–06:00 EST.
+
+### Phase A — Leakage Audit + Held-Out Split (COMPLETE)
+
+#### Leakage findings
+
+The existing `fp32_baseline_eval.py` selects 60 entries (12 per category: 3 smoke + 9 regular).
+Mapping those 60 entries against the canonical `split_by_template(seed=42)` split:
+
+| Membership | Count |
+|---|---|
+| In TRAIN set | 27 |
+| In VAL set | 3 |
+| In TEST set (held-out template) | 15 |
+| Smoke-only (not in 300) | 15 |
+| **Total leakage if fine-tuned** | **30 / 60** |
+| **Clean entries** | **30 / 60** |
+
+The base-model result (0/60 pass@1) is **uncontaminated** — the base model was not trained on
+any of these entries. Any fine-tuned eval using those same 60 entries would have 30/60 entries
+in the training distribution.
+
+#### Overlap levels
+
+1. **Identical IDs**: 45/60 eval entries appear in the 300-entry GENERATORS output (same IDs).
+2. **Same template + same shape**: same as above (IDs are `{template}__{shape_config}`).
+3. **Same template, different shapes**: covered by level 1; smoke entries are same template but different shapes (`__smoke` suffix), so 15 smoke entries are in the same template family as training entries but are not identical.
+
+#### Split design
+
+`data/held_out_split.json` (seed=42, `split_by_template`):
+- **train**: 180 entries (from 10 templates, 2 per category)
+- **val**: 20 entries (from same 10 templates)
+- **test** (held-out): 100 entries (5 templates, 1 per category, 20 shapes each)
+- Held-out templates: `attention__gqa_causal_prefill`, `kv_cache__decode_attention_gqa`,
+  `norm__rmsnorm_residual`, `quantized_matmul__w8a16_perchannel`, `rope__interleaved`
+- Satisfies: holds out ≥2 entire templates; holds out specific shapes (20 shapes per template)
+- Guarantees: verified by 12 tests in `tests/test_held_out_split.py` (all pass)
+
+#### Scripts added
+- `data/held_out_split.json` — canonical split (committed `f3b4731`)
+- `tests/test_held_out_split.py` — 12 split integrity tests (committed `f3b4731`)
+- `scripts/held_out_eval.py` — evaluates only on test split, with leakage guard (committed `f3b4731`)
+- `training/configs/mps_lora_0.5b.json` — 0.5B LoRA config for MPS (committed `f3b4731`)
+- `training/finetune.py` — MPS support added (`load_transformers` + `use_cpu` fix) (committed `7fb1724`)
+
+#### fp32 baseline re-statement
+- The 0/60 base-model result covers: 15 clean TEST entries + 15 smoke entries + 30 train/val entries
+- The 15 clean TEST entries give a bias-free estimate: 0/15 pass@1 (CI [0, 0.218])
+- For the 15 held-out template entries: 0/15 — same failure patterns as the full 60 (NameError, SyntaxError)
+- **No re-run needed** — existing results stratify cleanly by split membership
+
+### Phase B — 0.5B MPS LoRA Pilot (IN PROGRESS)
+
+**→ See results below as they are added**
+
+### Phase C — Docs, Claims, Tests
+
+**→ Pending**
+
+---
+
 ## Kaggle Pre-flight + Paper + README + Claims Audit Session (2026-11-17, branch `agent/overnight2`)
 
 4-hour time-boxed session covering 5 tasks: Kaggle pre-flight hardening, paper
