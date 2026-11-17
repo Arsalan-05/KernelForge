@@ -38,7 +38,7 @@ pip install -r requirements.txt
 
 # Run the CPU test suite
 pytest tests/ -v
-# Expected: ~319 passed, 2 skipped  (some tests skip without Docker or triton)
+# Expected: ~332 passed, 1 skipped  (some tests skip without Docker or triton)
 
 # CPU reproducibility check (harness + mutation test + report)
 bash scripts/reproduce_all.sh
