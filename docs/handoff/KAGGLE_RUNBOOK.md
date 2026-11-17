@@ -330,6 +330,54 @@ What was **not** exercised:
 
 ---
 
+## 9b. Training Hardening (2026-11-17)
+
+Three hardening changes were made to `training/finetune.py` to protect long T4 runs:
+
+### Checkpoint saving
+Checkpoints are saved every 50 optimizer steps (`save_strategy="steps"`, `save_steps=50`,
+`save_total_limit=3`). On T4 at ~10 s/step, this is roughly every 8 minutes.
+Only the 3 most recent checkpoints are kept to save disk space (optimizer states can be large).
+The final adapter is always saved at training end regardless.
+
+### Resume from checkpoint
+If training is interrupted, resume with:
+```bash
+python training/finetune.py \
+    --config training/configs/finetune_default.json \
+    --resume-from-checkpoint last
+```
+`last` resolves to the most recent `checkpoint-*` directory in the output run folder.
+Or pass an explicit path: `--resume-from-checkpoint training/checkpoints/run_*/checkpoint-50`.
+
+Inside the GPU session, `gpu_session.py` does not auto-resume training (only the dataset
+and eval stages have resume logic). If the `finetune` stage was interrupted and you want
+to resume it, run `finetune.py --resume-from-checkpoint last` manually in a new cell.
+
+### GPU training log
+Every training step writes a JSON record to `training/run_*/gpu_training_log.jsonl`:
+```json
+{"step": 50, "loss": 2.1, "tokens_per_second": 420.0, "gpu_memory_allocated_gb": 4.2}
+```
+`tokens_per_second` is an estimate based on `batch_size × grad_accumulation × 512` tokens per step.
+`gpu_memory_allocated_gb` is from `torch.cuda.memory_allocated()` (excludes reserved but free memory).
+This file is included in `kernelforge_outputs.zip`.
+
+### Final comparison eval (60-entry subset)
+After the GPU session, Cell 6 of `notebooks/kaggle_gpu_session.ipynb` runs
+`scripts/kaggle_eval.py` on the same 60-entry subset as the local fp32 baseline:
+```bash
+python scripts/kaggle_eval.py --out /kaggle/working/kaggle_base_eval_report.json
+python scripts/kaggle_eval.py \
+    --adapter training/run_*/adapter \
+    --out /kaggle/working/kaggle_finetuned_eval_report.json
+```
+This writes reports in the same schema as `evaluation/results/fp32_baseline_report.json`,
+allowing a direct comparison with the pre-FT floor (0/60 pass@1).
+If the degenerate output rate exceeds 10%, the script exits with a FATAL error.
+
+---
+
 ## 9. Troubleshooting
 
 | Symptom | Likely cause | Fix |
