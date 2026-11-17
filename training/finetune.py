@@ -104,13 +104,18 @@ def load_unsloth(config: dict):
 
 
 def load_transformers(config: dict):
-    """QLoRA on a CUDA GPU (Kaggle/Colab, where Unsloth fights the preinstalled
-    torch), or fp32 LoRA on CPU for a dev-machine smoke run."""
+    """Load model + LoRA adapter for training.
+
+    CUDA:  QLoRA (4-bit NF4, fp16 activations) — Kaggle/Colab T4 path.
+    MPS:   fp32 LoRA (no quantization; bitsandbytes not available on MPS) — Mac pilot path.
+    CPU:   fp32 LoRA — dry-run / CI path.
+    """
     import torch
     from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     cuda = torch.cuda.is_available()
+    mps  = (not cuda) and torch.backends.mps.is_available()
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"], trust_remote_code=True)
 
     if cuda:
@@ -125,9 +130,19 @@ def load_transformers(config: dict):
             device_map={"": 0}, trust_remote_code=True,
         )
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    elif mps:
+        # MPS: load in fp32 to CPU first, then move to MPS.
+        # device_map="mps" is not reliably supported by all PEFT versions;
+        # loading to CPU then .to("mps") is the stable approach.
+        model = AutoModelForCausalLM.from_pretrained(
+            config["model_name"], torch_dtype=torch.float32,
+            device_map=None, trust_remote_code=True,
+        )
+        model = model.to("mps")
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            config["model_name"], torch_dtype=torch.float32, device_map="cpu", trust_remote_code=True,
+            config["model_name"], torch_dtype=torch.float32,
+            device_map="cpu", trust_remote_code=True,
         )
 
     lora_config = LoraConfig(
@@ -224,7 +239,8 @@ def train(config: dict, backend: str, train_entries: list[dict], val_entries: li
           f"longest example: {longest} tokens")
 
     cuda = torch.cuda.is_available()
-    dry = max_steps > 0
+    mps  = (not cuda) and torch.backends.mps.is_available()
+    dry  = max_steps > 0
     training_args = TrainingArguments(
         output_dir=str(output_dir),
         per_device_train_batch_size=config.get("per_device_train_batch_size", 1),
@@ -242,13 +258,15 @@ def train(config: dict, backend: str, train_entries: list[dict], val_entries: li
         save_total_limit=3,
         eval_strategy=("steps" if dry else "steps") if val_feats else "no",
         eval_steps=1 if dry else 50,
-        fp16=cuda,  # T4 has no bf16
+        fp16=cuda,          # T4 supports fp16; MPS/CPU use fp32
+        bf16=False,         # T4 has no bf16; Ampere+ only
         # Unsloth applies its own gradient checkpointing in get_peft_model.
         gradient_checkpointing=cuda and backend == "transformers",
         optim="paged_adamw_8bit" if cuda and backend == "transformers" else "adamw_torch",
         seed=config.get("seed", 42),
         report_to="none",
-        use_cpu=not cuda,
+        # use_cpu=True forces CPU; on MPS we want MPS (not CPU, not CUDA).
+        use_cpu=not (cuda or mps),
     )
     adapter_dir = output_dir / "adapter"
     time_limit = make_time_limit_callback(deadline, adapter_dir)
