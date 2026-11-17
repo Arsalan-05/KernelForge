@@ -553,3 +553,91 @@ compared on Kaggle.
 **Expected improvement after fine-tuning:** pass@1 > 0.000 (any correct kernel
 demonstrates the adapter learned the format). The 15 smoke entries are the
 simplest shapes and most likely to pass first.
+
+---
+
+## 6. Leakage Audit + Canonical Train/Val/Test Split (2026-11-17)
+
+**Branch:** `agent/overnight3`
+
+### Leakage finding
+
+The 60-entry subset in `fp32_baseline_eval.py` selects 12 entries per category
+(3 smoke + 9 regular). Of those 60 entries:
+
+| Membership | Count |
+|---|---|
+| In TRAIN set (split_by_template seed=42) | 27 |
+| In VAL set | 3 |
+| In TEST set (held-out template) | 15 |
+| Smoke-only (not in 300 GENERATORS entries) | 15 |
+| **Total leakage for fine-tuned evaluation** | **30 / 60** |
+
+The 0/60 base-model result is **uncontaminated** (the base model was not trained
+on any of these entries). Any fine-tuned evaluation using the same 60-entry
+subset would have 50% contamination.
+
+### Canonical split design
+
+File: `data/held_out_split.json` (seed=42, `split_by_template`)
+
+| Split | Entries | Templates |
+|---|---|---|
+| Train | 180 | 10 (2 per category) |
+| Val | 20 | 10 (same as train) |
+| Test (held-out) | 100 | 5 (1 per category, 20 shapes each) |
+
+Held-out templates:
+- `attention__gqa_causal_prefill`
+- `kv_cache__decode_attention_gqa`
+- `norm__rmsnorm_residual`
+- `quantized_matmul__w8a16_perchannel`
+- `rope__interleaved`
+
+Each held-out template has a training sibling in the same operator family,
+so the test set measures generalization to variants, not new families.
+
+### Leakage guarantee
+
+12 tests in `tests/test_held_out_split.py` verify:
+- No ID appears in more than one split
+- All 300 IDs are present exactly once
+- Each held-out template's entries are in test only
+- `split_by_template(seed=42)` is reproducible
+- The fp32_baseline leakage count (30/60) matches the audited value
+
+Script `scripts/held_out_eval.py` enforces the split at runtime: it exits 1
+if any evaluated entry is found in the train or val split.
+
+### Re-statement of fp32 baseline against held-out set
+
+Of the 60 entries evaluated in Section 5:
+- 15 entries are in the held-out test split (clean, no leakage)
+  → 0/15 pass@1 (Wilson CI [0.000, 0.218])
+- 30 entries are in train/val (contaminated for fine-tuned evaluation)
+- 15 entries are smoke-only (not in the 300 GENERATORS pool)
+
+The 0/15 held-out result is consistent with 0/60 overall: same failure patterns
+(NameError, SyntaxError), same structural issues documented in Section 5.
+
+---
+
+## 7. 0.5B Local LoRA MPS Pilot (2026-11-17)
+
+**Label all numbers in this section: "0.5B local LoRA MPS pilot"**  
+**Branch:** `agent/overnight3`
+
+This is a supplementary experiment. The main research uses Qwen2.5-Coder-1.5B-Instruct
+on a Kaggle T4. The pilot uses Qwen2.5-Coder-0.5B-Instruct on MPS to test the
+fine-tuning pipeline locally without T4 access.
+
+### B.2 — 0.5B base eval (20 entries, with Docker)
+
+**IN PROGRESS** — will be filled when evaluation completes.
+
+Script: `scripts/held_out_eval.py --model Qwen/Qwen2.5-Coder-0.5B-Instruct --per-category 4`  
+Output: `evaluation/results/held_out_base_0.5b_p4.json`
+
+Early generation stats: 15.9–23.1 tok/s (most entries), 4.3 tok/s for b16_s256 (thermal throttle).
+
+**→ Results will be added to OVERNIGHT_LOG when complete.**
