@@ -32,7 +32,16 @@
 - `a3d4bad` OVERNIGHT_LOG: Phase B pilot, Phase C claims audit
 - `ee7a857` DATA_REPORT: sections 6+7
 - `56b3a36` OVERNIGHT_LOG: session summary table
-- *(more commits to come after B.2 results, training, fine-tuned eval)*
+- `f7d043e` OVERNIGHT_LOG: session summary commit list update
+- `7ce42ab` finetune: add --use-templates flag for MPS pilot
+- `269bae9` (earlier) finetune: configurable save_steps/eval_steps
+- `c84bc83` Phase B: 0.5B base eval results; fix MPS OOM (max_seq_length 2048→1536)
+- `cc1fcdc` Fix MPS training: max_length padding (single Metal compilation)
+- `f30ee92` OVERNIGHT_LOG/DATA_REPORT: document B.3 training attempts and OOM fixes
+- `da05972` OVERNIGHT_LOG: B.3 step timing (267s/step, ~14/33 steps in budget)
+- `fc2def3` README: fix test count 319→332, 2 skipped→1 skipped
+- `16d54f2` DATA_REPORT: fix B.3 run path
+- *(final commits pending: B.3 loss curve, B.4 fine-tuned eval results)*
 
 Branch created from `agent/overnight2`. Time-box: 01:30–06:00 EST.
 
