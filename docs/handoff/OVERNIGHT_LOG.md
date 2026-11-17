@@ -12,8 +12,8 @@
 |---|---|---|
 | Phase A: Leakage audit + canonical split | COMPLETE | 30/60 contaminated; split 180/20/100; 12 tests pass |
 | Phase A: held_out_eval.py + mps_lora_0.5b.json | COMPLETE | committed f3b4731 |
-| Phase B: 0.5B base eval (20 entries, Docker) | PENDING results | eval/results/held_out_base_0.5b_p4.json |
-| Phase B: 0.5B LoRA fine-tuning | PENDING | stop by 03:30 EST |
+| Phase B: 0.5B base eval (20 entries, Docker) | COMPLETE | 0/20 pass@1 CI [0.000, 0.161]; 16/20 parsed, 6 trunc |
+| Phase B: 0.5B LoRA fine-tuning | IN PROGRESS | run_20261117T072658Z; 42/180 examples (1536 filter), 33 steps |
 | Phase B: 0.5B fine-tuned eval | PENDING | eval/results/held_out_ft_0.5b_p4.json |
 | Phase C: Claims audit | COMPLETE | No unverified claims found |
 | Phase C: README updated | COMPLETE | test count 321→332; split row added |
@@ -21,7 +21,7 @@
 | Phase C: torch_dtype→dtype deprecation | COMPLETE | 3 files fixed (committed 3efc5c7) |
 | Phase C: DATA_REPORT sections 6+7 | COMPLETE | committed ee7a857 |
 | Phase C: Full test suite | COMPLETE | **332 passed, 1 skipped** |
-| Phase C: Final OVERNIGHT_LOG summary | PENDING | fill numbers once B.2 completes |
+| Phase C: Final OVERNIGHT_LOG summary | PENDING | fill numbers once B.4 completes |
 
 **Commits this session (agent/overnight3):**
 - `f3b4731` Phase A: leakage audit, canonical split, held-out eval script
@@ -149,13 +149,16 @@ Started 02:19 EST after B.2 completed. Run: `run_20261117T071859Z`.
   Cross-entropy logits + attention patterns at seq=2048 exceeded unified memory limit.
 - Attempt 2 (gradient_checkpointing=True, max_seq_length=1024): RuntimeError at backward pass.
   PEFT LoRA + gradient_checkpointing breaks requires_grad on inputs; not supported on MPS.
-- Attempt 3 (max_seq_length=1536): **RUNNING**.
-  138/180 train examples dropped (longer than 1536 tokens) → 42 examples survive → 33 steps.
-  Longest surviving example: 1536 tokens exactly (hits the limit).
+- Attempt 3 (max_seq_length=1536): OOM avoided, but 163 s/step — MPS recompiles Metal kernels
+  for every unique input shape (batch_size=1 → 42 different lengths → 42 compilations).
+  Killed at step 1/33 (estimated 90 min for all steps vs 60-min budget).
+- Attempt 4 (`padding="max_length"` on MPS): **RUNNING** — run_20261117T072658Z.
+  All batches padded to 1536 tokens → single MPS compilation on step 1; steps 2+ ~10 s.
 
-**Data note:** Most template candidates tokenize to 1537–1905 tokens (prompt + kernel).
-The 42 examples that survive are primarily shorter kernels (norm, rope, some quantized_matmul).
-This is a known limitation of local MPS training without gradient checkpointing.
+**Data note:** 138/180 train examples dropped (longer than 1536 tokens). Only 42 survive.
+Most template candidates tokenize to 1537–1905 tokens (prompt + full Triton kernel).
+The 42 survivors are primarily the simpler/shorter kernels (norm__rmsnorm_residual,
+quantized_matmul__w4a16, kv_cache__cache_write at small shapes, some rope variants).
 
 **→ Loss curve and final checkpoint path to be filled when training completes**
 

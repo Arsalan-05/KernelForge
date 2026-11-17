@@ -675,8 +675,9 @@ for the LoRA fine-tuning comparison.
 
 **IN PROGRESS** — Started 02:19 EST. Run: `training/checkpoints/run_20261117T071859Z`.
 
-Config: lora_r=8, lora_alpha=16, lr=3e-4, 3 epochs, fp32 on MPS, max_seq_length=1536.  
+Config: lora_r=8, lora_alpha=16, lr=3e-4, 3 epochs, fp32 on MPS, max_seq_length=1536,
+padding="max_length" (all batches fixed to 1536 tokens for MPS kernel compilation stability).  
 Training data: 42/180 examples survive the 1536-token filter (most kernels tokenize to 1537–1905 tokens).  
-Steps: 33 total.
+Steps: 33 total. Run: `training/checkpoints/run_20261117T072658Z`.
 
 **→ Loss curve and fine-tuned eval results to be added when B.3/B.4 complete.**
