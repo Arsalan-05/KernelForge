@@ -1,77 +1,100 @@
 # KernelForge
 
-<!-- Replace with a real capture from the first Kaggle/Colab run (base model, badge visible):
-     ![KernelForge demo](docs/assets/demo.gif) -->
+KernelForge is a **data-efficient Triton kernel generator** for LLM-serving operators. Given a
+PyTorch reference op, it generates an optimized Triton kernel **plus** a short natural-language
+explanation of the optimization. Correctness is checked by a subprocess-isolated verification
+harness following KernelBench's `Model`/`ModelNew` contract.
 
-**Try it:** the demo runs on a Kaggle/Colab GPU session — see [Run the demo](#run-the-demo). A recorded
-walkthrough (`docs/assets/demo.gif`) will be added from the first live GPU run.
+Scope: five operator families relevant to LLM inference serving
+(`quantized_matmul`, `attention`, `kv_cache`, `norm`, `rope`), supervised QLoRA fine-tuning of
+Qwen2.5-Coder-1.5B-Instruct on a few hundred harness-verified examples, one Kaggle T4 GPU,
+no RL.
 
-> **Demo status: running the base model** (Qwen2.5-Coder-1.5B-Instruct, not fine-tuned). The fine-tuned
-> LoRA adapter drops into the same pipeline once training is done. The UI shows which model is running
-> in a banner at the top.
+## What is done vs not done
 
-KernelForge is a **data-efficient, explainable LLM specialist for LLM-serving GPU kernels**. Given a
-PyTorch reference op, it generates an optimized **Triton** kernel **plus** a short natural-language
-explanation of *why* the optimization helps. Correctness and speedup are checked by a
-**subprocess-isolated verification harness** that matches KernelBench's `Model`/`ModelNew` contract.
-It's deliberately narrow (five serving-relevant categories, supervised QLoRA on a small curated
-dataset, no RL) and is positioned against KernelLLM / Kevin-32B / AutoTriton, not as a claim of
-beating them on broad benchmarks.
-
-**Three contributions:**
-1. **Data-efficient specialization** on LLM-*serving* ops (`quantized_matmul`, `attention`, `kv_cache`,
-   `norm`, `rope`), not generic KernelBench breadth.
-2. **Explainability**: kernel + optimization rationale as a first-class output.
-3. **One verification harness, everywhere**: the same `verify_model_kernel` call gates the training
-   dataset, the eval numbers, *and* what the live demo shows. Nothing in the demo is shown as verified
-   unless the harness actually ran; when it didn't, the UI says why.
-
-On top of the harness sits a **training-free kernel search** (`kernelforge/search.py`). It samples up
-to 4 candidates in one batched generation and verifies each one, sharing a single harness run between
-identical kernels. The fastest correct kernel wins. If none passes, the exact harness feedback (for
-example "6599/20480 elements outside tolerance; max abs error 0.00195 at index (1, 1, 1, 33)", or the
-traceback) goes back to the model for up to 2 repair rounds. This is the multi-turn refinement idea
-behind Kevin-32B (a CUDA model), run at inference time instead of trained with RL.
-
-## Current status
-
-The **demo studio and kernel search are built and run on the base model**; launch them on a
-Kaggle/Colab GPU for a shareable link. The dataset was verified with the Triton CPU interpreter
-(correctness only, no GPU result): **285/300 shapes pass, 15 out of memory in an 8 GB VM** — the
-15 OOM shapes are the largest attention and norm shapes; whether they fit on a 16 GB T4 is untested.
-GPU verification is the next step. Fine-tuning and evaluation code is written but **has not been run
-yet**, so there are no result numbers to report.
-
-| Piece | State |
+| Component | Status |
 |---|---|
-| Verification harness | Done, GPU-validated; GPU mode (correctness + speedup) and interpreter mode (CPU, correctness only) |
-| Demo studio + kernel search (best-of-N, repair, result cache, `/stats`) | Built; 283 tests pass on macOS (5 skipped: need triton or transformers); first live GPU session pending |
-| Public deployment (Railway: Dockerfile + `railway.json`, hosted-model option, code policy, rate limits) | Built; interpreter-only (Railway has no GPU) |
-| Dataset (15 templates × 20 shapes, 5 categories) | Triton interpreter correctness: 285/300 pass, 15 OOM in 8 GB VM (no GPU result); GPU verification pending |
-| Fine-tuning (QLoRA, `training/finetune.py`) | Code written, not yet run |
-| Evaluation (`evaluation/`) | Code written, waiting on dataset + adapter |
+| Verification harness (`verification/`) | Done; CPU interpreter mode tested (285/300 templates pass, 15 OOM in 8 GB VM); **GPU mode not yet validated on a real GPU** |
+| Dataset (15 templates × 20 shapes = 300 candidates) | CPU interpreter check: 285/300 pass, 0 incorrect, 15 OOM; GPU verification pending |
+| Base-model eval (fp32, local, 60 entries) | Done: **0/60 pass@1** (95% CI [0.0%, 6.0%]); every failure is a missing import or syntax error |
+| QLoRA fine-tuning (`training/finetune.py`) | Code written; **not yet run**; dry-run passes (`python training/finetune.py --dry-run`) |
+| Mutation testing | 29/29 non-equivalent mutations caught; 3 surviving mutations are mathematically equivalent (softmax shift-invariance) |
+| Demo UI (`app/`) | Built; runs on base model; Kaggle/Colab GPU needed |
+| Deployment (Railway) | Dockerfile + `railway.json` done; interpreter-only (no GPU on Railway) |
+| GPU session runner (`scripts/gpu_session.py`) | Done; tested on CPU; Kaggle T4 run pending |
+| Test suite | 321 tests collected; passes on CPU (macOS and Linux); some tests require Docker or a GPU |
 
-See [DOCUMENTATION.md](DOCUMENTATION.md) for how it works, [docs/project_writeup.md](docs/project_writeup.md)
-for positioning and prior work, and [MASTER_PLAN.md](MASTER_PLAN.md) for the roadmap, study track and next steps.
+**GPU fine-tuning has not been run.** There are no fine-tuned result numbers.
 
-## GPU session: dataset, baseline, fine-tune
-
-Import [`notebooks/kaggle_gpu_session.ipynb`](notebooks/kaggle_gpu_session.ipynb) into Kaggle (GPU T4, Internet on) and choose *Run All*, or run it from a shell:
+## Quick start (fresh clone, no GPU)
 
 ```bash
-python scripts/gpu_session.py              # GPU-verify the dataset + baseline eval on held-out templates
-python scripts/gpu_session.py --finetune   # + QLoRA fine-tune and fine-tuned eval
-python scripts/gpu_session.py --budget-hours 11  # stop cleanly before Kaggle's 12 h wall clock
+git clone https://github.com/Arsalan-05/KernelForge.git
+cd KernelForge
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# Run the CPU test suite
+pytest tests/ -v
+# Expected: ~319 passed, 2 skipped  (some tests skip without Docker or triton)
+
+# CPU reproducibility check (harness + mutation test + report)
+bash scripts/reproduce_all.sh
+# Expected: "All steps PASSED" in ~60 s
+
+# Pre-flight check (packages, configs, dataset status)
+python scripts/preflight_check.py --no-gpu
+
+# Split-leakage check
+python scripts/check_split_leakage.py
+# Expected: "PASSED — no leakage detected."
 ```
 
-All results end up in `kernelforge_outputs.zip`. Evaluation holds out whole templates (one op per category), so test scores measure unseen ops rather than memorised kernels.
+## GPU session (Kaggle T4)
 
-See [docs/handoff/KAGGLE_RUNBOOK.md](docs/handoff/KAGGLE_RUNBOOK.md) for the full step-by-step runbook, expected output files, and a post-session checklist.
+Import [`notebooks/kaggle_gpu_session.ipynb`](notebooks/kaggle_gpu_session.ipynb) into Kaggle
+(Accelerator: GPU T4, Internet: on). Or run directly:
 
-## Run the demo
+```bash
+# In a Kaggle notebook cell:
+!git clone --depth 1 -b main https://github.com/Arsalan-05/KernelForge.git
+%cd KernelForge
+!pip install -q -r requirements-demo.txt
+!python -c "import torch, triton; print(torch.__version__, triton.__version__, torch.cuda.is_available())"
 
-Triton needs Linux + an NVIDIA GPU, so the demo runs on Kaggle (GPU T4, **Internet on**) or Colab (T4 runtime).
-In a notebook cell:
+# GPU-verify dataset + baseline eval (no fine-tuning, ~6-7 h on T4):
+!python scripts/gpu_session.py --budget-hours 11 --out /kaggle/working/kernelforge_outputs.zip
+
+# Full run (+ QLoRA fine-tune + fine-tuned eval, ~8-9 h):
+!python scripts/gpu_session.py --finetune --budget-hours 11 --out /kaggle/working/kernelforge_outputs.zip
+```
+
+All results are written to `kernelforge_outputs.zip`. See
+[docs/handoff/KAGGLE_RUNBOOK.md](docs/handoff/KAGGLE_RUNBOOK.md) for the full runbook,
+expected output files, resume instructions, and a post-session checklist.
+
+## Base model numbers (pre-fine-tuning floor, verified locally)
+
+Qwen2.5-Coder-1.5B-Instruct, fp32 on MPS, 60-entry subset, same prompt as training (`notes=False`),
+`max_new_tokens=1536`, temperature 0:
+
+| Metric | Value |
+|---|---|
+| No-header pass@1 | 0/60 = 0.000 (95% CI [0.000, 0.060]) |
+| With-header pass@1 (NameError entries) | 0/50 = 0.000 |
+| Truncations | 4/60 |
+| Degenerate output | 0/60 |
+| Median tok/s | 5.9 (fp32 MPS) |
+
+Dominant failure: 50/60 outputs omit all Triton imports (`NameError: name 'triton' is not defined`).
+Adding the import header raises a secondary NameError or TypeError in all 50 cases. The remaining
+10 fail with a SyntaxError or truncation. Zero outputs pass either pass.
+
+Fine-tuned results will appear after the Kaggle GPU session runs.
+
+## Run the demo (Kaggle/Colab)
+
+Triton requires Linux + NVIDIA GPU. In a Kaggle/Colab GPU notebook cell:
 
 ```bash
 !git clone https://github.com/Arsalan-05/KernelForge.git
@@ -80,103 +103,67 @@ In a notebook cell:
 !python app/launch.py --share
 ```
 
-The first run downloads the model (about 3 GB) and loads it before the server reports ready. It then
-prints `Public: https://….trycloudflare.com`, a temporary Cloudflare quick-tunnel link that works until
-the cell stops (no account needed; `cloudflared` is downloaded automatically). Open it, pick an op from
-the library, and hit **Generate** (or ⌘/Ctrl+Enter): the kernel streams in token by token, then goes
-through parse and harness verification, with a live pipeline view and a correctness/speedup card.
-Set **Samples** (1–4) and **Repair** (off/1/2) to run a kernel search instead: every candidate appears
-in a timeline with its verdict, and you can click any one to inspect its kernel, raw output, and harness
-result. The **Harness** switch picks the GPU (correctness + speedup) or Triton's interpreter (CPU,
-correctness only, on a small shape of the same op).
+This prints a temporary public URL (`Public: https://….trycloudflare.com`). Open it, pick an
+op, and hit **Generate**. The kernel streams token by token, then goes through parse and harness
+verification. Set **Samples** (1–4) and **Repair** (off/1/2) to run a kernel search.
 
-Useful flags:
+**Note:** the demo currently runs the base model (not fine-tuned). The fine-tuned adapter can be
+loaded with `--adapter training/checkpoints/<run>/adapter` once training is done.
 
-- `--adapter training/checkpoints/<run>/adapter` runs a fine-tuned adapter instead; the badge switches to "fine-tuned"
-- `--max-new-tokens 1024` gives faster, shorter generations (default 2048)
-- `--mock` runs with no model or GPU; it echoes the hand-written template kernels, for UI testing only (red banner)
-
-Without `launch.py` (e.g. for development), the backend serves the UI itself at `/` and the API docs at `/docs`:
+For local development without a GPU:
 
 ```bash
-KERNELFORGE_MOCK_MODEL=1 uvicorn app.backend.main:app --port 8000   # open http://localhost:8000
+KERNELFORGE_MOCK_MODEL=1 uvicorn app.backend.main:app --port 8000
+# open http://localhost:8000
 ```
 
-## Deploy (Railway, or any container host)
+## Deploy (Railway or any container host)
 
-The root `Dockerfile` and `railway.json` define an always-on web deployment. Railway builds the
-Dockerfile, checks `/health`, and binds `$PORT`. That image has CPU torch and Triton's interpreter,
-so kernels are **checked for correctness only; there are no GPU speedups on Railway**. Pushing to
-`main` redeploys.
+The root `Dockerfile` and `railway.json` define a CPU-only always-on deployment. Railway builds
+the image, checks `/health`, and binds `$PORT`. **No GPU on Railway — kernels are checked for
+correctness only via the Triton interpreter; there are no speedup measurements.**
 
-Service variables (Railway → service → Variables):
+Required service variables:
 
 | Variable | Purpose |
 |---|---|
-| `KERNELFORGE_LLM_MODEL` | Model id for an OpenAI-compatible API (e.g. `gpt-4o-mini`, or a Qwen coder model on Groq/Together/OpenRouter). Unset means mock mode. |
-| `KERNELFORGE_LLM_BASE_URL` | API base URL, default `https://api.openai.com/v1` |
+| `KERNELFORGE_LLM_MODEL` | Model ID for an OpenAI-compatible API (e.g. `gpt-4o-mini`). Unset = mock mode. |
+| `KERNELFORGE_LLM_BASE_URL` | API base URL (default `https://api.openai.com/v1`) |
 | `KERNELFORGE_LLM_API_KEY` | API key (never passed to the kernel sandbox) |
 | `KERNELFORGE_RATE_LIMIT` | Runs per visitor IP per minute (default 6) |
 
-The image sets `KERNELFORGE_PUBLIC=1`, which turns on:
-- a static code policy on references and generated kernels (torch/triton/math imports only; no file, process or dunder access)
-- per-IP rate limiting (HTTP 429)
-- a bounded queue (HTTP 503)
-
-A hosted model is labelled as such in the UI (a blue badge); it isn't KernelForge's fine-tuned model.
-
 ```bash
-docker build -t kernelforge-web . && docker run --rm -p 8000:8000 kernelforge-web   # same image locally
-```
-
-## Other commands
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-pytest tests/ -v                                      # harness, search engine + app tests (CPU, no Triton)
-python data/build_dataset.py --device cuda            # generate + verify dataset (GPU)
-
-# Correctness-check all 15 templates with Triton's CPU interpreter (no GPU; needs Docker)
-docker build -f docker/verify.Dockerfile -t kernelforge-verify .
-docker run --rm -v "$PWD":/work kernelforge-verify python data/build_dataset.py --interpret --smoke --jobs 8
-python evaluation/baseline_eval.py --device cuda      # baseline eval (base model, greedy)
-python evaluation/baseline_eval.py --few-shot-source other_category --device cuda  # few-shot baseline
-python training/finetune.py --config training/configs/finetune_default.json
-python evaluation/finetuned_eval.py --adapter training/checkpoints/run_*/adapter --device cuda
-python evaluation/baseline_eval.py --dry-run --device cpu   # eval pipeline dry-run, no GPU/model
-
-# After the GPU session: generate report fragments for the paper
-python -m evaluation.report . --out docs/results/   # writes docs/results/table_*.tex
+docker build -t kernelforge-web . && docker run --rm -p 8000:8000 kernelforge-web
 ```
 
 ## Repo layout
 
 ```
-app/               FastAPI backend (streaming API, template catalog), web studio UI (app/web), launcher
+app/               FastAPI backend + streaming API + web studio UI + launcher
 verification/      correctness + benchmark harness (subprocess sandbox, GPU or Triton interpreter)
-kernelforge/       shared prompts, parsing, dataset, model loading, kernel search engine
+kernelforge/       shared prompts, parsing, dataset, model loading, kernel search
 docker/            CPU image with Triton's interpreter for local correctness checks
-scripts/           gpu_session.py: one-command GPU session (dataset, baseline, fine-tune, eval)
+scripts/           gpu_session.py (one-command GPU run), fp32_baseline_eval.py, kaggle_eval.py
 notebooks/         Kaggle notebook that runs the GPU session
-data/              schema, templates, build_dataset.py
+data/              schema, templates (15 total), build_dataset.py
 training/          QLoRA fine-tuning + configs
-evaluation/        baseline/fine-tuned eval + explanation rubric
-docs/              project write-up
-examples/kernels/  hand-written Triton kernels (vector add, ReLU, fused softmax)
-tests/             harness, library, and API tests
+evaluation/        baseline/fine-tuned eval + explanation rubric + report generator
+docs/              paper skeleton, project writeup, handoff docs, results (populated post-GPU)
+tests/             321 tests: harness, library, search, API (most run on CPU; some need Docker/GPU)
 ```
 
 ## Limitations
 
-- The demo currently runs the **base model**; the fine-tuned adapter is in progress on the same pipeline.
-- Small model (1.5B) and a ~300-example target vs 8B–32B RL-trained systems.
-- Narrow category coverage vs KernelBench/TritonBench.
-- No RL; explanation quality is scored with a manual rubric.
-- Triton requires Linux + NVIDIA; local macOS development covers scripting, the harness, and
-  interpreter correctness checks in Docker. An interpreter pass says nothing about speed and isn't
-  reported as GPU-verified.
-- The demo's sandbox is subprocess isolation + timeout inside a temporary Kaggle/Colab session. That
-  protects the server process from hangs and crashes; it is **not** a hardened sandbox for untrusted
-  code on an always-on public server.
+- **No GPU results yet.** The fine-tuning and GPU evaluation pipeline is complete but has not been
+  run. All result numbers above come from the local CPU/MPS baseline.
+- **Small model and narrow scope.** 1.5B parameters, ~300 training examples from 15 templates,
+  five operator families, fp16 forward passes only. Not comparable to 8B–32B RL-trained systems
+  on broad benchmarks.
+- **Interpreter ≠ GPU.** The CPU interpreter checks correctness only; it has no timing and uses
+  10–15× more memory than GPU mode. The 15 OOM shapes in the interpreter may fit on a T4; this
+  is untested.
+- **Template diversity.** Within a template, all 20 shape variants share the same kernel logic and
+  explanation. The effective number of distinct kernels is 15, not 300.
+- **Sandbox.** Subprocess isolation + rlimits is suitable for research; it is not a hardened
+  sandbox for untrusted code on a production server.
+- **Triton requires Linux + NVIDIA.** macOS development uses the CPU interpreter mode in Docker.
