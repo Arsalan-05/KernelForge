@@ -41,7 +41,9 @@
 - `da05972` OVERNIGHT_LOG: B.3 step timing (267s/step, ~14/33 steps in budget)
 - `fc2def3` README: fix test count 319→332, 2 skipped→1 skipped
 - `16d54f2` DATA_REPORT: fix B.3 run path
-- *(final commits pending: B.3 loss curve, B.4 fine-tuned eval results)*
+- `cf8180f` OVERNIGHT_LOG: B.3 training complete (10/33 steps, loss 1.3384→0.7778)
+- `7cd8b26` DATA_REPORT/README: B.3 training complete (10 steps, loss curve); B.4 pending
+- *(final commits pending: B.4 fine-tuned eval results, final test suite)*
 
 Branch created from `agent/overnight2`. Time-box: 01:30–06:00 EST.
 
