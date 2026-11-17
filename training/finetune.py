@@ -345,15 +345,23 @@ def main() -> None:
                              "Pass 'last' to resume from the most recent checkpoint in --output-dir.")
     parser.add_argument("--dry-run", action="store_true",
                         help="CPU plumbing check: tiny random model, 8 train examples, 2 steps")
+    parser.add_argument("--use-templates", action="store_true",
+                        help="Train on unverified template candidates instead of GPU-verified data "
+                             "(for local MPS pilots without a verified dataset).")
     args = parser.parse_args()
 
     deadline = None if args.max_minutes is None else time.monotonic() + args.max_minutes * 60
     resume_ckpt = args.resume_from_checkpoint
     config = _load_config(args.config)
-    entries, source = load_eval_entries(args.dataset, dry_run=args.dry_run)
+    if args.use_templates:
+        from kernelforge.dataset import load_template_candidates
+        entries = load_template_candidates()
+        source = "unverified template candidates (--use-templates)"
+    else:
+        entries, source = load_eval_entries(args.dataset, dry_run=args.dry_run)
     if not entries:
         print("No verified training data found (data/verified/dataset.jsonl is missing or empty). "
-              "Run data/build_dataset.py --device cuda first, or use --dry-run.", file=sys.stderr)
+              "Run data/build_dataset.py --device cuda first, or use --dry-run or --use-templates.", file=sys.stderr)
         sys.exit(1)
 
     strategy = config.get("split", "template")
