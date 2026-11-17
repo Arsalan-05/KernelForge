@@ -31,6 +31,7 @@
 - `3efc5c7` Phase C: README split row, paper split todo, fix torch_dtype→dtype
 - `a3d4bad` OVERNIGHT_LOG: Phase B pilot, Phase C claims audit
 - `ee7a857` DATA_REPORT: sections 6+7
+- `56b3a36` OVERNIGHT_LOG: session summary table
 - *(more commits to come after B.2 results, training, fine-tuned eval)*
 
 Branch created from `agent/overnight2`. Time-box: 01:30–06:00 EST.
