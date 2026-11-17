@@ -141,6 +141,41 @@ def load_transformers(config: dict):
     return model, tokenizer
 
 
+def make_gpu_log_callback(log_path: Path):
+    """TrainerCallback: appends loss, tok/s, and GPU memory to a JSONL file each step."""
+    import torch
+    from transformers import TrainerCallback
+
+    class GpuLogCallback(TrainerCallback):
+        _last_t: float = 0.0
+        _last_step: int = 0
+
+        def on_step_end(self, args, state, control, **kwargs):
+            now = time.monotonic()
+            step = state.global_step
+            loss = None
+            for entry in reversed(state.log_history):
+                if "loss" in entry:
+                    loss = entry["loss"]
+                    break
+            tps: float | None = None
+            if self._last_t and step > self._last_step:
+                elapsed = now - self._last_t
+                token_estimate = args.per_device_train_batch_size * args.gradient_accumulation_steps * 512
+                tps = token_estimate / elapsed if elapsed > 0 else None
+            self._last_t = now
+            self._last_step = step
+            mem_gb: float | None = None
+            if torch.cuda.is_available():
+                mem_gb = round(torch.cuda.memory_allocated() / 1024 ** 3, 3)
+            record = {"step": step, "loss": loss, "tokens_per_second": tps, "gpu_memory_allocated_gb": mem_gb}
+            with open(log_path, "a") as f:
+                f.write(json.dumps(record) + "\n")
+            return control
+
+    return GpuLogCallback()
+
+
 def make_time_limit_callback(deadline: float | None, adapter_dir: Path):
     """TrainerCallback for --max-minutes: at the first optimizer step past the
     deadline (time.monotonic()), save the adapter and stop training cleanly."""
@@ -162,7 +197,8 @@ def make_time_limit_callback(deadline: float | None, adapter_dir: Path):
 
 
 def train(config: dict, backend: str, train_entries: list[dict], val_entries: list[dict],
-          output_dir: Path, max_steps: int = -1, deadline: float | None = None) -> dict:
+          output_dir: Path, max_steps: int = -1, deadline: float | None = None,
+          resume_from_checkpoint: str | None = None) -> dict:
     """Load the model, train with assistant-only loss, save the adapter. Returns run stats."""
     import torch
     from datasets import Dataset
@@ -199,10 +235,13 @@ def train(config: dict, backend: str, train_entries: list[dict], val_entries: li
         warmup_ratio=config.get("warmup_ratio", 0.05),
         weight_decay=config.get("weight_decay", 0.01),
         logging_steps=1 if dry else 5,
-        save_strategy="no" if dry else "epoch",
-        save_total_limit=1,
-        eval_strategy=("steps" if dry else "epoch") if val_feats else "no",
-        eval_steps=1 if dry else None,
+        # Save every 50 optimizer steps so a crash loses at most 50 steps (~8 min on T4).
+        # save_total_limit=3 keeps the 3 most recent checkpoints + the final adapter.
+        save_strategy="no" if dry else "steps",
+        save_steps=50,
+        save_total_limit=3,
+        eval_strategy=("steps" if dry else "steps") if val_feats else "no",
+        eval_steps=1 if dry else 50,
         fp16=cuda,  # T4 has no bf16
         # Unsloth applies its own gradient checkpointing in get_peft_model.
         gradient_checkpointing=cuda and backend == "transformers",
@@ -213,6 +252,7 @@ def train(config: dict, backend: str, train_entries: list[dict], val_entries: li
     )
     adapter_dir = output_dir / "adapter"
     time_limit = make_time_limit_callback(deadline, adapter_dir)
+    gpu_log = make_gpu_log_callback(output_dir / "gpu_training_log.jsonl")
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -220,10 +260,10 @@ def train(config: dict, backend: str, train_entries: list[dict], val_entries: li
         eval_dataset=Dataset.from_list(val_feats) if val_feats else None,
         # Pads input_ids with pad_token_id and labels with -100 (only matters for batch > 1).
         data_collator=DataCollatorForSeq2Seq(tokenizer, padding=True, label_pad_token_id=IGNORE_INDEX),
-        callbacks=[time_limit],
+        callbacks=[time_limit, gpu_log],
     )
     try:
-        trainer.train()
+        trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     finally:
         # Loss history goes in the run folder itself (not only in checkpoint-*),
         # and is written even if training crashes (e.g. out of memory).
@@ -282,11 +322,15 @@ def main() -> None:
     parser.add_argument("--max-minutes", type=float, default=None,
                         help="Stop training at the first optimizer step after this long (counted from "
                              "script start), save the adapter, and mark the run partial")
+    parser.add_argument("--resume-from-checkpoint", type=str, default=None, metavar="PATH",
+                        help="Path to a Trainer checkpoint directory (checkpoint-NNN) to resume from. "
+                             "Pass 'last' to resume from the most recent checkpoint in --output-dir.")
     parser.add_argument("--dry-run", action="store_true",
                         help="CPU plumbing check: tiny random model, 8 train examples, 2 steps")
     args = parser.parse_args()
 
     deadline = None if args.max_minutes is None else time.monotonic() + args.max_minutes * 60
+    resume_ckpt = args.resume_from_checkpoint
     config = _load_config(args.config)
     entries, source = load_eval_entries(args.dataset, dry_run=args.dry_run)
     if not entries:
@@ -340,8 +384,16 @@ def main() -> None:
     print(f"Data: {source}. Training on {len(train_set)} examples, validating on {len(val_set)}, "
           f"held-out test: {len(test_set)}; backend: {backend}")
     print(f"Checkpoints -> {output_dir}")
+    # Handle "last" shorthand: find the most recent checkpoint-NNN in output_dir.
+    if resume_ckpt == "last":
+        ckpts = sorted(output_dir.glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[-1]))
+        resume_ckpt = str(ckpts[-1]) if ckpts else None
+        if resume_ckpt:
+            print(f"Resuming from {resume_ckpt}")
+        else:
+            print("--resume-from-checkpoint last: no checkpoint found in output_dir; starting fresh.")
     split_info.update(train(config, backend, train_set, val_set, output_dir, max_steps=max_steps,
-                            deadline=deadline))
+                            deadline=deadline, resume_from_checkpoint=resume_ckpt))
     (output_dir / "split_info.json").write_text(json.dumps(split_info, indent=2))
     status = (f"stopped early at step {split_info['stopped_at_step']}/{split_info['steps_planned']} (PARTIAL)"
               if split_info["partial"] else "complete")
