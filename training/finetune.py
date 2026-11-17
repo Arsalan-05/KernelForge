@@ -254,10 +254,10 @@ def train(config: dict, backend: str, train_entries: list[dict], val_entries: li
         # Save every 50 optimizer steps so a crash loses at most 50 steps (~8 min on T4).
         # save_total_limit=3 keeps the 3 most recent checkpoints + the final adapter.
         save_strategy="no" if dry else "steps",
-        save_steps=50,
+        save_steps=config.get("save_steps", 50),
         save_total_limit=3,
         eval_strategy=("steps" if dry else "steps") if val_feats else "no",
-        eval_steps=1 if dry else 50,
+        eval_steps=1 if dry else config.get("eval_steps", 50),
         fp16=cuda,          # T4 supports fp16; MPS/CPU use fp32
         bf16=False,         # T4 has no bf16; Ampere+ only
         # Unsloth applies its own gradient checkpointing in get_peft_model.

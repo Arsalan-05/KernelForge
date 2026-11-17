@@ -19,5 +19,7 @@
   "seed": 42,
   "train_ratio": 0.85,
   "val_ratio": 0.10,
-  "test_ratio": 0.05
+  "test_ratio": 0.05,
+  "save_steps": 25,
+  "eval_steps": 25
 }
