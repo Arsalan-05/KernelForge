@@ -553,3 +553,160 @@ compared on Kaggle.
 **Expected improvement after fine-tuning:** pass@1 > 0.000 (any correct kernel
 demonstrates the adapter learned the format). The 15 smoke entries are the
 simplest shapes and most likely to pass first.
+
+---
+
+## 6. Leakage Audit + Canonical Train/Val/Test Split (2026-11-17)
+
+**Branch:** `agent/overnight3`
+
+### Leakage finding
+
+The 60-entry subset in `fp32_baseline_eval.py` selects 12 entries per category
+(3 smoke + 9 regular). Of those 60 entries:
+
+| Membership | Count |
+|---|---|
+| In TRAIN set (split_by_template seed=42) | 27 |
+| In VAL set | 3 |
+| In TEST set (held-out template) | 15 |
+| Smoke-only (not in 300 GENERATORS entries) | 15 |
+| **Total leakage for fine-tuned evaluation** | **30 / 60** |
+
+The 0/60 base-model result is **uncontaminated** (the base model was not trained
+on any of these entries). Any fine-tuned evaluation using the same 60-entry
+subset would have 50% contamination.
+
+### Canonical split design
+
+File: `data/held_out_split.json` (seed=42, `split_by_template`)
+
+| Split | Entries | Templates |
+|---|---|---|
+| Train | 180 | 10 (2 per category) |
+| Val | 20 | 10 (same as train) |
+| Test (held-out) | 100 | 5 (1 per category, 20 shapes each) |
+
+Held-out templates:
+- `attention__gqa_causal_prefill`
+- `kv_cache__decode_attention_gqa`
+- `norm__rmsnorm_residual`
+- `quantized_matmul__w8a16_perchannel`
+- `rope__interleaved`
+
+Each held-out template has a training sibling in the same operator family,
+so the test set measures generalization to variants, not new families.
+
+### Leakage guarantee
+
+12 tests in `tests/test_held_out_split.py` verify:
+- No ID appears in more than one split
+- All 300 IDs are present exactly once
+- Each held-out template's entries are in test only
+- `split_by_template(seed=42)` is reproducible
+- The fp32_baseline leakage count (30/60) matches the audited value
+
+Script `scripts/held_out_eval.py` enforces the split at runtime: it exits 1
+if any evaluated entry is found in the train or val split.
+
+### Re-statement of fp32 baseline against held-out set
+
+Of the 60 entries evaluated in Section 5:
+- 15 entries are in the held-out test split (clean, no leakage)
+  → 0/15 pass@1 (Wilson CI [0.000, 0.218])
+- 30 entries are in train/val (contaminated for fine-tuned evaluation)
+- 15 entries are smoke-only (not in the 300 GENERATORS pool)
+
+The 0/15 held-out result is consistent with 0/60 overall: same failure patterns
+(NameError, SyntaxError), same structural issues documented in Section 5.
+
+---
+
+## 7. 0.5B Local LoRA MPS Pilot (2026-11-17)
+
+**Label all numbers in this section: "0.5B local LoRA MPS pilot"**  
+**Branch:** `agent/overnight3`
+
+This is a supplementary experiment. The main research uses Qwen2.5-Coder-1.5B-Instruct
+on a Kaggle T4. The pilot uses Qwen2.5-Coder-0.5B-Instruct on MPS to test the
+fine-tuning pipeline locally without T4 access.
+
+### B.2 — 0.5B base eval (20 entries, with Docker)
+
+**COMPLETE** — Finished 02:12 EST.
+
+Script: `scripts/held_out_eval.py --model Qwen/Qwen2.5-Coder-0.5B-Instruct --per-category 4`  
+Output: `evaluation/results/held_out_base_0.5b_p4.json`
+
+| Metric | Value |
+|---|---|
+| Total entries | 20 (4 per category × 5 categories) |
+| Parsed (kernel extracted) | 16 / 20 (80%) |
+| Truncated at max_new_tokens=1536 | 6 / 20 (30%) |
+| Degenerate output (>50% rep char) | 0 / 20 |
+| **pass@1 (no import header)** | **0 / 20 = 0.000** |
+| **Wilson 95% CI** | **[0.000, 0.161]** |
+| pass@1 (with import header) | 0 / 3 tested = 0.000 |
+| Median tok/s (MPS fp32) | 21.3 |
+| Mean tok/s | 18.5 |
+
+**Error breakdown (no_header, 20 entries):**
+- `syntax_error`: 13 (mostly `SyntaxError: unterminated string literal` from truncated output)
+- `other` (no kernel extracted): 4
+- `name_error`: 3 (`NameError: name 'triton' is not defined`)
+
+**Per-category results (all 0/4):**
+
+| Category | n | pass@1 | Wilson CI |
+|---|---|---|---|
+| quantized_matmul | 4 | 0.0 | [0.000, 0.490] |
+| attention | 4 | 0.0 | [0.000, 0.490] |
+| kv_cache | 4 | 0.0 | [0.000, 0.490] |
+| norm | 4 | 0.0 | [0.000, 0.490] |
+| rope | 4 | 0.0 | [0.000, 0.490] |
+
+**Interpretation:** The 0.5B base model cannot reliably complete Triton kernels within
+1536 tokens. 30% of outputs are truncated (unterminated string). The NameError pattern
+shows the model generates Triton API calls without `import triton`. Adding the import
+header does not help (TypeError remains). The base model establishes a 0.000 baseline
+for the LoRA fine-tuning comparison.
+
+### B.3 — 0.5B LoRA fine-tuning
+
+**COMPLETE** — Run: `training/checkpoints/run_20261117T072658Z`.
+
+Config: lora_r=8, lora_alpha=16, lr=3e-4, 3 epochs, fp32 on MPS, max_seq_length=1536,
+padding="max_length" (all batches fixed to 1536 tokens for MPS kernel compilation stability).  
+Training data: 42/180 examples survive the 1536-token filter (most kernels tokenize to 1537–1905 tokens).  
+Steps planned: 33. Actual: **10** (60-min budget; `--max-minutes 60`).
+
+**Loss curve (from `train_log.json`):**
+
+| Step | Epoch | Loss | Grad Norm | LR |
+|---|---|---|---|---|
+| 5 | 0.476 | 1.3384 | 0.7953 | 2.806e-4 |
+| 10 | 0.952 | 0.7778 | 1.0412 | 2.323e-4 |
+
+Train runtime: 3846.68 s (~64 min). Train loss (mean over steps 1-10): 1.0581.  
+Step times: 267 s (step 1) → 326 s (step 2) → 424 s (step 3) → ~400 s plateau (thermal throttle on M-series).  
+Training tok/s range: 3.79–5.87 tok/s (MPS forward+backward, 4 micro-batches × 1536 tok each).  
+Adapter saved to: `training/checkpoints/run_20261117T072658Z/adapter`
+
+### B.4 — 0.5B fine-tuned eval
+
+**COMPLETE** — Source: `evaluation/results/held_out_ft_0.5b_p4.json`.  
+Adapter: `training/checkpoints/run_20261117T072658Z/adapter` (10/33 steps, ~0.95 epochs).
+
+| Metric | Base (B.2) | Fine-tuned (B.4) | Change |
+|---|---|---|---|
+| Total entries | 20 | 20 | — |
+| Parsed (kernel extracted) | 16/20 (80%) | **20/20 (100%)** | **+20 pp** |
+| Truncated | 6/20 (30%) | 4/20 (20%) | −10 pp |
+| **pass@1 (no header)** | **0/20 = 0.000** | **0/20 = 0.000** | same |
+| Wilson 95% CI | [0.000, 0.161] | [0.000, 0.161] | — |
+| Median tok/s | 21.3 | 17.6 | −3.7 (adapter) |
+
+Error distribution shifted from "cannot generate code" to "generates structured code with
+format/API errors": parse rate 80% → 100%, zero NameErrors (base had 3), kv_cache prose → code,
+2 rope entries reached Triton interpreter runtime. The <1-epoch pilot demonstrates the adapter
+learned Triton code structure but not the full ModelNew contract.
