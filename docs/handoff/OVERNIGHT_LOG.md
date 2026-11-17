@@ -201,9 +201,18 @@ Most template candidates tokenize to 1537–1905 tokens (prompt + full Triton ke
 - Fine-tuning is on unverified template candidates (no GPU-verified correct solutions)
 - Results labeled "0.5B local LoRA MPS pilot" — supplementary only
 
-#### B.4 — 0.5B fine-tuned eval (pending)
+#### B.4 — 0.5B fine-tuned eval (IN PROGRESS)
 
-Will run `scripts/held_out_eval.py --model ... --adapter ... --per-category 4` after training.
+Command: `scripts/held_out_eval.py --model Qwen/Qwen2.5-Coder-0.5B-Instruct --adapter training/checkpoints/run_20261117T072658Z/adapter --per-category 4 --out evaluation/results/held_out_ft_0.5b_p4.json`  
+Output: `evaluation/results/held_out_ft_0.5b_p4.json`
+
+**→ Results to be filled when eval completes.**
+
+Base (B.2 reference for comparison):
+- pass@1: 0/20 = 0.000, CI [0.000, 0.161]
+- parse rate: 16/20 = 80%
+- truncated: 6/20 = 30%
+- error buckets: syntax_error=13, other=4, name_error=3
 
 ### Phase C — Docs, Claims, Tests (IN PROGRESS)
 
