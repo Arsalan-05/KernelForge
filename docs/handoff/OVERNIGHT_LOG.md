@@ -148,6 +148,17 @@ quantized_matmul, attention, kv_cache, norm, rope — all 0/4 pass@1.
 
 **Interpretation:** The 0.5B base model cannot generate syntactically complete Triton kernels at max_new_tokens=1536. 30% of outputs are truncated (unterminated string). The NameError pattern shows the base model generates Triton code without `import triton`, indicating it knows the API but not the import. The with_header pass rate is also 0/3 (TypeError — wrong shapes or dtypes), suggesting syntactic completeness is not the binding constraint. No degenerate outputs.
 
+**Representative error patterns (from raw_text inspection):**
+- `attention__gqa_causal_prefill` entries: model writes a multi-line English description of the
+  optimization technique, then attempts code but runs out of tokens (last 100 chars: "...The kernel
+  uses the `triton.language` module to define the kernel's behavior.\n - The"). All truncated.
+- `kv_cache__decode_attention_gqa` entries: model outputs pure prose explanations ("The optimization
+  technique used in this Triton kernel is to leverage the GPU's parallelism...") with no Python code
+  at all. These are the "no kernel extracted" failures (4 entries).
+- `quantized_matmul` entries: model attempts code with NameError (`import triton` missing).
+- `norm__rmsnorm_residual` entries: shorter kernels, 1002–1100 tokens, model attempts code with
+  import missing or syntax errors from truncation.
+
 #### B.3 — 0.5B LoRA fine-tuning (IN PROGRESS)
 
 Config: `training/configs/mps_lora_0.5b.json` (lora_r=8, lr=3e-4, 3 epochs, fp32 on MPS).
