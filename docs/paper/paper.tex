@@ -333,11 +333,12 @@ This matters for a public demo, not for the results.
 A random shape-level split would put the same kernel, with different constants, in both train and
 test, and test accuracy would then measure memorization. We instead hold out one \emph{whole
 template} per category for test. From the remaining templates, 10\% of entries go to validation.
-% src: kernelforge/dataset.py split_by_template (seed 42)
-If all 300 candidates pass on the GPU, seed 42 holds out GQA causal prefill attention, GQA decode
-attention, fused residual-add + RMSNorm, W8A16 per-channel matmul and interleaved RoPE, and the
-split is 180/20/100. \todo{replace with the actual held-out templates and counts from
-\code{split\_info.json}; the split is computed on the verified set, so failures can change it.}
+% src: data/held_out_split.json (seed 42, committed; 12 no-leakage tests pass)
+Seed 42 holds out \code{attention\_\_gqa\_causal\_prefill}, \code{kv\_cache\_\_decode\_attention\_gqa},
+\code{norm\_\_rmsnorm\_residual}, \code{quantized\_matmul\_\_w8a16\_perchannel}, and
+\code{rope\_\_interleaved}; the split is 180/20/100 on the full 300-candidate set.
+The GPU harness may change which candidates pass, but the held-out \emph{templates} are fixed.
+Twelve automated tests in \code{tests/test\_held\_out\_split.py} verify no entry leaks across splits.
 
 Each held-out template has a close sibling in training: GQA versus MHA/causal attention,
 per-channel versus per-tensor scaling, RMSNorm with versus without a fused residual. The test set

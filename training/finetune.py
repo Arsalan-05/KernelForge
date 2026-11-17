@@ -126,7 +126,7 @@ def load_transformers(config: dict):
             bnb_4bit_compute_dtype=torch.float16,
         ) if config.get("load_in_4bit", True) else None
         model = AutoModelForCausalLM.from_pretrained(
-            config["model_name"], quantization_config=quant, torch_dtype=torch.float16,
+            config["model_name"], quantization_config=quant, dtype=torch.float16,
             device_map={"": 0}, trust_remote_code=True,
         )
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
@@ -135,13 +135,13 @@ def load_transformers(config: dict):
         # device_map="mps" is not reliably supported by all PEFT versions;
         # loading to CPU then .to("mps") is the stable approach.
         model = AutoModelForCausalLM.from_pretrained(
-            config["model_name"], torch_dtype=torch.float32,
+            config["model_name"], dtype=torch.float32,
             device_map=None, trust_remote_code=True,
         )
         model = model.to("mps")
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            config["model_name"], torch_dtype=torch.float32,
+            config["model_name"], dtype=torch.float32,
             device_map="cpu", trust_remote_code=True,
         )
 

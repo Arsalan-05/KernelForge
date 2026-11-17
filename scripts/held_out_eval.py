@@ -159,14 +159,14 @@ def _load_model(model_name: str, adapter: str | None):
         device, quant = "cuda", "4bit_nf4"
     elif torch.backends.mps.is_available():
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.float32,
+            model_name, dtype=torch.float32,
             device_map=None, trust_remote_code=True,
         )
         model = model.to("mps")
         device, quant = "mps", "float32"
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.float32,
+            model_name, dtype=torch.float32,
             device_map="cpu", trust_remote_code=True,
         )
         device, quant = "cpu", "float32"

@@ -17,12 +17,13 @@ no RL.
 | Verification harness (`verification/`) | Done; CPU interpreter mode tested (285/300 templates pass, 15 OOM in 8 GB VM); **GPU mode not yet validated on a real GPU** |
 | Dataset (15 templates × 20 shapes = 300 candidates) | CPU interpreter check: 285/300 pass, 0 incorrect, 15 OOM; GPU verification pending |
 | Base-model eval (fp32, local, 60 entries) | Done: **0/60 pass@1** (95% CI [0.0%, 6.0%]); every failure is a missing import or syntax error |
-| QLoRA fine-tuning (`training/finetune.py`) | Code written; **not yet run**; dry-run passes (`python training/finetune.py --dry-run`) |
+| Canonical held-out split (`data/held_out_split.json`) | Done: 180 train / 20 val / 100 test (5 held-out templates, 1 per category); 12 no-leakage tests pass |
+| QLoRA fine-tuning (`training/finetune.py`) | Code written; **not yet run on T4**; dry-run passes (`python training/finetune.py --dry-run`) |
 | Mutation testing | 29/29 non-equivalent mutations caught; 3 surviving mutations are mathematically equivalent (softmax shift-invariance) |
 | Demo UI (`app/`) | Built; runs on base model; Kaggle/Colab GPU needed |
 | Deployment (Railway) | Dockerfile + `railway.json` done; interpreter-only (no GPU on Railway) |
 | GPU session runner (`scripts/gpu_session.py`) | Done; tested on CPU; Kaggle T4 run pending |
-| Test suite | 321 tests collected; passes on CPU (macOS and Linux); some tests require Docker or a GPU |
+| Test suite | 332 tests collected; passes on CPU (macOS and Linux); some tests require Docker or a GPU |
 
 **GPU fine-tuning has not been run.** There are no fine-tuned result numbers.
 
@@ -90,7 +91,10 @@ Dominant failure: 50/60 outputs omit all Triton imports (`NameError: name 'trito
 Adding the import header raises a secondary NameError or TypeError in all 50 cases. The remaining
 10 fail with a SyntaxError or truncation. Zero outputs pass either pass.
 
-Fine-tuned results will appear after the Kaggle GPU session runs.
+The 60-entry subset has 30 entries that overlap with the train/val split (leakage for fine-tuned eval).
+For the 15 clean held-out test entries in this subset: 0/15 pass@1 (CI [0.000, 0.218]).
+
+Fine-tuned results will appear after the Kaggle GPU session runs (held-out eval: `scripts/held_out_eval.py`).
 
 ## Run the demo (Kaggle/Colab)
 
@@ -143,13 +147,13 @@ app/               FastAPI backend + streaming API + web studio UI + launcher
 verification/      correctness + benchmark harness (subprocess sandbox, GPU or Triton interpreter)
 kernelforge/       shared prompts, parsing, dataset, model loading, kernel search
 docker/            CPU image with Triton's interpreter for local correctness checks
-scripts/           gpu_session.py (one-command GPU run), fp32_baseline_eval.py, kaggle_eval.py
+scripts/           gpu_session.py (one-command GPU run), fp32_baseline_eval.py, kaggle_eval.py, held_out_eval.py
 notebooks/         Kaggle notebook that runs the GPU session
-data/              schema, templates (15 total), build_dataset.py
+data/              schema, templates (15 total), build_dataset.py, held_out_split.json (canonical split)
 training/          QLoRA fine-tuning + configs
 evaluation/        baseline/fine-tuned eval + explanation rubric + report generator
 docs/              paper skeleton, project writeup, handoff docs, results (populated post-GPU)
-tests/             321 tests: harness, library, search, API (most run on CPU; some need Docker/GPU)
+tests/             332 tests: harness, library, search, API, split integrity (most run on CPU; some need Docker/GPU)
 ```
 
 ## Limitations

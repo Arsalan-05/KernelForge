@@ -132,7 +132,7 @@ def _load_model(adapter: str | None):
     elif torch.backends.mps.is_available():
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_NAME,
-            torch_dtype=torch.float32,
+            dtype=torch.float32,
             device_map="mps",
             trust_remote_code=True,
         )
@@ -141,7 +141,7 @@ def _load_model(adapter: str | None):
     else:
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_NAME,
-            torch_dtype=torch.float32,
+            dtype=torch.float32,
             device_map="cpu",
             trust_remote_code=True,
         )
