@@ -257,11 +257,19 @@ textarea, input[type="number"] { font: inherit; color: var(--text); }
 .btn.ghost { background: transparent; border-color: var(--border-strong); color: var(--text-2); }
 .btn.ghost:hover:not(:disabled) { color: var(--text); border-color: var(--muted); background: var(--surface-2); }
 .btn.primary {
-  background: linear-gradient(180deg, var(--accent-2), var(--accent)); color: var(--accent-ink);
+  background-color: var(--accent); /* fallback when gradient doesn't render */
+  background-image: linear-gradient(180deg, var(--accent-2), var(--accent));
+  color: var(--accent-ink);
   box-shadow: 0 0 0 1px rgba(163, 230, 53, 0.4), 0 8px 24px -8px rgba(132, 204, 22, 0.55);
   min-width: 190px;
 }
 .btn.primary:hover:not(:disabled) { box-shadow: 0 0 0 1px rgba(163, 230, 53, 0.6), 0 10px 28px -8px rgba(132, 204, 22, 0.75); }
+.btn.primary:disabled {
+  background-image: none; background-color: var(--surface-2);
+  color: var(--muted); box-shadow: 0 0 0 1px var(--border-strong);
+  opacity: 1; cursor: not-allowed;
+}
+.btn.primary:disabled kbd { background: var(--surface); border-color: var(--border-strong); color: var(--muted); }
 .btn.primary.stop { background: var(--surface-3); color: var(--text); box-shadow: 0 0 0 1px var(--border-strong); }
 .btn kbd {
   font: 500 11px var(--mono); padding: 1px 6px; border-radius: 5px;
