@@ -343,8 +343,22 @@ TypeError: TrainingArguments.__init__() got an unexpected keyword argument 'warm
 was removed; `warmup_steps` now accepts a float in [0, 1) for ratio behavior. Our
 `training/finetune.py:251` passes `warmup_ratio=0.05`.
 
-**Fix:** Pin `transformers<5` in the Kaggle install cell, or make `finetune.py` version-tolerant
-(check for the parameter at runtime). See the fix section below.
+### Fine-tune crash: fix
+
+**Cause:** `TrainingArguments` in Kaggle's pre-installed transformers (v5.x on Python 3.13) no
+longer accepts `warmup_ratio`. The parameter was merged into `warmup_steps`, which now takes a
+float in [0, 1) for ratio behavior.
+
+**Fix applied on Kaggle:** Added a pinned install cell after Cell 2a:
+
+```
+!pip install -q transformers==4.57.6 peft==0.17.1 accelerate==1.10.1
+```
+
+Verified on the Kaggle T4 session: versions printed correctly, `TrainingArguments` accepted all
+kwargs, torch 2.11.0+cu130, triton 3.6.0, 2× Tesla T4 (one used). There are harmless pip
+conflict warnings from gradio/diffusers about huggingface-hub version constraints; they do not
+affect training or evaluation.
 
 ---
 
