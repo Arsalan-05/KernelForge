@@ -58,7 +58,7 @@ MODEL_LABELS = {"base": "Base", "ft": "Fine-tuned", "unknown": "Unknown model"}
 INCREMENTAL_LOG = re.compile(r"^(baseline|finetuned|baseline_few_shot(_(other|same)_category)?)\.jsonl$")
 
 # Generation settings shown in the run-settings table. The explicit "generation_settings"
-# dict (docs/handoff/B_integration_notes.md) wins over top-level keys of the same name.
+# dict wins over top-level keys of the same name.
 SETTING_KEYS = ("decoding", "do_sample", "temperature", "top_k", "top_p", "repetition_penalty",
                 "max_new_tokens", "seed", "round0_temperature", "repair_temperature", "few_shot_source")
 
