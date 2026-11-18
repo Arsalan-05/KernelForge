@@ -2,9 +2,11 @@
 
 **Training a small model (Qwen2.5-Coder-1.5B) to write Triton GPU kernels, with an automated checker that tests every kernel against PyTorch.**
 
-**Demo studio:** [kernelforge-production.up.railway.app](https://kernelforge-production.up.railway.app/) — generates a kernel with a general-purpose hosted model (qwen/qwen3-coder via an API), then verifies it with KernelForge's harness. The fine-tuned adapter is not served yet.
+**Demo studio:** [kernelforge-production.up.railway.app](https://kernelforge-production.up.railway.app/)
 
-**Full documentation:** [`DOCUMENTATION.md`](DOCUMENTATION.md)
+Generates a kernel with a general-purpose hosted model (qwen/qwen3-coder via an API), then verifies it with KernelForge's harness. The fine-tuned adapter is not served yet.
+
+**Full documentation:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ---
 
@@ -28,19 +30,7 @@ Dataset, held-out templates and the baseline error breakdown: [`docs/ARCHITECTUR
 
 ## Status
 
-| Component | Status |
-|---|---|
-| Verification harness (`verification/`) | Done; validated on a Kaggle T4 GPU |
-| Dataset (15 op templates, 5 categories) | 274 of 300 reference kernels pass on a Kaggle T4 |
-| Base-model eval | 0 of 88 held-out tasks passed (4-bit, zero-shot, T4) |
-| Held-out split (`data/held_out_split.json`) | Done; no-leakage tests pass |
-| QLoRA fine-tuning (`training/finetune.py`) | First T4 run crashed; fix applied, rerun in progress |
-| Mutation testing | Done; surviving mutations are mathematically equivalent |
-| Demo UI (`app/`) | Built; serves a hosted model, not the fine-tuned adapter |
-| Container hosting (Railway) | Dockerfile + `railway.json` done; interpreter-only (no GPU) |
-| Test suite | Passes on CPU (macOS and Linux); some tests need Docker or a GPU |
-
-**Fine-tuned results are pending.** Full status detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#what-is-done-vs-not-done-full-detail).
+Harness and baseline verified on a Kaggle T4. Fine-tuning rerun in progress.
 
 ## Stack
 
@@ -74,16 +64,3 @@ pytest tests/ -v   # some tests skip without Docker or triton
 - All shape variants within a template share the same kernel logic, so there are 15 distinct kernels.
 - Subprocess isolation + rlimits is suitable for research; it is not a hardened sandbox.
 - Triton requires Linux + NVIDIA; macOS uses the CPU interpreter mode in Docker.
-
-## More documentation
-
-| Doc | Contents |
-|---|---|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Scope, full status table, evaluation details, repo layout, full limitations |
-| [`docs/COMMANDS.md`](docs/COMMANDS.md) | CPU commands, local dev server, container and service variables |
-| [`docs/KAGGLE_RUN.md`](docs/KAGGLE_RUN.md) | Kaggle GPU session and Kaggle/Colab demo |
-| [`docs/handoff/KAGGLE_RUNBOOK.md`](docs/handoff/KAGGLE_RUNBOOK.md) | Full Kaggle runbook and post-session checklist |
-| [`docs/project_writeup.md`](docs/project_writeup.md) | Project write-up |
-| [`docs/DATASET_CARD.md`](docs/DATASET_CARD.md) | Dataset card |
-| [`DOCUMENTATION.md`](DOCUMENTATION.md) | Implementation detail |
-| [`MASTER_PLAN.md`](MASTER_PLAN.md) | Roadmap |
