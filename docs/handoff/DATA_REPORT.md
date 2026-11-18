@@ -715,14 +715,14 @@ learned Triton code structure but not the full ModelNew contract.
 
 ### Dataset verification: 274/300 on T4
 
-| Category | Verified | Rejected | Rejection reasons | Median speedup |
-|---|---|---|---|---|
-| quantized_matmul | 48 | 12 | 12 incorrect (numerical) | 0.60× |
-| attention | 51 | 9 | 9 timeout | 0.04× |
-| kv_cache | 60 | 0 | — | 1.39× |
-| norm | 55 | 5 | 3 timeout, 2 OOM | 5.19× |
-| rope | 60 | 0 | — | 3.08× |
-| **Total** | **274** | **26** | | |
+| Category | Verified | Rejected | Rejection reasons |
+|---|---|---|---|
+| quantized_matmul | 48 | 12 | 12 incorrect (numerical) |
+| attention | 51 | 9 | 9 timeout |
+| kv_cache | 60 | 0 | — |
+| norm | 55 | 5 | 3 timeout, 2 OOM |
+| rope | 60 | 0 | — |
+| **Total** | **274** | **26** | |
 
 The GPU verified 274/300 entries (vs 285/300 in the CPU interpreter). 12 quantized_matmul entries
 fail numerical correctness (max abs error 0.125, atol/rtol=0.01). The 15 CPU OOMs resolved
@@ -738,16 +738,15 @@ on the input population.
 ### T4 baseline: 0/88 pass@1 (4-bit NF4, 2048 max tokens)
 
 All 88 held-out entries parsed a kernel (100% parse rate). All 88 failed verification.
-Zero harness or infrastructure errors — every failure is bad model output.
+All failures are generated-code errors — zero harness or infrastructure errors.
 
 | Error category | Count | Detail |
 |---|---|---|
-| Hallucinated Triton API | 48 | `tl.Tensor` (40), `tl.matmul` (3), `triton.launch` (1), `JITFunction.compute` (4) |
-| Hallucinated helper function | 16 | `_build_rope_cache` not defined |
-| Wrong Triton call pattern | 14 | JIT called outside kernel (10), `_semantic` arg error (4) |
-| Syntax truncation | 5 | `'(' was never closed` |
-| Torch op inside Triton kernel | 2 | `softmax` reference |
-| Other | 3 | syntax (1), name (1), index (1) |
+| `tl.Tensor` (nonexistent API) | 40 | model invents a type Triton does not have |
+| Undefined helper function | 16 | `_build_rope_cache` not defined |
+| JIT called outside kernel | 10 | `@triton.jit` function called from non-kernel scope |
+| Syntax (truncation) | 5 | `'(' was never closed` — hit 2048-token limit |
+| Other generated-code errors | 17 | `tl.matmul` (3), `JITFunction.compute` (4), `_semantic` (4), `softmax` ref (2), `triton.launch` (1), syntax/name/index (3) |
 
 ### Fine-tune crash
 

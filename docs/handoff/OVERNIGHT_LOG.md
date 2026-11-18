@@ -302,14 +302,14 @@ First real GPU run. Notebook: `notebooks/kaggle_gpu_session.ipynb`, `FINETUNE=Tr
 
 ### Dataset verification (274/300 on T4)
 
-| Category | Generated | Verified | Rejected | Reason | Median speedup |
-|---|---|---|---|---|---|
-| quantized_matmul | 60 | 48 | 12 | 12 incorrect | 0.60× |
-| attention | 60 | 51 | 9 | 9 timeout | 0.04× |
-| kv_cache | 60 | 60 | 0 | — | 1.39× |
-| norm | 60 | 55 | 5 | 3 timeout, 2 OOM | 5.19× |
-| rope | 60 | 60 | 0 | — | 3.08× |
-| **Total** | **300** | **274** | **26** | | |
+| Category | Generated | Verified | Rejected | Reason |
+|---|---|---|---|---|
+| quantized_matmul | 60 | 48 | 12 | 12 incorrect |
+| attention | 60 | 51 | 9 | 9 timeout |
+| kv_cache | 60 | 60 | 0 | — |
+| norm | 60 | 55 | 5 | 3 timeout, 2 OOM |
+| rope | 60 | 60 | 0 | — |
+| **Total** | **300** | **274** | **26** | |
 
 ### Training split (from verified dataset, `split_by_template(seed=42)`)
 
@@ -325,15 +325,13 @@ All 88 parsed a kernel. All 88 failed verification. Zero harness/infrastructure 
 
 | Error category | Count | Detail |
 |---|---|---|
-| Hallucinated Triton API | 48 | `tl.Tensor` (40), `tl.matmul` (3), `triton.launch` (1), `JITFunction.compute` (4) |
-| Hallucinated helper function | 16 | `_build_rope_cache` not defined |
-| Wrong Triton call pattern | 14 | JIT called outside kernel (10), `_semantic` arg error (4) |
-| Syntax truncation | 5 | `'(' was never closed` |
-| Torch op inside Triton kernel | 2 | `softmax` reference |
-| Other (syntax/name/index) | 3 | 1 each |
+| `tl.Tensor` (nonexistent API) | 40 | model invents a `tl.Tensor` type that Triton does not have |
+| Undefined helper function | 16 | `_build_rope_cache` not defined — model hallucinates a helper |
+| JIT called outside kernel | 10 | `@triton.jit` function called from non-kernel Python scope |
+| Syntax (truncation) | 5 | `'(' was never closed` — hit 2048-token limit |
+| Other generated-code errors | 17 | `tl.matmul` (3), `JITFunction.compute` (4), `_semantic` (4), `softmax` ref (2), `triton.launch` (1), syntax/name/index (3) |
 
-Dominant failure: the base model hallucinates Triton API calls that don't exist (`tl.Tensor` in 40/88).
-No `NameError: triton not defined` (the 4-bit model includes imports, unlike the 0.5B MPS pilot).
+All 88 failures are generated-code errors — zero harness or infrastructure errors.
 
 ### Fine-tune crash
 
