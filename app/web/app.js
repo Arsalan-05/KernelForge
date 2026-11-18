@@ -569,6 +569,9 @@ function renderKernel(kernel, reference) {
   highlightInto($("#kernel-code"), kernel || "");
   $("#kernel-gutter").textContent = has ? lineNumbers(kernel) : "";
   highlightInto($("#cmp-ref"), reference || "");
+  const refGutter = $("#cmp-ref-gutter");
+  if (refGutter) refGutter.textContent = reference ? lineNumbers(reference) : "";
+  const kernelGutter = $("#cmp-kernel-gutter");
   // Update the compare pane label to include model name if available
   const modelName = state.health?.model_name?.split("/").pop() || "";
   const variant = state.health?.model_variant;
@@ -577,7 +580,9 @@ function renderKernel(kernel, reference) {
     const extra = variant === "remote" ? ` · ${modelName}` : variant === "fine-tuned" ? " · fine-tuned" : " · base";
     paneLabel.textContent = `Generated Triton · ModelNew${extra}`;
   }
-  highlightInto($("#cmp-kernel"), kernel || "# No kernel parsed from the model output.");
+  const cmpKernelText = kernel || "# No kernel parsed from the model output.";
+  highlightInto($("#cmp-kernel"), cmpKernelText);
+  if (kernelGutter) kernelGutter.textContent = lineNumbers(cmpKernelText);
 }
 
 function renderExplanation(text, hasKernel, ran = true) {
@@ -1466,6 +1471,8 @@ function wire() {
   });
   $("#copy-ref").addEventListener("click", () => copyText($("#reference").value, "Reference"));
   $("#copy-kernel").addEventListener("click", () => copyText(currentKernel(), "Kernel"));
+  $("#copy-cmp-ref").addEventListener("click", () => copyText($("#reference").value, "Reference"));
+  $("#copy-cmp-kernel").addEventListener("click", () => copyText(currentKernel(), "Kernel"));
   $("#download-kernel").addEventListener("click", () => {
     const name = (state.selected?.id || "custom_op").replace(/[^a-z0-9_]+/gi, "_");
     const blob = new Blob([currentKernel()], { type: "text/x-python" });

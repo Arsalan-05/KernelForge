@@ -206,8 +206,14 @@
           </div>
           <div class="tab-panel" data-panel="compare">
             <div class="split">
-              <div class="split-pane"><div class="pane-label">PyTorch reference · <code>Model</code></div><div class="codeview"><pre><code id="cmp-ref" class="language-python"></code></pre></div></div>
-              <div class="split-pane"><div class="pane-label" id="cmp-kernel-label">Generated Triton · <code>ModelNew</code></div><div class="codeview"><pre><code id="cmp-kernel" class="language-python"></code></pre></div></div>
+              <div class="split-pane">
+                <div class="pane-head"><span class="pane-label">PyTorch reference · <code>Model</code></span><button class="btn ghost sm" id="copy-cmp-ref" type="button">Copy</button></div>
+                <div class="codeview"><div class="gutter" id="cmp-ref-gutter" aria-hidden="true"></div><pre><code id="cmp-ref" class="language-python"></code></pre></div>
+              </div>
+              <div class="split-pane">
+                <div class="pane-head"><span class="pane-label" id="cmp-kernel-label">Generated Triton · <code>ModelNew</code></span><button class="btn ghost sm" id="copy-cmp-kernel" type="button">Copy</button></div>
+                <div class="codeview"><div class="gutter" id="cmp-kernel-gutter" aria-hidden="true"></div><pre><code id="cmp-kernel" class="language-python"></code></pre></div>
+              </div>
             </div>
             <div class="compare-pending" id="compare-ablation-note">
               <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 7v4M8 4.5v.5"/></svg>
