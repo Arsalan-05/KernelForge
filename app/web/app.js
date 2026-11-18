@@ -525,8 +525,16 @@ function setStep(name, stepState, meta) {
   }
 }
 
+const IDLE_LABELS = {
+  queue: "waiting",
+  generate: "ready",
+  parse: "—",
+  verify: "—",
+  select: "—",
+};
+
 function resetPipeline() {
-  for (const s of ["queue", "generate", "parse", "verify", "select"]) setStep(s, "idle", "—");
+  for (const s of ["queue", "generate", "parse", "verify", "select"]) setStep(s, "idle", IDLE_LABELS[s]);
 }
 
 let tickTimer;
