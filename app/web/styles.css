@@ -597,9 +597,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, [tabindex]:focus-vis
   .grid3.grid4 { grid-template-columns: repeat(2, 1fr); }
   .search-card .search-help { display: none; }
 }
+.sidebar-toggle { display: none; }
 @media (max-width: 980px) {
+  .sidebar-toggle { display: grid; }
   .studio { grid-template-columns: minmax(0, 1fr); }
-  .sidebar { position: static; max-height: none; }
+  .sidebar { position: static; max-height: none; display: none; }
+  .sidebar.open { display: block; }
   .op-groups { max-height: 320px; }
   .nav { display: none; }
   .pipeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }

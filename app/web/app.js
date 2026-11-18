@@ -1440,6 +1440,14 @@ function wire() {
     const adv = $(".advanced");
     if (adv.open && !adv.contains(e.target)) adv.open = false;
   });
+  const sidebarToggle = $("#sidebar-toggle");
+  if (sidebarToggle) {
+    sidebarToggle.addEventListener("click", () => {
+      const sidebar = $(".sidebar");
+      const open = sidebar.classList.toggle("open");
+      sidebarToggle.setAttribute("aria-expanded", String(open));
+    });
+  }
 }
 
 function init() {
