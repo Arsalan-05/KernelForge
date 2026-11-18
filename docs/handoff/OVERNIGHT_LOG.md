@@ -279,6 +279,89 @@ test passed earlier in the session (before training) and passes on a fresh Pytho
 
 ---
 
+## Kaggle T4 GPU Session (2026-11-18, branch `main` on Kaggle)
+
+First real GPU run. Notebook: `notebooks/kaggle_gpu_session.ipynb`, `FINETUNE=True`, `BUDGET_HOURS=11`.
+
+### Environment
+- GPU: Tesla T4, 14.6 GB VRAM
+- Python 3.13.16, torch 2.11.0+cu130, triton 3.6.0
+- transformers: **v5.x** (pre-installed on Kaggle; v5 dropped `warmup_ratio` from `TrainingArguments`)
+- Git commit on Kaggle: `3e2c2d3` (tip of main)
+
+### Stage results
+
+| Stage | Status | Time | Notes |
+|---|---|---|---|
+| env | ok | 0 s | Tesla T4 confirmed |
+| harness | ok | 66 s | 30 passed |
+| dataset | ok | 3488 s (~58 min) | 274/300 verified |
+| baseline | ok | 5162 s (~86 min) | 0/88 pass@1, full held-out set |
+| finetune | **FAILED** | 16 s | `TypeError: warmup_ratio` (see below) |
+| eval | skipped | 0 s | no adapter (finetune failed) |
+
+### Dataset verification (274/300 on T4)
+
+| Category | Generated | Verified | Rejected | Reason |
+|---|---|---|---|---|
+| quantized_matmul | 60 | 48 | 12 | 12 incorrect |
+| attention | 60 | 51 | 9 | 9 timeout |
+| kv_cache | 60 | 60 | 0 | — |
+| norm | 60 | 55 | 5 | 3 timeout, 2 OOM |
+| rope | 60 | 60 | 0 | — |
+| **Total** | **300** | **274** | **26** | |
+
+### Training split (from verified dataset, `split_by_template(seed=42)`)
+
+167 train / 19 val / 88 test.
+
+Held-out templates (differ from canonical split because 274 ≠ 300 entries change `rng.sample`):
+`attention__gqa_causal_prefill` (16), `kv_cache__decode_attention_gqa` (20),
+`norm__layernorm` (18), `quantized_matmul__w8a16_perchannel` (14), `rope__fused_qk` (20).
+
+### Baseline: 0/88 pass@1 (T4, 4-bit NF4, 2048 max tokens)
+
+All 88 parsed a kernel. All 88 failed verification. Zero harness/infrastructure errors.
+
+| Error category | Count | Detail |
+|---|---|---|
+| `tl.Tensor` (nonexistent API) | 40 | model invents a `tl.Tensor` type that Triton does not have |
+| Undefined helper function | 16 | `_build_rope_cache` not defined — model hallucinates a helper |
+| JIT called outside kernel | 10 | `@triton.jit` function called from non-kernel Python scope |
+| Syntax (truncation) | 5 | `'(' was never closed` — hit 2048-token limit |
+| Other generated-code errors | 17 | `tl.matmul` (3), `JITFunction.compute` (4), `_semantic` (4), `softmax` ref (2), `triton.launch` (1), syntax/name/index (3) |
+
+All 88 failures are generated-code errors — zero harness or infrastructure errors.
+
+### Fine-tune crash
+
+```
+TypeError: TrainingArguments.__init__() got an unexpected keyword argument 'warmup_ratio'
+```
+
+**Root cause:** Kaggle's Python 3.13 image ships transformers v5.x (dev). In v5, `warmup_ratio`
+was removed; `warmup_steps` now accepts a float in [0, 1) for ratio behavior. Our
+`training/finetune.py:251` passes `warmup_ratio=0.05`.
+
+### Fine-tune crash: fix
+
+**Cause:** `TrainingArguments` in Kaggle's pre-installed transformers (v5.x on Python 3.13) no
+longer accepts `warmup_ratio`. The parameter was merged into `warmup_steps`, which now takes a
+float in [0, 1) for ratio behavior.
+
+**Fix applied on Kaggle:** Added a pinned install cell after Cell 2a:
+
+```
+!pip install -q transformers==4.57.6 peft==0.17.1 accelerate==1.10.1
+```
+
+Verified on the Kaggle T4 session: versions printed correctly, `TrainingArguments` accepted all
+kwargs, torch 2.11.0+cu130, triton 3.6.0, 2× Tesla T4 (one used). There are harmless pip
+conflict warnings from gradio/diffusers about huggingface-hub version constraints; they do not
+affect training or evaluation.
+
+---
+
 ## Kaggle Pre-flight + Paper + README + Claims Audit Session (2026-11-17, branch `agent/overnight2`)
 
 4-hour time-boxed session covering 5 tasks: Kaggle pre-flight hardening, paper

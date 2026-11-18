@@ -22,6 +22,15 @@ const CATEGORY_FULL_LABEL = {
   rope: "RoPE",
 };
 
+/* Bundled sample run: captured from mock mode (template echo, not model output).
+   Shown when the backend is offline so the page is never empty. */
+const SAMPLE_RUN = {"template_id":"norm__rmsnorm_residual","op_name":"RMSNorm + residual","category":"norm","description":"Apply the pre-norm residual-add + RMSNorm pattern to a (16384, 2048) activation and residual stream, returning both the normalized output and the updated residual.","pytorch_reference":"import torch\nimport torch.nn as nn\n\nclass Model(nn.Module):\n    \"\"\"\n    Fused residual-add + RMSNorm: the pre-norm transformer-block pattern\n    `residual = x + residual; out = RMSNorm(residual)`, returning both the\n    normalized output (fed to the next sublayer) and the updated residual\n    stream (carried forward to the next block).\n    \"\"\"\n    def __init__(self, hidden_size, eps=1e-5):\n        super().__init__()\n        self.eps = eps\n        self.weight = nn.Parameter(torch.ones(hidden_size))\n\n    def forward(self, x: torch.Tensor, residual: torch.Tensor):\n        residual = x + residual\n        variance = residual.pow(2).mean(-1, keepdim=True)\n        normed = residual * torch.rsqrt(variance + self.eps)\n        return normed * self.weight, residual\n\nrows = 16384\nhidden_size = 2048\n\ndef get_inputs():\n    x = torch.randn(rows, hidden_size, dtype=torch.float16)\n    residual = torch.randn(rows, hidden_size, dtype=torch.float16)\n    return [x, residual]\n\ndef get_init_inputs():\n    return [hidden_size]\n","triton_kernel":"import torch\nimport triton\nimport triton.language as tl\n\n\n@triton.jit\ndef _rmsnorm_residual_kernel(\n    x_ptr, residual_ptr, weight_ptr, out_ptr, new_residual_ptr,\n    row_stride, n_cols, eps,\n    BLOCK_SIZE: tl.constexpr,\n):\n    row_idx = tl.program_id(0)\n    col_offsets = tl.arange(0, BLOCK_SIZE)\n    mask = col_offsets < n_cols\n\n    row_ptr = x_ptr + row_idx * row_stride\n    res_ptr = residual_ptr + row_idx * row_stride\n    x = tl.load(row_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)\n    residual = tl.load(res_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)\n\n    residual = x + residual\n\n    mean_sq = tl.sum(residual * residual, axis=0) / n_cols\n    inv_rms = 1.0 / tl.sqrt(mean_sq + eps)\n\n    weight = tl.load(weight_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)\n    y = residual * inv_rms * weight\n\n    out_row_ptr = out_ptr + row_idx * row_stride\n    new_res_ptr = new_residual_ptr + row_idx * row_stride\n    tl.store(out_row_ptr + col_offsets, y.to(tl.float16), mask=mask)\n    tl.store(new_res_ptr + col_offsets, residual.to(tl.float16), mask=mask)\n\n\nclass ModelNew(torch.nn.Module):\n    def __init__(self, hidden_size, eps=1e-5):\n        super().__init__()\n        self.eps = eps\n        self.weight = torch.nn.Parameter(torch.ones(hidden_size))\n\n    def forward(self, x: torch.Tensor, residual: torch.Tensor):\n        n_rows, n_cols = x.shape\n        out = torch.empty_like(x)\n        new_residual = torch.empty_like(x)\n        BLOCK_SIZE = triton.next_power_of_2(n_cols)\n        num_warps = min(max(BLOCK_SIZE // 256, 1), 16)\n        _rmsnorm_residual_kernel[(n_rows,)](\n            x, residual, self.weight, out, new_residual,\n            x.stride(0), n_cols, self.eps,\n            BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps,\n        )\n        return out, new_residual","optimization_explanation":"Eager computes the residual add as its own pass, then runs the same multi-launch RMSNorm on top -- two full-tensor round-trips before normalization even starts. The Triton kernel loads x and the residual once, adds them on-chip, computes the RMSNorm reduction from that same on-chip value, and writes both required outputs (normalized activation and updated residual) from a single pass -- this is exactly the fused op most serving-optimized transformer implementations use at every pre-attention and pre-MLP norm site.","model_variant":"mock","model_name":"mock (template echo)"};
+
+const HEALTH_TIMEOUT_MS = 8000;
+const HEALTH_RETRY_DELAY_S = 15;
+let _healthRetryTimer = null;
+let _healthAttempts = 0;
+
 const CUSTOM_TEMPLATE = `import torch
 import torch.nn as nn
 
@@ -157,7 +166,15 @@ async function copyText(text, label) {
 }
 
 async function api(path, options = {}) {
-  const resp = await fetch(path, options);
+  const { timeout, ...fetchOpts } = options;
+  let signal = fetchOpts.signal;
+  let controller;
+  if (timeout && !signal) {
+    controller = new AbortController();
+    signal = controller.signal;
+    setTimeout(() => controller.abort(), timeout);
+  }
+  const resp = await fetch(path, { ...fetchOpts, signal });
   if (!resp.ok) throw new Error(await errorDetail(resp));
   return resp.json();
 }
@@ -176,8 +193,12 @@ async function errorDetail(resp) {
 
 async function refreshHealth() {
   try {
-    const h = await api("/health");
+    const h = await api("/health", { timeout: HEALTH_TIMEOUT_MS });
     state.health = h;
+    _healthAttempts = 0;
+    clearInterval(_healthRetryTimer);
+    _healthRetryTimer = null;
+    hideSampleRun();
     const pill = $("#model-pill");
     pill.dataset.variant = h.model_variant;
     const shortName = h.model_name.split("/").pop();
@@ -225,17 +246,53 @@ async function refreshHealth() {
         `Code runs in a subprocess with CPU/file-size limits and a scrubbed environment, after a static policy check (torch/triton/math imports only; no file, process or dunder access).${limit ? ` Each visitor gets ${limit} runs per minute.` : ""}`
       );
     }
-    // Without a GPU the interpreter is the only harness that can actually run.
     if (!state.deviceTouched && !h.cuda_available && h.interpreter_available && state.device !== "cpu") {
       setDevice("cpu", false);
     }
   } catch {
+    _healthAttempts++;
     const pill = $("#model-pill");
     pill.dataset.variant = "offline";
-    $("#model-pill-text").textContent = "Backend offline";
-    $("#gpu-pill-text").textContent = "—";
-    // Banner intentionally keeps the base-model text: that's the truthful default.
+    if (_healthAttempts <= 1) {
+      $("#model-pill-text").textContent = "Backend is waking up…";
+      $("#gpu-pill-text").textContent = "—";
+      showSampleRun();
+      scheduleHealthRetry();
+    } else {
+      $("#model-pill-text").textContent = "Backend offline";
+    }
   }
+}
+
+function scheduleHealthRetry() {
+  if (_healthRetryTimer) return;
+  let remaining = HEALTH_RETRY_DELAY_S;
+  const countdownEl = $("#model-pill-text");
+  _healthRetryTimer = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(_healthRetryTimer);
+      _healthRetryTimer = null;
+      countdownEl.textContent = "Retrying…";
+      refreshHealth();
+    } else {
+      countdownEl.textContent = `Backend is waking up… retry in ${remaining}s`;
+    }
+  }, 1000);
+}
+
+function showSampleRun() {
+  if (state.run || state.running) return;
+  const notice = $("#sample-notice");
+  if (notice) notice.hidden = false;
+  renderKernel(SAMPLE_RUN.triton_kernel, SAMPLE_RUN.pytorch_reference);
+  renderExplanation(SAMPLE_RUN.optimization_explanation, true);
+  showTab("kernel");
+}
+
+function hideSampleRun() {
+  const notice = $("#sample-notice");
+  if (notice) notice.hidden = true;
 }
 
 async function refreshStats() {
@@ -468,8 +525,16 @@ function setStep(name, stepState, meta) {
   }
 }
 
+const IDLE_LABELS = {
+  queue: "waiting",
+  generate: "ready",
+  parse: "—",
+  verify: "—",
+  select: "—",
+};
+
 function resetPipeline() {
-  for (const s of ["queue", "generate", "parse", "verify", "select"]) setStep(s, "idle", "—");
+  for (const s of ["queue", "generate", "parse", "verify", "select"]) setStep(s, "idle", IDLE_LABELS[s]);
 }
 
 let tickTimer;
@@ -504,6 +569,9 @@ function renderKernel(kernel, reference) {
   highlightInto($("#kernel-code"), kernel || "");
   $("#kernel-gutter").textContent = has ? lineNumbers(kernel) : "";
   highlightInto($("#cmp-ref"), reference || "");
+  const refGutter = $("#cmp-ref-gutter");
+  if (refGutter) refGutter.textContent = reference ? lineNumbers(reference) : "";
+  const kernelGutter = $("#cmp-kernel-gutter");
   // Update the compare pane label to include model name if available
   const modelName = state.health?.model_name?.split("/").pop() || "";
   const variant = state.health?.model_variant;
@@ -512,7 +580,9 @@ function renderKernel(kernel, reference) {
     const extra = variant === "remote" ? ` · ${modelName}` : variant === "fine-tuned" ? " · fine-tuned" : " · base";
     paneLabel.textContent = `Generated Triton · ModelNew${extra}`;
   }
-  highlightInto($("#cmp-kernel"), kernel || "# No kernel parsed from the model output.");
+  const cmpKernelText = kernel || "# No kernel parsed from the model output.";
+  highlightInto($("#cmp-kernel"), cmpKernelText);
+  if (kernelGutter) kernelGutter.textContent = lineNumbers(cmpKernelText);
 }
 
 function renderExplanation(text, hasKernel, ran = true) {
@@ -689,25 +759,87 @@ function renderResults(data) {
   );
   view.append(tmplSection);
 
-  // ── GPU eval pending ─────────────────────────────────────────────────
-  view.append(
-    el("div", { class: "res-section res-gpu-pending" },
+  // ── GPU baseline eval ────────────────────────────────────────────────
+  const gpuBase = data?.gpu_baseline;
+  if (gpuBase) {
+    const gpuSection = el("div", { class: "res-section" },
       el("div", { class: "res-header" },
-        el("span", { class: "res-label" }, "GPU eval"),
-        el("span", { class: "chip subtle" }, "not yet run")
+        el("span", { class: "res-label" }, "GPU baseline"),
+        el("span", { class: "chip subtle" }, "Base model, held-out set (T4, 4-bit, zero-shot)")
       ),
-      el("div", { class: "res-pending-body" },
-        el("div", { class: "res-pending-icon", "aria-hidden": "true" }, "⌛"),
-        el("div", {},
-          el("div", { class: "res-pending-title" }, "Pending Kaggle T4 session"),
-          el("div", { class: "res-pending-sub" },
-            "GPU eval results (pass rate, speedup, failure breakdown, ablation matrix) " +
-            "appear here once a session runs. See KAGGLE_RUNBOOK.md for setup instructions."
+      el("div", { class: "res-summary-row" },
+        el("div", { class: "res-big-num" },
+          el("span", { class: "res-num" }, `${gpuBase.correct}`),
+          el("span", { class: "res-den" }, ` / ${gpuBase.total}`),
+        ),
+        el("div", { class: "res-big-label" }, "held-out entries pass"),
+      ),
+      el("div", { class: "res-note-row" },
+        `Source: ${gpuBase.source_file} · ${gpuBase.model_name || "unknown model"} · ${gpuBase.device || "?"}`
+      )
+    );
+    const gpuCatTable = el("table", { class: "res-table" },
+      el("thead", {}, el("tr", {},
+        el("th", {}, "Category"), el("th", { class: "num" }, "Correct"), el("th", {}, "")
+      ))
+    );
+    const gpuCatBody = el("tbody", {});
+    for (const cat of Object.keys(CATEGORY_META)) {
+      const c = gpuBase.per_category?.[cat];
+      if (!c) continue;
+      gpuCatBody.append(
+        el("tr", {},
+          el("td", {}, el("span", { class: "cat-dot", style: `background:${CATEGORY_META[cat].color}` }), " ", CATEGORY_FULL_LABEL[cat] || cat),
+          el("td", { class: "num" }, `${c.correct} / ${c.total}`),
+          el("td", { class: "bar-cell" }, _passBar(c.correct, c.total))
+        )
+      );
+    }
+    gpuCatTable.append(gpuCatBody);
+    gpuSection.append(gpuCatTable);
+    view.append(gpuSection);
+  }
+
+  // ── GPU fine-tuned eval ─────────────────────────────────────────────
+  const gpuFt = data?.gpu_finetuned;
+  if (gpuFt) {
+    view.append(
+      el("div", { class: "res-section" },
+        el("div", { class: "res-header" },
+          el("span", { class: "res-label" }, "GPU fine-tuned"),
+          el("span", { class: "chip subtle" }, "Fine-tuned adapter, held-out set (T4, 4-bit)")
+        ),
+        el("div", { class: "res-summary-row" },
+          el("div", { class: "res-big-num" },
+            el("span", { class: "res-num" }, `${gpuFt.correct}`),
+            el("span", { class: "res-den" }, ` / ${gpuFt.total}`),
+          ),
+          el("div", { class: "res-big-label" }, "held-out entries pass"),
+        ),
+        el("div", { class: "res-note-row" },
+          `Source: ${gpuFt.source_file} · ${gpuFt.model_name || "unknown model"}`
+        )
+      )
+    );
+  } else {
+    view.append(
+      el("div", { class: "res-section res-gpu-pending" },
+        el("div", { class: "res-header" },
+          el("span", { class: "res-label" }, "Fine-tuned eval"),
+          el("span", { class: "chip subtle" }, "pending")
+        ),
+        el("div", { class: "res-pending-body" },
+          el("div", { class: "res-pending-icon", "aria-hidden": "true" }, "⌛"),
+          el("div", {},
+            el("div", { class: "res-pending-title" }, "Fine-tuned eval pending"),
+            el("div", { class: "res-pending-sub" },
+              "Fine-tuned results appear here once the QLoRA adapter is trained and evaluated on the held-out set."
+            )
           )
         )
       )
-    )
-  );
+    );
+  }
 }
 
 function verifyHead(stateChip, extra) {
@@ -1339,6 +1471,8 @@ function wire() {
   });
   $("#copy-ref").addEventListener("click", () => copyText($("#reference").value, "Reference"));
   $("#copy-kernel").addEventListener("click", () => copyText(currentKernel(), "Kernel"));
+  $("#copy-cmp-ref").addEventListener("click", () => copyText($("#reference").value, "Reference"));
+  $("#copy-cmp-kernel").addEventListener("click", () => copyText(currentKernel(), "Kernel"));
   $("#download-kernel").addEventListener("click", () => {
     const name = (state.selected?.id || "custom_op").replace(/[^a-z0-9_]+/gi, "_");
     const blob = new Blob([currentKernel()], { type: "text/x-python" });
@@ -1383,6 +1517,14 @@ function wire() {
     const adv = $(".advanced");
     if (adv.open && !adv.contains(e.target)) adv.open = false;
   });
+  const sidebarToggle = $("#sidebar-toggle");
+  if (sidebarToggle) {
+    sidebarToggle.addEventListener("click", () => {
+      const sidebar = $(".sidebar");
+      const open = sidebar.classList.toggle("open");
+      sidebarToggle.setAttribute("aria-expanded", String(open));
+    });
+  }
 }
 
 function init() {

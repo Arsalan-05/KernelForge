@@ -332,8 +332,6 @@ def test_results_with_present_report(client, monkeypatch, tmp_path):
     assert interp["total"] == 40
     assert interp["passed"] == 38
     assert interp["mode"] == report["mode"]
-    assert body["gpu"] is None
-
     # Per-category structure
     by_cat = interp["by_category"]
     assert "norm" in by_cat
@@ -349,15 +347,46 @@ def test_results_with_present_report(client, monkeypatch, tmp_path):
 
 
 def test_results_with_missing_report(client, monkeypatch, tmp_path):
-    """When the report file is absent, /results returns interpreter: null and gpu: null."""
+    """When the report file is absent, /results returns interpreter: null and gpu_*: null."""
     absent = tmp_path / "no_such_file.json"
     monkeypatch.setattr(main, "_RESULTS_REPORT", absent)
+    monkeypatch.setattr(main, "_GPU_EVAL_DIR", tmp_path / "empty")
 
     resp = client.get("/results")
     assert resp.status_code == 200
     body = resp.json()
     assert body["interpreter"] is None
-    assert body["gpu"] is None
+    assert body["gpu_baseline"] is None
+    assert body["gpu_finetuned"] is None
+
+
+def test_results_reads_gpu_baseline_from_file(client, monkeypatch, tmp_path):
+    """When a baseline_*.json file exists, /results returns its per-category data."""
+    gpu_dir = tmp_path / "results"
+    gpu_dir.mkdir()
+    baseline = {
+        "run_name": "baseline", "model_name": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+        "device": "cuda", "generated_at": "2026-11-18T00:00:00",
+        "per_category": {
+            "norm": {"total": 18, "correct": 0},
+            "rope": {"total": 20, "correct": 0},
+        },
+    }
+    (gpu_dir / "baseline_20261118T000000Z.json").write_text(json.dumps(baseline))
+    monkeypatch.setattr(main, "_GPU_EVAL_DIR", gpu_dir)
+    # Still need a valid interpreter report path
+    monkeypatch.setattr(main, "_RESULTS_REPORT", tmp_path / "absent.json")
+
+    resp = client.get("/results")
+    body = resp.json()
+    gb = body["gpu_baseline"]
+    assert gb is not None
+    assert gb["total"] == 38
+    assert gb["correct"] == 0
+    assert gb["pass_at_1"] == 0.0
+    assert gb["model_name"] == "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    assert gb["per_category"]["norm"]["total"] == 18
+    assert body["gpu_finetuned"] is None
 
 
 def test_results_with_malformed_report(client, monkeypatch, tmp_path):
@@ -365,9 +394,11 @@ def test_results_with_malformed_report(client, monkeypatch, tmp_path):
     bad_file = tmp_path / "bad.json"
     bad_file.write_text("{ this is not json }")
     monkeypatch.setattr(main, "_RESULTS_REPORT", bad_file)
+    monkeypatch.setattr(main, "_GPU_EVAL_DIR", tmp_path / "empty")
 
     resp = client.get("/results")
     assert resp.status_code == 200
     body = resp.json()
     assert body["interpreter"] is None
-    assert body["gpu"] is None
+    assert body["gpu_baseline"] is None
+    assert body["gpu_finetuned"] is None
