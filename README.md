@@ -14,21 +14,23 @@ no RL.
 
 | Component | Status |
 |---|---|
-| Verification harness (`verification/`) | Done; CPU interpreter mode tested (285/300 templates pass, 15 OOM in 8 GB VM); **GPU mode not yet validated on a real GPU** |
-| Dataset (15 templates × 20 shapes = 300 candidates) | CPU interpreter check: 285/300 pass, 0 incorrect, 15 OOM; GPU verification pending |
+| Verification harness (`verification/`) | Done; CPU interpreter mode (285/300 pass, 15 OOM in 8 GB VM); **GPU mode validated on T4** (274/300 pass, 26 rejected) |
+| Dataset (15 templates × 20 shapes = 300 candidates) | CPU: 285/300 pass; **GPU (T4): 274/300 verified** (12 incorrect, 9 timeout, 3 timeout, 2 OOM) |
 | Base-model eval (fp32, local, 60 entries) | Done: **0/60 pass@1** (95% CI [0.0%, 6.0%]); every failure is a missing import or syntax error |
 | Canonical held-out split (`data/held_out_split.json`) | Done: 180 train / 20 val / 100 test (5 held-out templates, 1 per category); 12 no-leakage tests pass |
 | 0.5B base eval (MPS pilot, 20 entries) | Done: **0/20 pass@1** (95% CI [0.0%, 16.1%]); 80% parse rate, 30% truncated; 0.5B local LoRA MPS pilot |
 | 0.5B LoRA fine-tuning (MPS pilot) | Done: 10/33 steps (~0.95 epochs); loss 1.3384→0.7778; adapter at `training/checkpoints/run_20261117T072658Z/adapter` |
 | 0.5B fine-tuned eval (MPS pilot, 20 entries) | Done: **0/20 pass@1** (95% CI [0.0%, 16.1%]); **100% parse rate** (was 80% base); 2 reach Triton interpreter |
-| QLoRA fine-tuning (`training/finetune.py`) | Code written; **not yet run on T4**; 0.5B MPS pilot complete (10 steps); dry-run passes |
+| T4 baseline eval (4-bit, 88 held-out entries) | Done: **0/88 pass@1**; dominant error: hallucinated `tl.Tensor` (40/88); 0 harness errors |
+| QLoRA fine-tuning (`training/finetune.py`) | **Crashed on T4**: `warmup_ratio` removed in transformers v5 (Kaggle's image); fix: pin `transformers<5` |
 | Mutation testing | 29/29 non-equivalent mutations caught; 3 surviving mutations are mathematically equivalent (softmax shift-invariance) |
 | Demo UI (`app/`) | Built; runs on base model; Kaggle/Colab GPU needed |
 | Deployment (Railway) | Dockerfile + `railway.json` done; interpreter-only (no GPU on Railway) |
-| GPU session runner (`scripts/gpu_session.py`) | Done; tested on CPU; Kaggle T4 run pending |
+| GPU session runner (`scripts/gpu_session.py`) | Done; **ran on T4** (dataset + baseline ok, finetune crashed) |
 | Test suite | 332 tests collected; passes on CPU (macOS and Linux); some tests require Docker or a GPU |
 
-**GPU fine-tuning has not been run.** There are no fine-tuned result numbers.
+**GPU fine-tuning crashed** on the first Kaggle T4 run (`warmup_ratio` removed in transformers v5).
+The dataset (274/300) and baseline (0/88 pass@1) are validated on GPU. Fix the install pin and re-run.
 
 ## Quick start (fresh clone, no GPU)
 

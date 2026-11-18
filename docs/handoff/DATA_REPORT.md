@@ -710,3 +710,49 @@ Error distribution shifted from "cannot generate code" to "generates structured 
 format/API errors": parse rate 80% → 100%, zero NameErrors (base had 3), kv_cache prose → code,
 2 rope entries reached Triton interpreter runtime. The <1-epoch pilot demonstrates the adapter
 learned Triton code structure but not the full ModelNew contract.
+
+## 8. Kaggle T4 GPU Results (2026-11-18)
+
+### Dataset verification: 274/300 on T4
+
+| Category | Verified | Rejected | Rejection reasons | Median speedup |
+|---|---|---|---|---|
+| quantized_matmul | 48 | 12 | 12 incorrect (numerical) | 0.60× |
+| attention | 51 | 9 | 9 timeout | 0.04× |
+| kv_cache | 60 | 0 | — | 1.39× |
+| norm | 55 | 5 | 3 timeout, 2 OOM | 5.19× |
+| rope | 60 | 0 | — | 3.08× |
+| **Total** | **274** | **26** | | |
+
+The GPU verified 274/300 entries (vs 285/300 in the CPU interpreter). 12 quantized_matmul entries
+fail numerical correctness (max abs error 0.125, atol/rtol=0.01). The 15 CPU OOMs resolved
+differently on T4: some passed, but 2 norm entries still OOM'd and 12 attention/norm entries
+timed out.
+
+### Training split: 167/19/88
+
+`split_by_template(seed=42)` on the 274-entry verified dataset produces a different split than
+the canonical 180/20/100 (computed on all 300 unverified entries) because `rng.sample` depends
+on the input population.
+
+### T4 baseline: 0/88 pass@1 (4-bit NF4, 2048 max tokens)
+
+All 88 held-out entries parsed a kernel (100% parse rate). All 88 failed verification.
+Zero harness or infrastructure errors — every failure is bad model output.
+
+| Error category | Count | Detail |
+|---|---|---|
+| Hallucinated Triton API | 48 | `tl.Tensor` (40), `tl.matmul` (3), `triton.launch` (1), `JITFunction.compute` (4) |
+| Hallucinated helper function | 16 | `_build_rope_cache` not defined |
+| Wrong Triton call pattern | 14 | JIT called outside kernel (10), `_semantic` arg error (4) |
+| Syntax truncation | 5 | `'(' was never closed` |
+| Torch op inside Triton kernel | 2 | `softmax` reference |
+| Other | 3 | syntax (1), name (1), index (1) |
+
+### Fine-tune crash
+
+`TypeError: TrainingArguments.__init__() got an unexpected keyword argument 'warmup_ratio'`
+
+Kaggle's Python 3.13 image has transformers v5.x. In v5, `warmup_ratio` was removed;
+`warmup_steps` now accepts a float in [0, 1) for the same behavior. Fix: pin `transformers<5`
+in Cell 2a, or make `finetune.py` version-tolerant.
