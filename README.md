@@ -1,34 +1,38 @@
 # KernelForge
 
-KernelForge is a **data-efficient Triton kernel generator** for LLM-serving operators. Given a
-PyTorch reference op, it generates an optimized Triton kernel **plus** a short natural-language
-explanation of the optimization. Correctness is checked by a subprocess-isolated verification
-harness following KernelBench's `Model`/`ModelNew` contract.
+Training a small model (Qwen2.5-Coder-1.5B) to write Triton GPU kernels, with an automated checker
+that tests every kernel against PyTorch. Given a PyTorch reference op, the model writes a Triton kernel
+**plus** a short natural-language explanation. Correctness is checked by a subprocess-isolated
+verification harness following KernelBench's `Model`/`ModelNew` contract.
 
-Scope: five operator families relevant to LLM inference serving
-(`quantized_matmul`, `attention`, `kv_cache`, `norm`, `rope`), supervised QLoRA fine-tuning of
-Qwen2.5-Coder-1.5B-Instruct on a few hundred harness-verified examples, one Kaggle T4 GPU,
-no RL.
+Demo studio (runs the base model, fine-tuned adapter in progress): https://kernelforge-production.up.railway.app/
+
+Scope: five LLM-serving operator categories
+(`quantized_matmul`, `attention`, `kv_cache`, `norm`, `rope`) built from 15 op templates, supervised
+QLoRA fine-tuning of Qwen2.5-Coder-1.5B-Instruct with a target of 60 verified examples per category
+(about 300), one Kaggle T4 GPU, no RL.
 
 ## What is done vs not done
 
 | Component | Status |
 |---|---|
-| Verification harness (`verification/`) | Done; CPU interpreter mode tested (285/300 templates pass, 15 OOM in 8 GB VM); **GPU mode not yet validated on a real GPU** |
-| Dataset (15 templates × 20 shapes = 300 candidates) | CPU interpreter check: 285/300 pass, 0 incorrect, 15 OOM; GPU verification pending |
-| Base-model eval (fp32, local, 60 entries) | Done: **0/60 pass@1** (95% CI [0.0%, 6.0%]); every failure is a missing import or syntax error |
-| Canonical held-out split (`data/held_out_split.json`) | Done: 180 train / 20 val / 100 test (5 held-out templates, 1 per category); 12 no-leakage tests pass |
-| 0.5B base eval (MPS pilot, 20 entries) | Done: **0/20 pass@1** (95% CI [0.0%, 16.1%]); 80% parse rate, 30% truncated; 0.5B local LoRA MPS pilot |
-| 0.5B LoRA fine-tuning (MPS pilot) | Done: 10/33 steps (~0.95 epochs); loss 1.3384→0.7778; adapter at `training/checkpoints/run_20261117T072658Z/adapter` |
-| 0.5B fine-tuned eval (MPS pilot, 20 entries) | Done: **0/20 pass@1** (95% CI [0.0%, 16.1%]); **100% parse rate** (was 80% base); 2 reach Triton interpreter |
-| QLoRA fine-tuning (`training/finetune.py`) | Code written; **not yet run on T4**; 0.5B MPS pilot complete (10 steps); dry-run passes |
-| Mutation testing | 29/29 non-equivalent mutations caught; 3 surviving mutations are mathematically equivalent (softmax shift-invariance) |
-| Demo UI (`app/`) | Built; runs on base model; Kaggle/Colab GPU needed |
-| Deployment (Railway) | Dockerfile + `railway.json` done; interpreter-only (no GPU on Railway) |
+| Verification harness (`verification/`) | Done; Triton CPU-interpreter check works; **GPU mode not yet validated on a real GPU** |
+| Dataset (15 op templates, 5 categories) | Triton CPU-interpreter check run; GPU verification pending |
+| Base-model eval | Run locally; results not reported until verified |
+| Canonical held-out split (`data/held_out_split.json`) | Done; held-out templates per category; no-leakage tests pass |
+| Smaller-model pilot (MPS, local) | LoRA pilot run locally; results not reported |
+| QLoRA fine-tuning (`training/finetune.py`) | Code written; **not yet run on T4**; dry-run passes |
+| Mutation testing | Done; surviving mutations are mathematically equivalent (softmax shift-invariance) |
+| Demo UI (`app/`) | Built; runs on the base model; Kaggle/Colab GPU needed for GPU mode |
+| Container hosting (Railway) | Dockerfile + `railway.json` done; interpreter-only (no GPU on Railway) |
 | GPU session runner (`scripts/gpu_session.py`) | Done; tested on CPU; Kaggle T4 run pending |
-| Test suite | 332 tests collected; passes on CPU (macOS and Linux); some tests require Docker or a GPU |
+| Test suite | Passes on CPU (macOS and Linux); some tests require Docker or a GPU |
 
-**GPU fine-tuning has not been run.** There are no fine-tuned result numbers.
+**GPU fine-tuning has not been run.** There are no fine-tuned results yet.
+
+## Results
+
+Baseline vs fine-tuned comparison: pending (Kaggle T4 run in progress).
 
 ## Quick start (fresh clone, no GPU)
 
@@ -40,11 +44,11 @@ pip install -r requirements.txt
 
 # Run the CPU test suite
 pytest tests/ -v
-# Expected: ~332 passed, 1 skipped  (some tests skip without Docker or triton)
+# Expected: tests pass (some skip without Docker or triton)
 
 # CPU reproducibility check (harness + mutation test + report)
 bash scripts/reproduce_all.sh
-# Expected: "All steps PASSED" in ~60 s
+# Expected: "All steps PASSED"
 
 # Pre-flight check (packages, configs, dataset status)
 python scripts/preflight_check.py --no-gpu
@@ -66,36 +70,16 @@ Import [`notebooks/kaggle_gpu_session.ipynb`](notebooks/kaggle_gpu_session.ipynb
 !pip install -q -r requirements-demo.txt
 !python -c "import torch, triton; print(torch.__version__, triton.__version__, torch.cuda.is_available())"
 
-# GPU-verify dataset + baseline eval (no fine-tuning, ~6-7 h on T4):
+# GPU-verify dataset + baseline eval (no fine-tuning):
 !python scripts/gpu_session.py --budget-hours 11 --out /kaggle/working/kernelforge_outputs.zip
 
-# Full run (+ QLoRA fine-tune + fine-tuned eval, ~8-9 h):
+# Full run (+ QLoRA fine-tune + fine-tuned eval):
 !python scripts/gpu_session.py --finetune --budget-hours 11 --out /kaggle/working/kernelforge_outputs.zip
 ```
 
 All results are written to `kernelforge_outputs.zip`. See
 [docs/handoff/KAGGLE_RUNBOOK.md](docs/handoff/KAGGLE_RUNBOOK.md) for the full runbook,
 expected output files, resume instructions, and a post-session checklist.
-
-## Base model numbers (pre-fine-tuning floor, verified locally)
-
-Qwen2.5-Coder-1.5B-Instruct, fp32 on MPS, 60-entry subset, same prompt as training (`notes=False`),
-`max_new_tokens=1536`, temperature 0:
-
-| Metric | Value |
-|---|---|
-| No-header pass@1 | 0/60 = 0.000 (95% CI [0.000, 0.060]) |
-| With-header pass@1 (NameError entries) | 0/50 = 0.000 |
-| Truncations | 4/60 |
-| Degenerate output | 0/60 |
-| Median tok/s | 5.9 (fp32 MPS) |
-
-Dominant failure: 50/60 outputs omit all Triton imports (`NameError: name 'triton' is not defined`).
-Adding the import header raises a secondary NameError or TypeError in all 50 cases. The remaining
-10 fail with a SyntaxError or truncation. Zero outputs pass either pass.
-
-The 60-entry subset has 30 entries that overlap with the train/val split (leakage for fine-tuned eval).
-For the 15 clean held-out test entries in this subset: 0/15 pass@1 (CI [0.000, 0.218]).
 
 Fine-tuned results will appear after the Kaggle GPU session runs (held-out eval: `scripts/held_out_eval.py`).
 
@@ -124,11 +108,11 @@ KERNELFORGE_MOCK_MODEL=1 uvicorn app.backend.main:app --port 8000
 # open http://localhost:8000
 ```
 
-## Deploy (Railway or any container host)
+## Run in a container (Railway or any container host)
 
-The root `Dockerfile` and `railway.json` define a CPU-only always-on deployment. Railway builds
+The root `Dockerfile` and `railway.json` define a CPU-only container. Railway builds
 the image, checks `/health`, and binds `$PORT`. **No GPU on Railway — kernels are checked for
-correctness only via the Triton interpreter; there are no speedup measurements.**
+correctness only via the Triton interpreter; there is no timing.**
 
 Required service variables:
 
@@ -156,21 +140,21 @@ data/              schema, templates (15 total), build_dataset.py, held_out_spli
 training/          QLoRA fine-tuning + configs
 evaluation/        baseline/fine-tuned eval + explanation rubric + report generator
 docs/              paper skeleton, project writeup, handoff docs, results (populated post-GPU)
-tests/             332 tests: harness, library, search, API, split integrity (most run on CPU; some need Docker/GPU)
+tests/             harness, library, search, API, split integrity (most run on CPU; some need Docker/GPU)
 ```
 
 ## Limitations
 
-- **No GPU results yet.** The fine-tuning and GPU evaluation pipeline is complete but has not been
-  run. All result numbers above come from the local CPU/MPS baseline.
-- **Small model and narrow scope.** 1.5B parameters, ~300 training examples from 15 templates,
-  five operator families, fp16 forward passes only. Not comparable to 8B–32B RL-trained systems
-  on broad benchmarks.
+- **No GPU results yet.** The fine-tuning and GPU evaluation pipeline is written but has not been
+  run on a GPU.
+- **Small model and narrow scope.** Qwen2.5-Coder-1.5B, a target of about 300 training examples from
+  15 op templates, five operator categories, fp16 forward passes only. Not comparable to larger
+  RL-trained systems on broad benchmarks.
 - **Interpreter ≠ GPU.** The CPU interpreter checks correctness only; it has no timing and uses
-  10–15× more memory than GPU mode. The 15 OOM shapes in the interpreter may fit on a T4; this
-  is untested.
-- **Template diversity.** Within a template, all 20 shape variants share the same kernel logic and
-  explanation. The effective number of distinct kernels is 15, not 300.
+  much more memory than GPU mode. Shapes that run out of memory in the interpreter may fit on a T4;
+  this is untested.
+- **Template diversity.** Within a template, all shape variants share the same kernel logic and
+  explanation. The effective number of distinct kernels is 15.
 - **Sandbox.** Subprocess isolation + rlimits is suitable for research; it is not a hardened
-  sandbox for untrusted code on a production server.
+  sandbox for untrusted code on a public server.
 - **Triton requires Linux + NVIDIA.** macOS development uses the CPU interpreter mode in Docker.
