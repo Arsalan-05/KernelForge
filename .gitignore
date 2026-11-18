@@ -19,3 +19,11 @@ data/verified/*
 .DS_Store
 kernelforge_outputs/
 kernelforge_outputs.zip
+
+# Local tool config (keep out of the repo)
+CLAUDE.md
+AGENTS.md
+.cursorrules
+.cursor/
+.claude/
+.codex/
