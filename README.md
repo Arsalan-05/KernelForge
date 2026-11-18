@@ -5,7 +5,7 @@ that tests every kernel against PyTorch. Given a PyTorch reference op, the model
 **plus** a short natural-language explanation. Correctness is checked by a subprocess-isolated
 verification harness following KernelBench's `Model`/`ModelNew` contract.
 
-Demo studio (runs the base model, fine-tuned adapter in progress): https://kernelforge-production.up.railway.app/
+Demo studio: generates a kernel with a general-purpose hosted model (qwen/qwen3-coder via an API), then verifies it with KernelForge's harness. The fine-tuned adapter is not served yet. https://kernelforge-production.up.railway.app/
 
 Scope: five LLM-serving operator categories
 (`quantized_matmul`, `attention`, `kv_cache`, `norm`, `rope`) built from 15 op templates, supervised
@@ -23,7 +23,7 @@ QLoRA fine-tuning of Qwen2.5-Coder-1.5B-Instruct with a target of 60 verified ex
 | Smaller-model pilot (MPS, local) | LoRA pilot run locally; results not reported |
 | QLoRA fine-tuning (`training/finetune.py`) | First T4 run crashed (`warmup_ratio` removed in transformers v5); fix applied, rerun in progress |
 | Mutation testing | Done; surviving mutations are mathematically equivalent (softmax shift-invariance) |
-| Demo UI (`app/`) | Built; runs on the base model; Kaggle/Colab GPU needed for GPU mode |
+| Demo UI (`app/`) | Built. Demo studio: generates a kernel with a general-purpose hosted model (qwen/qwen3-coder via an API), then verifies it with KernelForge's harness. The fine-tuned adapter is not served yet. Kaggle/Colab GPU needed for GPU mode |
 | Container hosting (Railway) | Dockerfile + `railway.json` done; interpreter-only (no GPU on Railway) |
 | GPU session runner (`scripts/gpu_session.py`) | Done; ran on a Kaggle T4 (dataset + baseline completed, finetune rerun in progress) |
 | Test suite | Passes on CPU (macOS and Linux); some tests require Docker or a GPU |
