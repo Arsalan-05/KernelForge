@@ -88,8 +88,12 @@ a { color: inherit; }
 .pill[data-variant="fine-tuned"] .dot { background: var(--ok); box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.2); }
 .pill[data-variant="remote"] { color: var(--info); border-color: rgba(96, 165, 250, 0.35); background: rgba(96, 165, 250, 0.12); }
 .pill[data-variant="remote"] .dot { background: var(--info); box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.2); }
-.pill[data-variant="mock"], .pill[data-variant="offline"] { color: var(--err); border-color: rgba(248, 113, 113, 0.35); background: var(--err-soft); }
-.pill[data-variant="mock"] .dot, .pill[data-variant="offline"] .dot { background: var(--err); }
+.pill[data-variant="mock"] { color: var(--err); border-color: rgba(248, 113, 113, 0.35); background: var(--err-soft); }
+.pill[data-variant="mock"] .dot { background: var(--err); }
+.pill[data-variant="offline"] { color: var(--warn); border-color: rgba(245, 165, 36, 0.35); background: var(--warn-soft); }
+.pill[data-variant="offline"] .dot { background: var(--warn); box-shadow: 0 0 0 3px rgba(245, 165, 36, 0.2); animation: pulse-dot 2s ease-in-out infinite; }
+@keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+@media (prefers-reduced-motion: reduce) { .pill[data-variant="offline"] .dot { animation: none; } }
 .pill.subtle { color: var(--text-2); font-weight: 500; }
 .pill svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.4; }
 .icon-btn {
@@ -377,6 +381,7 @@ label.control-label { cursor: default; }
 .tab-panel.on { display: block; }
 .callout { margin: 12px 14px 0; padding: 10px 12px; border-radius: var(--radius-sm); font-size: 12.5px; line-height: 1.5; border: 1px solid; }
 .callout.warn { color: #fcd9a0; background: var(--warn-soft); border-color: rgba(245, 165, 36, 0.3); }
+.callout.sample-notice { color: var(--info); background: rgba(96, 165, 250, 0.08); border-color: rgba(96, 165, 250, 0.25); }
 .callout strong { display: block; margin-bottom: 2px; color: #fde6bf; }
 .empty { display: grid; place-items: center; text-align: center; gap: 10px; padding: 70px 30px; color: var(--muted); }
 .empty svg { width: 46px; height: 46px; fill: none; stroke: var(--border-strong); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
