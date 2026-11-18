@@ -79,6 +79,7 @@ _ROOT = Path(__file__).parent.parent.parent
 DEFAULT_MODEL_CONFIG = _ROOT / "training" / "configs" / "qwen2.5-coder-1.5b.json"
 WEB_DIR = Path(__file__).parent.parent / "web"
 _RESULTS_REPORT = _ROOT / "data" / "raw" / "interpret_report_2026-11-15.json"
+_GPU_EVAL_DIR = _ROOT / "evaluation" / "results"
 MAX_REFERENCE_CHARS = 20_000
 MAX_DESCRIPTION_CHARS = 2_000
 MAX_CANDIDATES = 4
@@ -609,6 +610,37 @@ def list_categories():
     return {"categories": list(CATEGORIES)}
 
 
+def _read_gpu_eval(prefix: str) -> Optional[dict]:
+    """Read the most recent evaluation/results/{prefix}_*.json if it exists."""
+    matches = sorted(_GPU_EVAL_DIR.glob(f"{prefix}_*.json"))
+    if not matches:
+        return None
+    try:
+        report = json.loads(matches[-1].read_text())
+    except (OSError, ValueError):
+        return None
+    per_cat = report.get("per_category", {})
+    if not per_cat:
+        return None
+    total = sum(c.get("total", 0) for c in per_cat.values())
+    correct = sum(c.get("correct", 0) for c in per_cat.values())
+    return {
+        "source_file": matches[-1].name,
+        "run_name": report.get("run_name", prefix),
+        "model_name": report.get("model_name"),
+        "adapter_path": report.get("adapter_path"),
+        "device": report.get("device"),
+        "generated_at": report.get("generated_at"),
+        "total": total,
+        "correct": correct,
+        "pass_at_1": round(correct / total, 4) if total else None,
+        "per_category": {
+            cat: {"total": c.get("total", 0), "correct": c.get("correct", 0)}
+            for cat, c in per_cat.items()
+        },
+    }
+
+
 @app.get("/results")
 def get_results():
     """Coverage summary from the interpreter run and (once available) the GPU eval run."""
@@ -647,7 +679,10 @@ def get_results():
             }
         except (OSError, ValueError):
             pass
-    return {"interpreter": interpreter, "gpu": None}
+    # GPU eval: read the most recent baseline_*.json and finetuned_*.json if they exist.
+    gpu_baseline = _read_gpu_eval("baseline")
+    gpu_finetuned = _read_gpu_eval("finetuned")
+    return {"interpreter": interpreter, "gpu_baseline": gpu_baseline, "gpu_finetuned": gpu_finetuned}
 
 
 @app.get("/templates", response_model=list[TemplateInfo])

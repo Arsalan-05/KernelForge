@@ -21,18 +21,14 @@ QLoRA fine-tuning of Qwen2.5-Coder-1.5B-Instruct with a target of 60 verified ex
 | Base-model eval | Run on a Kaggle T4 (4-bit, zero-shot) on the 88 held-out tasks: 0 passed |
 | Canonical held-out split (`data/held_out_split.json`) | Done; held-out templates per category; no-leakage tests pass |
 | Smaller-model pilot (MPS, local) | LoRA pilot run locally; results not reported |
-| QLoRA fine-tuning (`training/finetune.py`) | Code written; Kaggle T4 rerun in progress |
+| QLoRA fine-tuning (`training/finetune.py`) | First T4 run crashed (`warmup_ratio` removed in transformers v5); fix applied, rerun in progress |
 | Mutation testing | Done; surviving mutations are mathematically equivalent (softmax shift-invariance) |
 | Demo UI (`app/`) | Built; runs on the base model; Kaggle/Colab GPU needed for GPU mode |
 | Container hosting (Railway) | Dockerfile + `railway.json` done; interpreter-only (no GPU on Railway) |
-| GPU session runner (`scripts/gpu_session.py`) | Done; tested on CPU; Kaggle T4 run pending |
+| GPU session runner (`scripts/gpu_session.py`) | Done; ran on a Kaggle T4 (dataset + baseline completed, finetune rerun in progress) |
 | Test suite | Passes on CPU (macOS and Linux); some tests require Docker or a GPU |
 
-**GPU fine-tuning has not been run.** There are no fine-tuned results yet.
-
-## Results
-
-Baseline vs fine-tuned comparison: pending (Kaggle T4 run in progress).
+**Fine-tuned results are pending.** The base-model baseline (0/88 on the held-out set) is verified on a T4.
 
 ## Quick start (fresh clone, no GPU)
 
@@ -81,7 +77,23 @@ All results are written to `kernelforge_outputs.zip`. See
 [docs/handoff/KAGGLE_RUNBOOK.md](docs/handoff/KAGGLE_RUNBOOK.md) for the full runbook,
 expected output files, resume instructions, and a post-session checklist.
 
-Fine-tuned results will appear after the Kaggle GPU session runs (held-out eval: `scripts/held_out_eval.py`).
+## Results
+
+| Model | Quantization | Eval set | pass@1 | Status |
+|---|---|---|---|---|
+| Qwen2.5-Coder-1.5B-Instruct (base) | 4-bit NF4 | 88 held-out (T4) | **0 / 88** | verified |
+| Qwen2.5-Coder-1.5B-Instruct + QLoRA | 4-bit NF4 | 88 held-out (T4) | pending | re-run in progress |
+
+- **Hardware**: 2× Tesla T4 (one used), Kaggle notebook
+- **Dataset**: 274 / 300 candidates verified on T4; split 167 train / 19 val / 88 held-out test
+- **Held-out templates** (1 per family): `attention__gqa_causal_prefill`,
+  `kv_cache__decode_attention_gqa`, `norm__layernorm`, `quantized_matmul__w8a16_perchannel`,
+  `rope__fused_qk`
+- **Baseline error breakdown** (88 entries, all generated-code errors, 0 harness errors):
+  `tl.Tensor` hallucination (40), undefined helper (16), JIT-outside-kernel (10),
+  syntax truncation (5), other (17)
+
+Reference-kernel speedups are measurements of hand-written templates, not model output.
 
 ## Run the demo (Kaggle/Colab)
 
@@ -145,8 +157,8 @@ tests/             harness, library, search, API, split integrity (most run on C
 
 ## Limitations
 
-- **No GPU results yet.** The fine-tuning and GPU evaluation pipeline is written but has not been
-  run on a GPU.
+- **GPU baseline verified, fine-tuned results pending.** The verification harness and the base-model
+  baseline have been run on a Kaggle T4. Fine-tuned results are pending.
 - **Small model and narrow scope.** Qwen2.5-Coder-1.5B, a target of about 300 training examples from
   15 op templates, five operator categories, fp16 forward passes only. Not comparable to larger
   RL-trained systems on broad benchmarks.

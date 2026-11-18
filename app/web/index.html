@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>KernelForge — PyTorch → Triton kernel studio</title>
   <meta name="description" content="Generate optimized Triton kernels for LLM-serving ops, with an optimization explanation and a live correctness + speedup check.">
+  <meta property="og:title" content="KernelForge — PyTorch → Triton kernel studio">
+  <meta property="og:description" content="Generate optimized Triton kernels for LLM-serving ops. Qwen2.5-Coder-1.5B + verification harness. Research preview.">
+  <meta property="og:image" content="/static/og.png">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="KernelForge — PyTorch → Triton kernel studio">
+  <meta name="twitter:description" content="Generate optimized Triton kernels for LLM-serving ops. Research preview.">
+  <meta name="twitter:image" content="/static/og.png">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2384cc16'/%3E%3Cpath d='M9 8v16M9 16l9-8M9 16l9 8M20 12h4M20 20h4' stroke='%230b1400' stroke-width='3' stroke-linecap='round' fill='none'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,6 +37,9 @@
     <div class="status">
       <span class="pill" id="model-pill" data-variant="unknown"><span class="dot"></span><span id="model-pill-text">Connecting…</span></span>
       <span class="pill subtle" id="gpu-pill"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="4" width="12" height="8" rx="1.5"/><path d="M5 2v2M8 2v2M11 2v2M5 12v2M8 12v2M11 12v2"/></svg><span id="gpu-pill-text">—</span></span>
+      <button class="icon-btn sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Toggle op library" aria-expanded="false">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
+      </button>
       <a class="icon-btn" href="https://github.com/Arsalan-05/KernelForge" target="_blank" rel="noopener" aria-label="Source on GitHub">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
@@ -37,7 +48,7 @@
 
   <div class="banner" id="banner" data-variant="base" role="status">
     <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7"/><path d="M8 7v4M8 4.5v.5"/></svg>
-    <span id="banner-text">Running the base model — not fine-tuned. The fine-tuned adapter is in progress and will drop into this same pipeline.</span>
+    <span id="banner-text">Running the base model (Qwen2.5-Coder-1.5B-Instruct) — not fine-tuned. The fine-tuned adapter is in progress and will drop into this same pipeline.</span>
   </div>
 
   <main id="studio" class="studio">
@@ -183,6 +194,9 @@
             <strong>No parseable Triton kernel in this output.</strong>
             The base model hasn't been trained on the <code>kernel:</code> / <code>explanation:</code> format yet, so this happens. The raw output is shown instead.
           </div>
+          <div class="callout sample-notice" id="sample-notice" hidden>
+            <strong>Recorded sample</strong> (mock mode, not model output). The backend is waking up — this is a pre-recorded template kernel shown while you wait.
+          </div>
           <div class="tab-panel on" data-panel="kernel">
             <div class="empty" id="kernel-empty">
               <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="6" y="10" width="36" height="28" rx="4"/><path d="M16 21l-4 3 4 3M32 21l4 3-4 3M26 18l-4 12"/></svg>
@@ -192,8 +206,14 @@
           </div>
           <div class="tab-panel" data-panel="compare">
             <div class="split">
-              <div class="split-pane"><div class="pane-label">PyTorch reference · <code>Model</code></div><div class="codeview"><pre><code id="cmp-ref" class="language-python"></code></pre></div></div>
-              <div class="split-pane"><div class="pane-label" id="cmp-kernel-label">Generated Triton · <code>ModelNew</code></div><div class="codeview"><pre><code id="cmp-kernel" class="language-python"></code></pre></div></div>
+              <div class="split-pane">
+                <div class="pane-head"><span class="pane-label">PyTorch reference · <code>Model</code></span><button class="btn ghost sm" id="copy-cmp-ref" type="button">Copy</button></div>
+                <div class="codeview"><div class="gutter" id="cmp-ref-gutter" aria-hidden="true"></div><pre><code id="cmp-ref" class="language-python"></code></pre></div>
+              </div>
+              <div class="split-pane">
+                <div class="pane-head"><span class="pane-label" id="cmp-kernel-label">Generated Triton · <code>ModelNew</code></span><button class="btn ghost sm" id="copy-cmp-kernel" type="button">Copy</button></div>
+                <div class="codeview"><div class="gutter" id="cmp-kernel-gutter" aria-hidden="true"></div><pre><code id="cmp-kernel" class="language-python"></code></pre></div>
+              </div>
             </div>
             <div class="compare-pending" id="compare-ablation-note">
               <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 7v4M8 4.5v.5"/></svg>
