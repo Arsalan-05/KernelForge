@@ -27,8 +27,7 @@ Without matplotlib the report still runs. Every table is written, and
 
 The formats below are what `scripts/gpu_session.py`, `data/build_dataset.py`
 (agent/a) and `evaluation/common.py`, `training/finetune.py`,
-`evaluation/explanation_review.py` (agent/b) write. agent/b's report keys are
-specified in its `docs/handoff/B_integration_notes.md`.
+`evaluation/explanation_review.py` (agent/b) write.
 
 | Artifact (path inside the zip) | Used for |
 |---|---|
