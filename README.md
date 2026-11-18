@@ -157,8 +157,8 @@ tests/             harness, library, search, API, split integrity (most run on C
 
 ## Limitations
 
-- **No GPU results yet.** The fine-tuning and GPU evaluation pipeline is written but has not been
-  run on a GPU.
+- **GPU baseline verified, fine-tuned results pending.** The verification harness and the base-model
+  baseline have been run on a Kaggle T4. Fine-tuned results are pending.
 - **Small model and narrow scope.** Qwen2.5-Coder-1.5B, a target of about 300 training examples from
   15 op templates, five operator categories, fp16 forward passes only. Not comparable to larger
   RL-trained systems on broad benchmarks.
