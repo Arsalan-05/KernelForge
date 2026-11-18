@@ -16,12 +16,12 @@ QLoRA fine-tuning of Qwen2.5-Coder-1.5B-Instruct with a target of 60 verified ex
 
 | Component | Status |
 |---|---|
-| Verification harness (`verification/`) | Done; Triton CPU-interpreter check works; **GPU mode not yet validated on a real GPU** |
-| Dataset (15 op templates, 5 categories) | Triton CPU-interpreter check run; GPU verification pending |
-| Base-model eval | Run locally; results not reported until verified |
+| Verification harness (`verification/`) | Done; Triton CPU-interpreter check works; validated on a Kaggle T4 GPU |
+| Dataset (15 op templates, 5 categories) | Verified on a Kaggle T4 GPU: 274 of 300 reference kernels pass |
+| Base-model eval | Run on a Kaggle T4 (4-bit, zero-shot) on the 88 held-out tasks: 0 passed |
 | Canonical held-out split (`data/held_out_split.json`) | Done; held-out templates per category; no-leakage tests pass |
 | Smaller-model pilot (MPS, local) | LoRA pilot run locally; results not reported |
-| QLoRA fine-tuning (`training/finetune.py`) | Code written; **not yet run on T4**; dry-run passes |
+| QLoRA fine-tuning (`training/finetune.py`) | Code written; Kaggle T4 rerun in progress |
 | Mutation testing | Done; surviving mutations are mathematically equivalent (softmax shift-invariance) |
 | Demo UI (`app/`) | Built; runs on the base model; Kaggle/Colab GPU needed for GPU mode |
 | Container hosting (Railway) | Dockerfile + `railway.json` done; interpreter-only (no GPU on Railway) |
