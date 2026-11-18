@@ -79,27 +79,36 @@ All results are written to `kernelforge_outputs.zip`. See
 [docs/handoff/KAGGLE_RUNBOOK.md](docs/handoff/KAGGLE_RUNBOOK.md) for the full runbook,
 expected output files, resume instructions, and a post-session checklist.
 
-## Base model numbers (pre-fine-tuning floor, verified locally)
+## Results
 
-Qwen2.5-Coder-1.5B-Instruct, fp32 on MPS, 60-entry subset, same prompt as training (`notes=False`),
-`max_new_tokens=1536`, temperature 0:
+| Model | Quantization | Eval set | pass@1 | Status |
+|---|---|---|---|---|
+| Qwen2.5-Coder-1.5B-Instruct (base) | 4-bit NF4 | 88 held-out (T4) | **0 / 88** | verified |
+| Qwen2.5-Coder-1.5B-Instruct + QLoRA | 4-bit NF4 | 88 held-out (T4) | pending | re-run in progress |
 
-| Metric | Value |
-|---|---|
-| No-header pass@1 | 0/60 = 0.000 (95% CI [0.000, 0.060]) |
-| With-header pass@1 (NameError entries) | 0/50 = 0.000 |
-| Truncations | 4/60 |
-| Degenerate output | 0/60 |
-| Median tok/s | 5.9 (fp32 MPS) |
+- **Hardware**: 2× Tesla T4 (one used), Kaggle notebook
+- **Dataset**: 274 / 300 candidates verified on T4; split 167 train / 19 val / 88 held-out test
+- **Held-out templates** (1 per family): `attention__gqa_causal_prefill`,
+  `kv_cache__decode_attention_gqa`, `norm__layernorm`, `quantized_matmul__w8a16_perchannel`,
+  `rope__fused_qk`
+- **Baseline error breakdown** (88 entries, all generated-code errors, 0 harness errors):
+  `tl.Tensor` hallucination (40), undefined helper (16), JIT-outside-kernel (10),
+  syntax truncation (5), other (17)
 
-Dominant failure: 50/60 outputs omit all Triton imports (`NameError: name 'triton' is not defined`).
-Adding the import header raises a secondary NameError or TypeError in all 50 cases. The remaining
-10 fail with a SyntaxError or truncation. Zero outputs pass either pass.
+Reference-kernel speedups are measurements of hand-written templates, not model output.
 
-The 60-entry subset has 30 entries that overlap with the train/val split (leakage for fine-tuned eval).
-For the 15 clean held-out test entries in this subset: 0/15 pass@1 (CI [0.000, 0.218]).
+<details>
+<summary>Earlier local baselines (fp32 MPS, different entry subsets)</summary>
 
-Fine-tuned results will appear after the Kaggle GPU session runs (held-out eval: `scripts/held_out_eval.py`).
+**1.5B base, fp32 on MPS, 60 entries** (`max_new_tokens=1536`, temperature 0):
+0/60 pass@1 (95% CI [0.000, 0.060]). Dominant failure: 50/60 omit Triton imports.
+The 60-entry subset has 30 entries overlapping train/val (leakage for fine-tuned eval);
+the 15 clean held-out entries give 0/15 pass@1 (CI [0.000, 0.218]).
+
+**0.5B base, fp32 on MPS, 20 entries**: 0/20 pass@1 (CI [0.000, 0.161]), 80% parse rate.
+**0.5B fine-tuned (10/33 steps, MPS pilot)**: 0/20 pass@1, but parse rate rose to 100%
+and 2 entries reached the Triton interpreter runtime.
+</details>
 
 ## Run the demo (Kaggle/Colab)
 
