@@ -746,25 +746,87 @@ function renderResults(data) {
   );
   view.append(tmplSection);
 
-  // ── GPU eval pending ─────────────────────────────────────────────────
-  view.append(
-    el("div", { class: "res-section res-gpu-pending" },
+  // ── GPU baseline eval ────────────────────────────────────────────────
+  const gpuBase = data?.gpu_baseline;
+  if (gpuBase) {
+    const gpuSection = el("div", { class: "res-section" },
       el("div", { class: "res-header" },
-        el("span", { class: "res-label" }, "GPU eval"),
-        el("span", { class: "chip subtle" }, "not yet run")
+        el("span", { class: "res-label" }, "GPU baseline"),
+        el("span", { class: "chip subtle" }, "Base model, held-out set (T4, 4-bit, zero-shot)")
       ),
-      el("div", { class: "res-pending-body" },
-        el("div", { class: "res-pending-icon", "aria-hidden": "true" }, "⌛"),
-        el("div", {},
-          el("div", { class: "res-pending-title" }, "Pending Kaggle T4 session"),
-          el("div", { class: "res-pending-sub" },
-            "GPU eval results (pass rate, speedup, failure breakdown, ablation matrix) " +
-            "appear here once a session runs. See KAGGLE_RUNBOOK.md for setup instructions."
+      el("div", { class: "res-summary-row" },
+        el("div", { class: "res-big-num" },
+          el("span", { class: "res-num" }, `${gpuBase.correct}`),
+          el("span", { class: "res-den" }, ` / ${gpuBase.total}`),
+        ),
+        el("div", { class: "res-big-label" }, "held-out entries pass"),
+      ),
+      el("div", { class: "res-note-row" },
+        `Source: ${gpuBase.source_file} · ${gpuBase.model_name || "unknown model"} · ${gpuBase.device || "?"}`
+      )
+    );
+    const gpuCatTable = el("table", { class: "res-table" },
+      el("thead", {}, el("tr", {},
+        el("th", {}, "Category"), el("th", { class: "num" }, "Correct"), el("th", {}, "")
+      ))
+    );
+    const gpuCatBody = el("tbody", {});
+    for (const cat of Object.keys(CATEGORY_META)) {
+      const c = gpuBase.per_category?.[cat];
+      if (!c) continue;
+      gpuCatBody.append(
+        el("tr", {},
+          el("td", {}, el("span", { class: "cat-dot", style: `background:${CATEGORY_META[cat].color}` }), " ", CATEGORY_FULL_LABEL[cat] || cat),
+          el("td", { class: "num" }, `${c.correct} / ${c.total}`),
+          el("td", { class: "bar-cell" }, _passBar(c.correct, c.total))
+        )
+      );
+    }
+    gpuCatTable.append(gpuCatBody);
+    gpuSection.append(gpuCatTable);
+    view.append(gpuSection);
+  }
+
+  // ── GPU fine-tuned eval ─────────────────────────────────────────────
+  const gpuFt = data?.gpu_finetuned;
+  if (gpuFt) {
+    view.append(
+      el("div", { class: "res-section" },
+        el("div", { class: "res-header" },
+          el("span", { class: "res-label" }, "GPU fine-tuned"),
+          el("span", { class: "chip subtle" }, "Fine-tuned adapter, held-out set (T4, 4-bit)")
+        ),
+        el("div", { class: "res-summary-row" },
+          el("div", { class: "res-big-num" },
+            el("span", { class: "res-num" }, `${gpuFt.correct}`),
+            el("span", { class: "res-den" }, ` / ${gpuFt.total}`),
+          ),
+          el("div", { class: "res-big-label" }, "held-out entries pass"),
+        ),
+        el("div", { class: "res-note-row" },
+          `Source: ${gpuFt.source_file} · ${gpuFt.model_name || "unknown model"}`
+        )
+      )
+    );
+  } else {
+    view.append(
+      el("div", { class: "res-section res-gpu-pending" },
+        el("div", { class: "res-header" },
+          el("span", { class: "res-label" }, "Fine-tuned eval"),
+          el("span", { class: "chip subtle" }, "pending")
+        ),
+        el("div", { class: "res-pending-body" },
+          el("div", { class: "res-pending-icon", "aria-hidden": "true" }, "⌛"),
+          el("div", {},
+            el("div", { class: "res-pending-title" }, "Fine-tuned eval pending"),
+            el("div", { class: "res-pending-sub" },
+              "Fine-tuned results appear here once the QLoRA adapter is trained and evaluated on the held-out set."
+            )
           )
         )
       )
-    )
-  );
+    );
+  }
 }
 
 function verifyHead(stateChip, extra) {
