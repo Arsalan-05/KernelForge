@@ -236,7 +236,7 @@
           <div class="card verify-card" id="verify-card"></div>
           <div class="card explain-card">
             <div class="card-head">
-              <h3>Why it's faster</h3>
+              <h3>Optimization rationale</h3>
               <span class="chip subtle">model-generated</span>
             </div>
             <div class="explanation" id="explanation"><p class="muted">The optimization rationale appears here. The model writes it alongside the kernel; it isn't a caption added afterwards.</p></div>
@@ -263,7 +263,7 @@
     <div class="section-inner">
       <p class="eyebrow">Architecture</p>
       <h2>One verification harness, everywhere</h2>
-      <p class="lede">The correctness + speedup check you just watched is the exact <code>verify_model_kernel</code> function that filters the training dataset and scores the evaluation runs. The demo has no separate, friendlier check.</p>
+      <p class="lede">The correctness check you just watched (plus timing when a GPU is present) is the exact <code>verify_model_kernel</code> function that filters the training dataset and scores the evaluation runs. The demo has no separate, friendlier check.</p>
 
       <div class="flow">
         <div class="flow-node"><span class="flow-k">Input</span><strong>PyTorch <code>Model</code></strong><span>+ <code>get_inputs()</code> / <code>get_init_inputs()</code></span></div>
@@ -289,7 +289,7 @@
         </article>
         <article class="feature">
           <span class="feature-n">02</span>
-          <h3>Data-efficient specialization</h3>
+          <h3>Narrow specialization</h3>
           <p>Five LLM-<em>serving</em> categories (quantized matmul, prefill attention, KV-cache decode, normalization, RoPE), targeting 60 harness-verified examples each, rather than generic KernelBench breadth. Supervised QLoRA, no RL.</p>
         </article>
         <article class="feature">
