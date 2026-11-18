@@ -16,21 +16,19 @@ QLoRA fine-tuning of Qwen2.5-Coder-1.5B-Instruct with a target of 60 verified ex
 
 | Component | Status |
 |---|---|
-| Verification harness (`verification/`) | Done; Triton CPU-interpreter check works; **GPU mode validated on T4** (274/300 pass, 26 rejected) |
-| Dataset (15 op templates, 5 categories) | Triton CPU-interpreter check run; **GPU (T4): 274/300 verified** (12 incorrect, 9 timeout, 5 timeout/OOM) |
-| T4 baseline eval (4-bit, 88 held-out entries) | Done: **0/88 pass@1**; dominant error: hallucinated `tl.Tensor` (40/88); 0 harness errors |
-| Base-model eval | Run locally; results not reported until verified on GPU |
+| Verification harness (`verification/`) | Done; Triton CPU-interpreter check works; validated on a Kaggle T4 GPU |
+| Dataset (15 op templates, 5 categories) | Verified on a Kaggle T4 GPU: 274 of 300 reference kernels pass |
+| Base-model eval | Run on a Kaggle T4 (4-bit, zero-shot) on the 88 held-out tasks: 0 passed |
 | Canonical held-out split (`data/held_out_split.json`) | Done; held-out templates per category; no-leakage tests pass |
 | Smaller-model pilot (MPS, local) | LoRA pilot run locally; results not reported |
-| QLoRA fine-tuning (`training/finetune.py`) | **Crashed on T4**: `warmup_ratio` removed in transformers v5 (Kaggle's image); fix: pin `transformers<5` |
+| QLoRA fine-tuning (`training/finetune.py`) | First T4 run crashed (`warmup_ratio` removed in transformers v5); fix applied, rerun in progress |
 | Mutation testing | Done; surviving mutations are mathematically equivalent (softmax shift-invariance) |
 | Demo UI (`app/`) | Built; runs on the base model; Kaggle/Colab GPU needed for GPU mode |
 | Container hosting (Railway) | Dockerfile + `railway.json` done; interpreter-only (no GPU on Railway) |
-| GPU session runner (`scripts/gpu_session.py`) | Done; **ran on T4** (dataset + baseline ok, finetune crashed) |
+| GPU session runner (`scripts/gpu_session.py`) | Done; ran on a Kaggle T4 (dataset + baseline completed, finetune rerun in progress) |
 | Test suite | Passes on CPU (macOS and Linux); some tests require Docker or a GPU |
 
-**GPU fine-tuning crashed** on the first Kaggle T4 run (`warmup_ratio` removed in transformers v5).
-The dataset (274/300) and baseline (0/88 pass@1) are validated on GPU. Fix the install pin and re-run.
+**Fine-tuned results are pending.** The base-model baseline (0/88 on the held-out set) is verified on a T4.
 
 ## Quick start (fresh clone, no GPU)
 
