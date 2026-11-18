@@ -26,6 +26,8 @@ Generates a kernel with a general-purpose hosted model (qwen/qwen3-coder via an 
 
 Dataset, held-out templates and the baseline error breakdown: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#evaluation-details).
 
+Reference-kernel speedups are measurements of hand-written templates, not model output.
+
 ---
 
 ## Status
@@ -54,7 +56,24 @@ GPU session and demo on Kaggle/Colab: [`docs/KAGGLE_RUN.md`](docs/KAGGLE_RUN.md)
 
 ```bash
 pytest tests/ -v   # some tests skip without Docker or triton
+python scripts/check_split_leakage.py   # expected: "PASSED — no leakage detected."
+python scripts/preflight_check.py --no-gpu   # packages, configs, dataset status
 ```
+
+---
+
+## Project layout
+
+```
+KernelForge/
+├── app/          # FastAPI backend + streaming API + web studio UI + launcher
+├── training/     # QLoRA fine-tuning + configs
+├── evaluation/   # baseline/fine-tuned eval + explanation rubric + report generator
+├── tests/        # harness, library, search, API, split integrity
+└── docs/         # architecture, commands, Kaggle run, paper skeleton, project writeup, handoff docs
+```
+
+---
 
 ## Limitations
 
@@ -64,3 +83,11 @@ pytest tests/ -v   # some tests skip without Docker or triton
 - All shape variants within a template share the same kernel logic, so there are 15 distinct kernels.
 - Subprocess isolation + rlimits is suitable for research; it is not a hardened sandbox.
 - Triton requires Linux + NVIDIA; macOS uses the CPU interpreter mode in Docker.
+
+## Documentation
+
+- **Architecture:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — scope, full status table, evaluation details, repo layout, full limitations
+- **Commands:** [`docs/COMMANDS.md`](docs/COMMANDS.md) — CPU commands, local dev server, container and service variables
+- **Kaggle run:** [`docs/KAGGLE_RUN.md`](docs/KAGGLE_RUN.md) — Kaggle GPU session and Kaggle/Colab demo
+- **Dataset card:** [`docs/DATASET_CARD.md`](docs/DATASET_CARD.md) — dataset card
+- **Project write-up:** [`docs/project_writeup.md`](docs/project_writeup.md) — project write-up
