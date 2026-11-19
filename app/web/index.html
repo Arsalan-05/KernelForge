@@ -325,12 +325,12 @@
   <div id="page-studio" class="page" hidden>
 
     <!-- Honesty banner (shown only while on studio page; router.js manages hidden) -->
-    <div class="banner" id="banner" data-variant="base" role="status" aria-live="polite" hidden>
+    <div class="banner" id="banner" data-variant="unknown" role="status" aria-live="polite" hidden>
       <svg viewBox="0 0 16 16" aria-hidden="true">
         <circle cx="8" cy="8" r="7"/>
         <path d="M8 7v4M8 4.5v.5"/>
       </svg>
-      <span id="banner-text">Running the base model (Qwen2.5-Coder-1.5B-Instruct) — not fine-tuned. The fine-tuned adapter is in progress and will drop into this same pipeline.</span>
+      <span id="banner-text">Connecting to backend…</span>
     </div>
 
     <!-- Studio intro + drawer toggle (outside the grid) -->
@@ -704,7 +704,7 @@
             <div class="flow-node">
               <span class="flow-k">Model</span>
               <strong id="flow-model-name">Qwen2.5-Coder-1.5B</strong>
-              <span id="flow-model-sub">base today · QLoRA adapter next</span>
+              <span id="flow-model-sub">general-purpose model via API · fine-tuned adapter next</span>
             </div>
             <div class="flow-arrow" aria-hidden="true"></div>
             <div class="flow-node">
