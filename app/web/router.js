@@ -46,7 +46,8 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e)
 /* ── Route definitions ───────────────────────────────────────────────────── */
 
 const ROUTES = {
-  "studio":       { pageId: "page-studio",       navHref: "#/studio" },
+  "home":         { pageId: "page-home",          navHref: "#/" },
+  "studio":       { pageId: "page-studio",        navHref: "#/studio" },
   "results":      { pageId: "page-results",       navHref: "#/results" },
   "library":      { pageId: "page-library",       navHref: "#/library" },
   "how-it-works": { pageId: "page-how-it-works",  navHref: "#/how-it-works" },
@@ -54,11 +55,13 @@ const ROUTES = {
   "about":        { pageId: "page-about",         navHref: "#/about" },
 };
 
-const DEFAULT_ROUTE = "studio";
+const DEFAULT_ROUTE = "home";
 
 function currentRoute() {
-  const hash = location.hash.replace(/^#\/?/, "").split("?")[0].trim();
-  return ROUTES[hash] ? hash : DEFAULT_ROUTE;
+  const raw = location.hash.replace(/^#\/?/, "").split("?")[0].trim();
+  /* Empty hash or bare "#/" → home */
+  if (!raw || raw === "") return "home";
+  return ROUTES[raw] ? raw : DEFAULT_ROUTE;
 }
 
 let _activeRoute = null;
@@ -72,10 +75,24 @@ function navigate(routeKey) {
     if (el) el.hidden = key !== routeKey;
   });
 
+  /* Show/hide the studio banner only on the studio page */
+  const banner = document.getElementById("banner");
+  if (banner) banner.hidden = routeKey !== "studio";
+
+  /* Show/hide model/gpu pills only on studio page */
+  const modelPill = document.getElementById("model-pill");
+  const gpuPill   = document.getElementById("gpu-pill");
+  if (modelPill) modelPill.hidden = routeKey !== "studio";
+  if (gpuPill)   gpuPill.hidden   = routeKey !== "studio";
+
   /* Update nav active state */
   document.querySelectorAll(".nav-link").forEach((a) => {
-    const href = a.getAttribute("href").replace(/^#\/?/, "");
-    const active = href === routeKey;
+    /* Normalize both the href and the routeKey for comparison:
+       "#/" → "home", "#/studio" → "studio", etc. */
+    const rawHref = a.getAttribute("href").replace(/^#\/?/, "");
+    /* For the home link (#/), rawHref will be empty string */
+    const hrefKey = rawHref === "" ? "home" : rawHref;
+    const active = hrefKey === routeKey;
     a.classList.toggle("active", active);
     a.setAttribute("aria-current", active ? "page" : "false");
   });
@@ -85,6 +102,11 @@ function navigate(routeKey) {
   /* On first arrival at Studio, trigger studio init if not yet done */
   if (routeKey === "studio" && typeof window.studioReady === "function") {
     window.studioReady();
+  }
+
+  /* When navigating to studio on desktop, ensure sidebar is open */
+  if (routeKey === "studio" && isDesktop()) {
+    setSidebarOpen(true);
   }
 }
 
@@ -128,6 +150,57 @@ function initMobileNav() {
   });
 }
 
+/* ── Sidebar drawer ───────────────────────────────────────────────────────── */
+
+function isDesktop() {
+  return window.matchMedia("(min-width: 981px)").matches;
+}
+
+function setSidebarOpen(open) {
+  const studio  = document.querySelector(".studio");
+  const sidebar = document.querySelector(".sidebar");
+  const drawerBtn = document.getElementById("sidebar-drawer-btn");
+  const legacyBtn = document.getElementById("sidebar-toggle");
+
+  if (!studio || !sidebar) return;
+
+  /* Apply classes */
+  studio.classList.toggle("sidebar-open", open);
+  sidebar.classList.toggle("open", open);        /* compat: app.js checks .open on sidebar */
+
+  /* Update aria-expanded on both toggle buttons */
+  if (drawerBtn) drawerBtn.setAttribute("aria-expanded", String(open));
+  if (legacyBtn) legacyBtn.setAttribute("aria-expanded", String(open));
+}
+
+function initSidebarDrawer() {
+  const drawerBtn = document.getElementById("sidebar-drawer-btn");
+  if (!drawerBtn) return;
+
+  /* Initial state: open on desktop, closed on mobile */
+  setSidebarOpen(isDesktop());
+
+  drawerBtn.addEventListener("click", () => {
+    const studio = document.querySelector(".studio");
+    const isOpen = studio ? studio.classList.contains("sidebar-open") : false;
+    setSidebarOpen(!isOpen);
+  });
+
+  /* Re-evaluate on resize: auto-open if going from mobile→desktop while closed */
+  window.matchMedia("(min-width: 981px)").addEventListener("change", (e) => {
+    if (e.matches) {
+      /* Switched to desktop: open sidebar if currently closed */
+      const studio = document.querySelector(".studio");
+      if (studio && !studio.classList.contains("sidebar-open")) {
+        setSidebarOpen(true);
+      }
+    } else {
+      /* Switched to mobile: close sidebar */
+      setSidebarOpen(false);
+    }
+  });
+}
+
 /* ── Bootstrap ───────────────────────────────────────────────────────────── */
 
 function initRouter() {
@@ -137,6 +210,7 @@ function initRouter() {
   if (themeBtn) themeBtn.addEventListener("click", toggleTheme);
 
   initMobileNav();
+  initSidebarDrawer();
 
   window.addEventListener("hashchange", handleHashChange);
   handleHashChange(); /* run on page load */

@@ -4,14 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>KernelForge — PyTorch → Triton kernel studio</title>
-  <meta name="description" content="Generate optimized Triton kernels for LLM-serving ops, with an optimization explanation and a live correctness + speedup check.">
+  <meta name="description" content="Training a small model (Qwen2.5-Coder-1.5B) to write Triton GPU kernels, with an automated checker that tests every kernel against PyTorch.">
   <meta property="og:title" content="KernelForge — PyTorch → Triton kernel studio">
-  <meta property="og:description" content="Generate optimized Triton kernels for LLM-serving ops. Qwen2.5-Coder-1.5B + verification harness. Research preview.">
+  <meta property="og:description" content="Training a small model (Qwen2.5-Coder-1.5B) to write Triton GPU kernels, with an automated checker that tests every kernel against PyTorch. Research preview.">
   <meta property="og:image" content="/static/og.png">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="KernelForge — PyTorch → Triton kernel studio">
-  <meta name="twitter:description" content="Generate optimized Triton kernels for LLM-serving ops. Research preview.">
+  <meta name="twitter:description" content="Training Qwen2.5-Coder-1.5B to write Triton GPU kernels. Research preview.">
   <meta name="twitter:image" content="/static/og.png">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2384cc16'/%3E%3Cpath d='M9 8v16M9 16l9-8M9 16l9 8M20 12h4M20 20h4' stroke='%230b1400' stroke-width='3' stroke-linecap='round' fill='none'/%3E%3C/svg%3E">
   <!-- Self-hosted highlight.js: dark theme active by default; router.js swaps for light -->
@@ -28,7 +28,7 @@
        TOP NAV
   ═══════════════════════════════════════════════════════════════════════ -->
   <header class="topbar" role="banner">
-    <a class="brand" href="#/studio" aria-label="KernelForge home">
+    <a class="brand" href="#/" aria-label="KernelForge home">
       <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
         <rect width="32" height="32" rx="8"/>
         <path d="M9 8v16M9 16l9-8M9 16l9 8M20 12h4M20 20h4"/>
@@ -39,21 +39,22 @@
 
     <!-- Desktop nav -->
     <nav class="nav" aria-label="Primary navigation">
-      <a class="nav-link" href="#/studio"       aria-current="false">Studio</a>
-      <a class="nav-link" href="#/results"      aria-current="false">Results</a>
-      <a class="nav-link" href="#/library"      aria-current="false">Library</a>
+      <a class="nav-link" href="#/"            aria-current="false">Home</a>
+      <a class="nav-link" href="#/studio"      aria-current="false">Studio</a>
+      <a class="nav-link" href="#/results"     aria-current="false">Results</a>
+      <a class="nav-link" href="#/library"     aria-current="false">Library</a>
       <a class="nav-link" href="#/how-it-works" aria-current="false">How it works</a>
-      <a class="nav-link" href="#/dataset"      aria-current="false">Dataset</a>
-      <a class="nav-link" href="#/about"        aria-current="false">About</a>
+      <a class="nav-link" href="#/dataset"     aria-current="false">Dataset</a>
+      <a class="nav-link" href="#/about"       aria-current="false">About</a>
     </nav>
 
     <div class="topbar-right">
-      <!-- Model & GPU pills (studio-only content, always visible) -->
-      <span class="pill" id="model-pill" data-variant="unknown">
+      <!-- Model & GPU pills (studio-only content, hidden until on studio page) -->
+      <span class="pill" id="model-pill" data-variant="unknown" hidden>
         <span class="dot" aria-hidden="true"></span>
         <span id="model-pill-text">Connecting…</span>
       </span>
-      <span class="pill subtle" id="gpu-pill">
+      <span class="pill subtle" id="gpu-pill" hidden>
         <svg viewBox="0 0 16 16" aria-hidden="true">
           <rect x="2" y="4" width="12" height="8" rx="1.5"/>
           <path d="M5 2v2M8 2v2M11 2v2M5 12v2M8 12v2M11 12v2"/>
@@ -104,21 +105,227 @@
 
   <!-- Mobile nav dropdown -->
   <nav id="mobile-nav" aria-label="Mobile navigation" hidden>
-    <a class="nav-link" href="#/studio"       aria-current="false">Studio</a>
-    <a class="nav-link" href="#/results"      aria-current="false">Results</a>
-    <a class="nav-link" href="#/library"      aria-current="false">Library</a>
+    <a class="nav-link" href="#/"            aria-current="false">Home</a>
+    <a class="nav-link" href="#/studio"      aria-current="false">Studio</a>
+    <a class="nav-link" href="#/results"     aria-current="false">Results</a>
+    <a class="nav-link" href="#/library"     aria-current="false">Library</a>
     <a class="nav-link" href="#/how-it-works" aria-current="false">How it works</a>
-    <a class="nav-link" href="#/dataset"      aria-current="false">Dataset</a>
-    <a class="nav-link" href="#/about"        aria-current="false">About</a>
+    <a class="nav-link" href="#/dataset"     aria-current="false">Dataset</a>
+    <a class="nav-link" href="#/about"       aria-current="false">About</a>
   </nav>
 
   <!-- ═══════════════════════════════════════════════════════════════════════
-       PAGE: STUDIO (#/studio — default)
+       PAGE: HOME (#/ — default)
   ═══════════════════════════════════════════════════════════════════════ -->
-  <div id="page-studio" class="page">
+  <div id="page-home" class="page">
+    <main aria-label="Home page">
 
-    <!-- Honesty banner -->
-    <div class="banner" id="banner" data-variant="base" role="status" aria-live="polite">
+      <!-- Hero -->
+      <section class="hero" aria-label="Hero">
+        <div class="hero-inner">
+          <h1 class="hero-title">KernelForge</h1>
+          <p class="hero-tagline">Training a small model (Qwen2.5-Coder-1.5B) to write Triton GPU kernels, with an automated checker that tests every kernel against PyTorch.</p>
+          <div class="hero-cta" role="group" aria-label="Primary actions">
+            <a class="btn primary" href="#/studio">Try the studio</a>
+            <a class="btn ghost" href="#/results">See results</a>
+          </div>
+          <p class="hero-honest">Research preview. The demo uses a general-purpose hosted model; the fine-tuned adapter is not served yet.</p>
+        </div>
+      </section>
+
+      <!-- Pipeline strip -->
+      <section class="home-pipeline-section" aria-label="Pipeline overview">
+        <div class="home-section-inner">
+          <p class="eyebrow">How it works</p>
+          <div class="home-pipeline" role="img" aria-label="Four-step pipeline: Dataset, Fine-tune QLoRA, Generate, Verify against PyTorch">
+            <div class="hp-step">
+              <div class="hp-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <ellipse cx="12" cy="6" rx="8" ry="3"/>
+                  <path d="M4 6v4c0 1.66 3.58 3 8 3s8-1.34 8-3V6"/>
+                  <path d="M4 10v4c0 1.66 3.58 3 8 3s8-1.34 8-3v-4"/>
+                </svg>
+              </div>
+              <span class="hp-label">Dataset</span>
+              <span class="hp-sub">274 verified<br>serving-kernel examples</span>
+            </div>
+            <div class="hp-arrow" aria-hidden="true">
+              <svg viewBox="0 0 24 8" fill="none">
+                <path d="M0 4h20M16 1l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <div class="hp-step">
+              <div class="hp-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                  <path d="M2 17l10 5 10-5"/>
+                  <path d="M2 12l10 5 10-5"/>
+                </svg>
+              </div>
+              <span class="hp-label">Fine-tune (QLoRA)</span>
+              <span class="hp-sub">Qwen2.5-Coder-1.5B<br>supervised fine-tuning</span>
+            </div>
+            <div class="hp-arrow" aria-hidden="true">
+              <svg viewBox="0 0 24 8" fill="none">
+                <path d="M0 4h20M16 1l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <div class="hp-step">
+              <div class="hp-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="16 18 22 12 16 6"/>
+                  <polyline points="8 6 2 12 8 18"/>
+                </svg>
+              </div>
+              <span class="hp-label">Generate</span>
+              <span class="hp-sub">Model writes a<br>Triton kernel</span>
+            </div>
+            <div class="hp-arrow" aria-hidden="true">
+              <svg viewBox="0 0 24 8" fill="none">
+                <path d="M0 4h20M16 1l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <div class="hp-step hp-step-accent">
+              <div class="hp-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                  <polyline points="22 4 12 14.01 9 11.01"/>
+                </svg>
+              </div>
+              <span class="hp-label">Verify against PyTorch</span>
+              <span class="hp-sub">Subprocess sandbox<br>checks correctness</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Feature cards -->
+      <section class="home-features-section" aria-label="Key features">
+        <div class="home-section-inner">
+          <p class="eyebrow">What's included</p>
+          <div class="home-features">
+            <article class="home-feature-card">
+              <div class="hf-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+              </div>
+              <h3>Verification harness</h3>
+              <p>Subprocess sandbox checks every kernel against PyTorch using seeded inputs and <code>allclose</code>. The same harness filters the training dataset, scores evaluation runs, and powers the interactive studio.</p>
+            </article>
+            <article class="home-feature-card">
+              <div class="hf-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="11" cy="11" r="8"/>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                  <line x1="11" y1="8" x2="11" y2="14"/>
+                  <line x1="8" y1="11" x2="14" y2="11"/>
+                </svg>
+              </div>
+              <h3>Leakage-checked split</h3>
+              <p>Template-level holdout — 88 held-out test examples that share no template with the 167 training examples. No train/test contamination by construction.</p>
+            </article>
+            <article class="home-feature-card">
+              <div class="hf-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="3" width="7" height="7"/>
+                  <rect x="14" y="3" width="7" height="7"/>
+                  <rect x="14" y="14" width="7" height="7"/>
+                  <rect x="3" y="14" width="7" height="7"/>
+                </svg>
+              </div>
+              <h3>Five operator categories</h3>
+              <p>15 templates across <code>quantized_matmul</code>, <code>attention</code>, <code>kv_cache</code>, <code>norm</code>, and <code>rope</code> — the LLM-serving ops that benefit most from custom GPU kernels.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Results snapshot -->
+      <section class="home-results-section" aria-label="Results snapshot">
+        <div class="home-section-inner">
+          <p class="eyebrow">Numbers so far</p>
+          <h2 class="home-section-h2">Results snapshot</h2>
+          <div id="home-results" aria-live="polite">
+            <div class="home-results-table-wrap">
+              <table class="home-results-table" aria-label="Evaluation results">
+                <thead>
+                  <tr>
+                    <th scope="col">Model</th>
+                    <th scope="col" class="num">Held-out verified</th>
+                    <th scope="col">Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Base model (Qwen2.5-Coder-1.5B-Instruct, 4-bit, zero-shot)</td>
+                    <td class="num"><span class="res-num-inline">0</span><span class="res-den-inline">/88</span></td>
+                    <td class="muted">No training signal for Triton format</td>
+                  </tr>
+                  <tr>
+                    <td>Fine-tuned (QLoRA)</td>
+                    <td class="num"><span class="home-res-pending">pending</span></td>
+                    <td class="muted">Training in progress</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="home-results-note">Verification = subprocess sandbox passes <code>allclose</code> against PyTorch on the held-out set. <a href="#/results" class="home-link">Full results page</a> will populate from the <code>/results</code> endpoint once available.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Honest limits strip -->
+      <section class="home-limits-section" aria-label="Honest limitations">
+        <div class="home-section-inner home-section-narrow">
+          <p class="eyebrow">Honest limits</p>
+          <h2 class="home-section-h2">What this is not</h2>
+          <ul class="home-limits-list" aria-label="Limitations">
+            <li>
+              <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v5l3 2"/><circle cx="8" cy="8" r="6.5"/></svg>
+              <span>Fine-tuned results are pending — training is not complete yet.</span>
+            </li>
+            <li>
+              <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 8h12M8 2v12"/></svg>
+              <span>Small model (1.5B) and narrow scope — five operator categories, not a broad benchmark.</span>
+            </li>
+            <li>
+              <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5 8h6M8 5v6"/><circle cx="8" cy="8" r="6.5"/></svg>
+              <span>The interpreter harness checks correctness only — no speed claims without GPU verification.</span>
+            </li>
+          </ul>
+          <p class="home-limits-more"><a href="#/about" class="home-link">Full context in About →</a></p>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Home page footer -->
+    <footer class="home-footer" role="contentinfo">
+      <div class="home-footer-inner">
+        <span class="home-footer-brand">
+          <svg viewBox="0 0 32 32" width="18" height="18" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="currentColor" opacity="0.8"/>
+            <path d="M9 8v16M9 16l9-8M9 16l9 8M20 12h4M20 20h4" stroke="var(--accent-ink,#0b1400)" stroke-width="3" stroke-linecap="round" fill="none"/>
+          </svg>
+          KernelForge
+        </span>
+        <span class="home-footer-links">
+          <a href="https://github.com/Arsalan-05/KernelForge" target="_blank" rel="noopener noreferrer" class="home-footer-link">GitHub</a>
+          <a href="#/how-it-works" class="home-footer-link">Docs</a>
+          <a href="#/about" class="home-footer-link">About</a>
+        </span>
+      </div>
+    </footer>
+  </div><!-- #page-home -->
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       PAGE: STUDIO (#/studio)
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <div id="page-studio" class="page" hidden>
+
+    <!-- Honesty banner (shown only while on studio page; router.js manages hidden) -->
+    <div class="banner" id="banner" data-variant="base" role="status" aria-live="polite" hidden>
       <svg viewBox="0 0 16 16" aria-hidden="true">
         <circle cx="8" cy="8" r="7"/>
         <path d="M8 7v4M8 4.5v.5"/>
@@ -126,9 +333,22 @@
       <span id="banner-text">Running the base model (Qwen2.5-Coder-1.5B-Instruct) — not fine-tuned. The fine-tuned adapter is in progress and will drop into this same pipeline.</span>
     </div>
 
+    <!-- Studio intro + drawer toggle (outside the grid) -->
+    <div class="studio-header">
+      <p class="studio-intro">Pick an op template or paste your own PyTorch Model, then generate a Triton kernel. The verification harness checks every kernel against the PyTorch reference.</p>
+      <button class="btn ghost sm sidebar-drawer-toggle" id="sidebar-drawer-btn" type="button"
+              aria-expanded="false" aria-controls="sidebar-drawer"
+              aria-label="Open op library">
+        <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+          <path d="M2 4h12M2 8h8M2 12h10"/>
+        </svg>
+        Op library
+      </button>
+    </div>
+
     <main id="studio" class="studio" aria-label="Kernel generation studio">
-      <!-- ── Sidebar / op library ── -->
-      <aside class="sidebar" aria-label="Op library">
+      <!-- ── Sidebar / op library (collapsible drawer) ── -->
+      <aside class="sidebar" id="sidebar-drawer" aria-label="Op library">
         <div class="sidebar-head">
           <h2>Op library</h2>
           <span class="count" id="op-count" aria-live="polite">—</span>
@@ -155,13 +375,16 @@
           <span class="badge interp">interp ✓</span> passed Triton's CPU interpreter;
           <span class="badge gpu">GPU</span> has harness-verified GPU entries.
         </p>
-        <div class="stats-card">
-          <div class="sidebar-head">
-            <h2>Server</h2>
-            <span class="count" id="stats-uptime" aria-live="polite">—</span>
+        <details class="stats-card-details">
+          <summary>System</summary>
+          <div class="stats-card-body">
+            <div class="sidebar-head">
+              <h2>Server</h2>
+              <span class="count" id="stats-uptime" aria-live="polite">—</span>
+            </div>
+            <div class="stats" id="stats" aria-label="Server statistics"></div>
           </div>
-          <div class="stats" id="stats" aria-label="Server statistics"></div>
-        </div>
+        </details>
       </aside>
 
       <!-- ── Main workspace ── -->
@@ -602,7 +825,7 @@
   </div>
 
   <!-- ═══════════════════════════════════════════════════════════════════════
-       FOOTER (shared)
+       FOOTER (shared, non-home pages)
   ═══════════════════════════════════════════════════════════════════════ -->
   <footer class="site-footer" role="contentinfo">
     <span>KernelForge · supervised specialization for LLM-serving Triton kernels</span>
