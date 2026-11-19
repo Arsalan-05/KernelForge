@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -244,6 +247,8 @@ def train(config: dict, backend: str, train_entries: list[dict], val_entries: li
     training_args = TrainingArguments(
         output_dir=str(output_dir),
         per_device_train_batch_size=config.get("per_device_train_batch_size", 1),
+        per_device_eval_batch_size=config.get("per_device_eval_batch_size", 1),
+        eval_accumulation_steps=config.get("eval_accumulation_steps", 1),
         gradient_accumulation_steps=config.get("gradient_accumulation_steps", 8),
         num_train_epochs=config.get("num_epochs", 3),
         max_steps=max_steps,
