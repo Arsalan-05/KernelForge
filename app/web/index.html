@@ -20,6 +20,8 @@
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/vendor/highlight.min.js" defer></script>
   <script src="/static/router.js" defer></script>
+  <script src="/static/results.js" defer></script>
+  <script src="/static/library.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -252,25 +254,21 @@
                 <thead>
                   <tr>
                     <th scope="col">Model</th>
-                    <th scope="col" class="num">Held-out verified</th>
+                    <th scope="col" class="num">pass@1 (88 held-out)</th>
                     <th scope="col">Notes</th>
                   </tr>
                 </thead>
                 <tbody>
+                  <!-- Populated from /static/data/results.json by results.js -->
                   <tr>
-                    <td>Base model (Qwen2.5-Coder-1.5B-Instruct, 4-bit, zero-shot)</td>
-                    <td class="num"><span class="res-num-inline">0</span><span class="res-den-inline">/88</span></td>
-                    <td class="muted">No training signal for Triton format</td>
-                  </tr>
-                  <tr>
-                    <td>Fine-tuned (QLoRA)</td>
-                    <td class="num"><span class="home-res-pending">pending</span></td>
-                    <td class="muted">Training in progress</td>
+                    <td colspan="3" class="home-results-loading-row">
+                      <span class="spinner" aria-hidden="true"></span> Loading…
+                    </td>
                   </tr>
                 </tbody>
               </table>
             </div>
-            <p class="home-results-note">Verification = subprocess sandbox passes <code>allclose</code> against PyTorch on the held-out set. <a href="#/results" class="home-link">Full results page</a> will populate from the <code>/results</code> endpoint once available.</p>
+            <p class="home-results-note">Verification = subprocess sandbox passes <code>allclose</code> against PyTorch on the held-out set. <a href="#/results" class="home-link">Full results →</a></p>
           </div>
         </div>
       </section>
@@ -657,12 +655,17 @@
   ═══════════════════════════════════════════════════════════════════════ -->
   <div id="page-results" class="page" hidden>
     <main aria-label="Results page">
-      <div class="placeholder-page">
-        <div class="ph-icon" aria-hidden="true">📊</div>
-        <span class="ph-badge">Phase 2</span>
-        <h2>Eval Results</h2>
-        <p>Full eval tables — interpreter coverage, GPU baseline, and fine-tuned adapter numbers — will appear here once the Phase 2 GPU session is complete.</p>
-        <p class="muted" style="font-size:13px">In the meantime, the Results tab inside the Studio shows the current interpreter coverage report.</p>
+      <div class="rp-wrap">
+        <!-- Page header (always visible) -->
+        <div class="rp-page-header" style="padding:40px 0 0">
+          <p class="eyebrow">Evaluation</p>
+          <h1 style="margin:0 0 6px;font-size:clamp(22px,4vw,30px);font-weight:800;letter-spacing:-0.025em">Results</h1>
+          <p style="margin:0 0 32px;color:var(--text-2);font-size:14px;max-width:620px;line-height:1.6">
+            Eval numbers from the held-out test set (88 examples, T4 GPU). Base model run is complete; fine-tuned adapter run is in progress.
+          </p>
+        </div>
+        <!-- Data-driven content injected by results.js -->
+        <div id="results-page-content" aria-live="polite"></div>
       </div>
     </main>
   </div>
@@ -672,12 +675,17 @@
   ═══════════════════════════════════════════════════════════════════════ -->
   <div id="page-library" class="page" hidden>
     <main aria-label="Template library page">
-      <div class="placeholder-page">
-        <div class="ph-icon" aria-hidden="true">📚</div>
-        <span class="ph-badge">Phase 2</span>
-        <h2>Template Library</h2>
-        <p>A browsable, searchable view of all 15 dataset templates — with their PyTorch references, Triton kernels, harness results, and speedup measurements.</p>
-        <p class="muted" style="font-size:13px">Use the op picker in the Studio to browse templates now.</p>
+      <div class="lib-wrap">
+        <!-- Page header -->
+        <div class="lib-head">
+          <p class="eyebrow">Reference templates</p>
+          <h1 class="lib-h2">Template Library</h1>
+          <p class="lib-sub">15 hand-written reference templates across 5 LLM-serving operator categories. Click any template to view its PyTorch reference and Triton kernel side by side.</p>
+          <!-- Category filter chips (populated by library.js) -->
+          <div class="lib-filters" role="group" aria-label="Filter by category"></div>
+        </div>
+        <!-- Template list (populated by library.js) -->
+        <div class="lib-content" aria-live="polite"></div>
       </div>
     </main>
   </div>

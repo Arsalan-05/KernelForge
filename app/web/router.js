@@ -108,6 +108,16 @@ function navigate(routeKey) {
   if (routeKey === "studio" && isDesktop()) {
     setSidebarOpen(true);
   }
+
+  /* Results page: load data on first visit */
+  if (routeKey === "results" && typeof window.resultsPageReady === "function") {
+    window.resultsPageReady();
+  }
+
+  /* Library page: load templates on first visit (or when deep-linked) */
+  if (routeKey === "library" && typeof window.libraryPageReady === "function") {
+    window.libraryPageReady();
+  }
 }
 
 function handleHashChange() {

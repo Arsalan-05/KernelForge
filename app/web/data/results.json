@@ -1,0 +1,52 @@
+{
+  "results": [
+    {
+      "model": "Qwen2.5-Coder-1.5B-Instruct (base)",
+      "quantization": "4-bit NF4",
+      "eval_set": "88 held-out (T4)",
+      "pass_at_1": "0 / 88",
+      "status": "verified",
+      "notes": "No training signal for Triton format"
+    },
+    {
+      "model": "Qwen2.5-Coder-1.5B-Instruct + QLoRA",
+      "quantization": "4-bit NF4",
+      "eval_set": "88 held-out (T4)",
+      "pass_at_1": "pending",
+      "status": "re-run in progress",
+      "notes": "Training in progress"
+    }
+  ],
+  "split": {
+    "train": 167,
+    "val": 19,
+    "held_out": 88
+  },
+  "dataset": {
+    "total": 300,
+    "verified": 274
+  },
+  "error_breakdown": [
+    {
+      "category": "tl.Tensor hallucination",
+      "count": 40
+    },
+    {
+      "category": "Undefined helper function",
+      "count": 16
+    },
+    {
+      "category": "JIT called outside kernel",
+      "count": 10
+    },
+    {
+      "category": "Syntax truncation",
+      "count": 5
+    },
+    {
+      "category": "Other generated-code errors",
+      "count": 17
+    }
+  ],
+  "disclaimer": "Reference-kernel speedups are measurements of hand-written templates, not model output."
+}
