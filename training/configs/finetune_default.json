@@ -15,6 +15,7 @@
   "gradient_accumulation_steps": 8,
   "warmup_ratio": 0.05,
   "weight_decay": 0.01,
+  "save_steps": 25,
   "seed": 42,
   "train_ratio": 0.85,
   "val_ratio": 0.10,
