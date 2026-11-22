@@ -85,7 +85,7 @@ PAYLOAD: dict = {
         "early_total": 60,
         "fix": (
             "Rebuilt with template-level holdout \u2014 the held-out set shares no template "
-            "with training, ensuring no contamination by construction."
+            "with training. Integrity tests block accidental overlap."
         ),
     },
     "disclaimer": (

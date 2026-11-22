@@ -163,7 +163,7 @@ function _renderDatasetPage(container, data) {
           <span class="rp-stat-sub">of ${total} built</span>
         </div>
       </div>
-      <p class="rp-split-note muted" style="margin-top:14px">Template-level holdout — the held-out set shares no template with training, ensuring no train/test contamination by construction.</p>
+      <p class="rp-split-note muted" style="margin-top:14px">Template-level holdout — the held-out set shares no template with training. Integrity tests block accidental overlap.</p>
     </section>
 
     <!-- ── Leakage story ── -->

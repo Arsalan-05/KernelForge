@@ -197,7 +197,7 @@
                 </svg>
               </div>
               <span class="hp-label">Verify against PyTorch</span>
-              <span class="hp-sub">Subprocess sandbox<br>checks correctness</span>
+              <span class="hp-sub">Subprocess sandbox checks<br>outputs against PyTorch</span>
             </div>
           </div>
         </div>
@@ -227,7 +227,7 @@
                 </svg>
               </div>
               <h3>Leakage-checked split</h3>
-              <p>Template-level holdout — 88 held-out test examples that share no template with the 167 training examples. No train/test contamination by construction.</p>
+              <p>Template-level holdout, with tests that block train/test overlap. 88 held-out test examples share no template with the 167 training examples.</p>
             </article>
             <article class="home-feature-card">
               <div class="hf-icon" aria-hidden="true">
@@ -736,7 +736,7 @@
               </div>
               <div class="hiw-step-body">
                 <h3>Dataset</h3>
-                <p>274 of 300 reference kernels verified on a Kaggle T4 (26 rejected for numerical tolerance, timeout, or OOM). Template-level train / val / held-out split (167 / 19 / 88) with no train/test contamination by construction.</p>
+                <p>274 of 300 reference kernels verified on a Kaggle T4 (26 rejected for numerical tolerance, timeout, or OOM). Template-level train / val / held-out split (167 / 19 / 88), with tests that block train/test overlap.</p>
               </div>
             </div>
 

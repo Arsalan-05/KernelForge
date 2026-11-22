@@ -73,7 +73,7 @@
   "leakage": {
     "early_overlap": 30,
     "early_total": 60,
-    "fix": "Rebuilt with template-level holdout \u2014 the held-out set shares no template with training, ensuring no contamination by construction."
+    "fix": "Rebuilt with template-level holdout \u2014 the held-out set shares no template with training. Integrity tests block accidental overlap."
   },
   "disclaimer": "Reference-kernel speedups are measurements of hand-written templates, not model output."
 }
