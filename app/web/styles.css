@@ -180,6 +180,7 @@ a { color: inherit; }
   border: 1px solid var(--border-strong);
   background: transparent;
   cursor: pointer;
+  text-decoration: none;
   transition: color 0.15s, border-color 0.15s, background 0.15s;
   flex: none;
 }
@@ -257,6 +258,7 @@ a { color: inherit; }
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   height: 38px; padding: 0 16px; border-radius: 9px; border: 1px solid transparent;
   font: 600 13px var(--font); cursor: pointer; white-space: nowrap;
+  text-decoration: none;
   transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.05s, box-shadow 0.15s;
 }
 .btn:active:not(:disabled) { transform: translateY(1px); }
