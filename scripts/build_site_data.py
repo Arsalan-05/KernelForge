@@ -8,6 +8,8 @@ The numbers written here come from confirmed artifacts:
   - 0/88 base model pass@1 (held-out T4 GPU eval, baseline run)
   - 274 verified examples total  (167 train / 19 val / 88 held-out)
   - Error breakdown from manual triage of the base-model failures
+  - Rejection breakdown: 26 of 300 candidates rejected during dataset build
+  - Leakage story: earlier 60-entry subset had 30 overlapping with train
 """
 
 from __future__ import annotations
@@ -56,6 +58,36 @@ PAYLOAD: dict = {
         {"category": "Syntax truncation", "count": 5},
         {"category": "Other generated-code errors", "count": 17},
     ],
+    "rejections": [
+        {
+            "category": "quantized_matmul",
+            "count": 12,
+            "reason": "numerical tolerance (max abs error 0.125 at atol 0.01)",
+        },
+        {
+            "category": "attention",
+            "count": 9,
+            "reason": "timeout",
+        },
+        {
+            "category": "norm",
+            "count": 3,
+            "reason": "timeout",
+        },
+        {
+            "category": "norm",
+            "count": 2,
+            "reason": "OOM",
+        },
+    ],
+    "leakage": {
+        "early_overlap": 30,
+        "early_total": 60,
+        "fix": (
+            "Rebuilt with template-level holdout \u2014 the held-out set shares no template "
+            "with training, ensuring no contamination by construction."
+        ),
+    },
     "disclaimer": (
         "Reference-kernel speedups are measurements of hand-written templates, "
         "not model output."

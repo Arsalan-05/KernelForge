@@ -48,5 +48,32 @@
       "count": 17
     }
   ],
+  "rejections": [
+    {
+      "category": "quantized_matmul",
+      "count": 12,
+      "reason": "numerical tolerance (max abs error 0.125 at atol 0.01)"
+    },
+    {
+      "category": "attention",
+      "count": 9,
+      "reason": "timeout"
+    },
+    {
+      "category": "norm",
+      "count": 3,
+      "reason": "timeout"
+    },
+    {
+      "category": "norm",
+      "count": 2,
+      "reason": "OOM"
+    }
+  ],
+  "leakage": {
+    "early_overlap": 30,
+    "early_total": 60,
+    "fix": "Rebuilt with template-level holdout \u2014 the held-out set shares no template with training, ensuring no contamination by construction."
+  },
   "disclaimer": "Reference-kernel speedups are measurements of hand-written templates, not model output."
 }

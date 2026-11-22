@@ -21,10 +21,12 @@
   <script src="/static/vendor/highlight.min.js" defer></script>
   <script src="/static/router.js" defer></script>
   <script src="/static/results.js" defer></script>
+  <script src="/static/dataset.js" defer></script>
   <script src="/static/library.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
+<noscript>KernelForge requires JavaScript. Please enable JavaScript in your browser to use this site.</noscript>
 
   <!-- ═══════════════════════════════════════════════════════════════════════
        TOP NAV
@@ -696,55 +698,96 @@
   <div id="page-how-it-works" class="page" hidden>
     <main aria-label="How it works page">
 
-      <section class="section">
+      <section class="section hiw-hero-section">
         <div class="section-inner">
           <p class="eyebrow">Architecture</p>
-          <h2>One verification harness, everywhere</h2>
-          <p class="lede">The correctness check in the Studio (plus timing when a GPU is present) is the exact <code>verify_model_kernel</code> function that filters the training dataset and scores the evaluation runs. The demo has no separate, friendlier check.</p>
+          <h2>How it works</h2>
+          <p class="lede">KernelForge builds a specialised training set, fine-tunes a small model on it, and verifies every generated kernel with the same automated harness used to build the dataset.</p>
 
-          <div class="flow" aria-label="Pipeline flow diagram">
-            <div class="flow-node">
-              <span class="flow-k">Input</span>
-              <strong>PyTorch <code>Model</code></strong>
-              <span>+ <code>get_inputs()</code> / <code>get_init_inputs()</code></span>
+          <!-- Vertical pipeline diagram -->
+          <div class="hiw-pipeline" aria-label="Five-step pipeline diagram" role="list">
+
+            <div class="hiw-step" role="listitem">
+              <div class="hiw-step-left" aria-hidden="true">
+                <div class="hiw-step-num">1</div>
+                <div class="hiw-step-line"></div>
+              </div>
+              <div class="hiw-step-body">
+                <h3>Reference templates</h3>
+                <p>15 hand-written Triton kernels across 5 LLM-serving categories — <code>quantized_matmul</code>, <code>attention</code>, <code>kv_cache</code>, <code>norm</code>, and <code>rope</code> — each paired with a PyTorch reference implementation and a correctness test.</p>
+              </div>
             </div>
-            <div class="flow-arrow" aria-hidden="true"></div>
-            <div class="flow-node">
-              <span class="flow-k">Model</span>
-              <strong id="flow-model-name">Qwen2.5-Coder-1.5B</strong>
-              <span id="flow-model-sub">general-purpose model via API · fine-tuned adapter next</span>
+
+            <div class="hiw-step" role="listitem">
+              <div class="hiw-step-left" aria-hidden="true">
+                <div class="hiw-step-num">2</div>
+                <div class="hiw-step-line"></div>
+              </div>
+              <div class="hiw-step-body">
+                <h3>Verification harness</h3>
+                <p>A subprocess sandbox checks every kernel against its PyTorch reference using seeded inputs, <code>allclose</code>, and median CUDA-event timing. The same harness gates the dataset build, evaluation, and the demo — there is no separate, friendlier check.</p>
+              </div>
             </div>
-            <div class="flow-arrow" aria-hidden="true"></div>
-            <div class="flow-node">
-              <span class="flow-k">Sample</span>
-              <strong>N candidates, one batch</strong>
-              <span>parsed into <code>kernel:</code> / <code>explanation:</code>; duplicates collapsed</span>
+
+            <div class="hiw-step" role="listitem">
+              <div class="hiw-step-left" aria-hidden="true">
+                <div class="hiw-step-num">3</div>
+                <div class="hiw-step-line"></div>
+              </div>
+              <div class="hiw-step-body">
+                <h3>Dataset</h3>
+                <p>274 of 300 reference kernels verified on a Kaggle T4 (26 rejected for numerical tolerance, timeout, or OOM). Template-level train / val / held-out split (167 / 19 / 88) with no train/test contamination by construction.</p>
+              </div>
             </div>
-            <div class="flow-arrow" aria-hidden="true"></div>
-            <div class="flow-node accent">
-              <span class="flow-k">Harness</span>
-              <strong>Subprocess sandbox</strong>
-              <span>seeded inputs · <code>allclose</code> · median CUDA-event timing, or Triton interpreter · timeout</span>
+
+            <div class="hiw-step hiw-step-accent" role="listitem">
+              <div class="hiw-step-left" aria-hidden="true">
+                <div class="hiw-step-num hiw-step-num-accent">4</div>
+                <div class="hiw-step-line"></div>
+              </div>
+              <div class="hiw-step-body">
+                <h3>QLoRA fine-tune</h3>
+                <p>Supervised fine-tuning of Qwen2.5-Coder-1.5B-Instruct on the verified training set using 4-bit NF4 quantization (PEFT / QLoRA). Training is in progress; fine-tuned results are pending.</p>
+              </div>
             </div>
-            <div class="flow-arrow" aria-hidden="true"></div>
-            <div class="flow-node">
-              <span class="flow-k">Select / repair</span>
-              <strong>Fastest correct wins</strong>
-              <span>otherwise the harness error goes back to the model as the next turn</span>
+
+            <div class="hiw-step hiw-step-last" role="listitem">
+              <div class="hiw-step-left" aria-hidden="true">
+                <div class="hiw-step-num">5</div>
+              </div>
+              <div class="hiw-step-body">
+                <h3>Held-out evaluation</h3>
+                <p>Base model scores 0 / 88 on the held-out set (all generated-code errors, 0 harness errors). Fine-tuned eval: pending.</p>
+              </div>
+            </div>
+
+          </div><!-- .hiw-pipeline -->
+
+          <!-- Demo callout -->
+          <div class="hiw-demo-callout" role="note">
+            <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <circle cx="8" cy="8" r="6.5"/>
+              <path d="M8 7v4M8 4.5v.5"/>
+            </svg>
+            <div>
+              <strong>About the hosted demo:</strong>
+              The demo studio generates kernels with a general-purpose hosted model (qwen/qwen3-coder via an API), then verifies them with KernelForge's harness. The fine-tuned adapter is not served yet.
             </div>
           </div>
-          <div class="fanout">
-            <span>The same harness gates</span>
-            <span class="chip">Dataset build</span>
-            <span class="chip">Baseline &amp; fine-tuned eval</span>
-            <span class="chip accent">This demo</span>
-          </div>
+
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-inner">
+          <p class="eyebrow">Design decisions</p>
+          <h2>Key properties</h2>
 
           <div class="grid3 grid4">
             <article class="feature">
               <span class="feature-n">01</span>
               <h3>Verifier-guided search</h3>
-              <p>Best-of-N sampling plus harness-feedback repair, with no extra training. The model sees the exact mismatch (element count, max error, index) or traceback and gets another attempt, which is the multi-turn idea behind Kevin-32B applied at inference time.</p>
+              <p>Best-of-N sampling plus harness-feedback repair, with no extra training. The model sees the exact mismatch (element count, max error, index) or traceback and gets another attempt.</p>
             </article>
             <article class="feature">
               <span class="feature-n">02</span>
@@ -754,12 +797,12 @@
             <article class="feature">
               <span class="feature-n">03</span>
               <h3>Explainability</h3>
-              <p>Every kernel ships with a short rationale: which fusion, tiling, or memory-traffic decision was made and why. Prior systems output code and a benchmark number only.</p>
+              <p>Every kernel ships with a short rationale: which fusion, tiling, or memory-traffic decision was made and why. The model writes the explanation alongside the kernel; it is not a caption added afterwards.</p>
             </article>
             <article class="feature">
               <span class="feature-n">04</span>
               <h3>Verified, not claimed</h3>
-              <p>Nothing here is shown as verified unless the harness actually ran on this GPU. When it doesn't run, the UI says why instead of showing a pass or fail.</p>
+              <p>Nothing here is shown as verified unless the harness actually ran on that GPU. When it does not run, the UI says why instead of showing a pass or fail.</p>
             </article>
           </div>
         </div>
@@ -771,28 +814,32 @@
           <h2>Limitations</h2>
           <ul class="limits">
             <li id="limit-model">
-              <strong>Base model today.</strong>
-              This demo generates with qwen/qwen3-coder via API. The fine-tuned adapter is in progress and will drop into this same pipeline once training finishes; the badge at the top will change.
+              <strong>Base model in the demo today.</strong>
+              The studio generates with qwen/qwen3-coder via API. The fine-tuned adapter is in progress and will drop into this same pipeline once training finishes; the badge at the top will change.
             </li>
             <li>
               <strong>Small and narrow by design.</strong>
-              A 1.5B model and a ~300-example target, positioned against 8B–32B RL-trained systems, not claiming to beat them on broad benchmarks.
+              A 1.5B model and a ~300-example training set, covering five operator categories — not a broad benchmark.
             </li>
             <li>
               <strong>Interpreter checks are correctness-only.</strong>
-              The interpreter harness runs kernels through Triton's CPU interpreter on a small shape. It catches indexing, masking, and numerics bugs, but says nothing about speed, and a pass there doesn't count as GPU-verified.
+              The interpreter harness runs kernels through Triton's CPU interpreter on a small shape. It catches indexing, masking, and numerics bugs, but says nothing about speed, and a pass there does not count as GPU-verified.
             </li>
             <li>
               <strong>No automated explanation metric.</strong>
-              Explanations are scored with a manual rubric; there isn't a good automatic one yet.
+              Explanations are scored with a manual rubric; there is not a good automatic one yet.
             </li>
             <li id="limit-sandbox">
               <strong>Demo-grade sandbox.</strong>
-              Generated code runs in a separate subprocess with a timeout, CPU/file-size limits and a scrubbed environment. That stops hangs, crashes and key leaks, but Python has no airtight sandbox.
+              Generated code runs in a separate subprocess with a timeout, CPU/file-size limits, and a scrubbed environment. That stops hangs, crashes, and key leaks, but Python has no airtight sandbox.
             </li>
           </ul>
         </div>
       </section>
+
+    <!-- Hidden targets for app.js refreshHealth() -->
+    <span id="flow-model-name" hidden></span>
+    <span id="flow-model-sub" hidden></span>
 
     </main>
   </div><!-- #page-how-it-works -->
@@ -802,12 +849,15 @@
   ═══════════════════════════════════════════════════════════════════════ -->
   <div id="page-dataset" class="page" hidden>
     <main aria-label="Dataset page">
-      <div class="placeholder-page">
-        <div class="ph-icon" aria-hidden="true">🗂️</div>
-        <span class="ph-badge">Phase 3</span>
-        <h2>Dataset</h2>
-        <p>The curated serving-kernel dataset: 274 verified entries across 5 categories (167 train / 19 validation / 88 held-out), with correctness proofs from the Triton interpreter on every entry.</p>
-        <p class="muted" style="font-size:13px">Dataset browser and download will be available here once the Phase 3 public release is ready.</p>
+      <div class="ds-wrap">
+        <!-- Page header -->
+        <div class="ds-page-header">
+          <p class="eyebrow">Data</p>
+          <h1 class="ds-h1">Dataset</h1>
+          <p class="ds-sub">300 candidates from 15 templates × 20 shape configurations. Verified on a Tesla T4; template-level holdout with no train/test contamination.</p>
+        </div>
+        <!-- Data-driven content injected by dataset.js -->
+        <div id="dataset-page-content" aria-live="polite"></div>
       </div>
     </main>
   </div>
@@ -817,17 +867,91 @@
   ═══════════════════════════════════════════════════════════════════════ -->
   <div id="page-about" class="page" hidden>
     <main aria-label="About page">
-      <div class="placeholder-page">
-        <div class="ph-icon" aria-hidden="true">ℹ️</div>
-        <span class="ph-badge">Coming soon</span>
-        <h2>About KernelForge</h2>
-        <p>Project background, design decisions, and research context will appear here.</p>
-        <p>
-          <a href="https://github.com/Arsalan-05/KernelForge" target="_blank" rel="noopener noreferrer"
-             style="color:var(--accent);text-decoration:none;font-weight:600">
-            View source on GitHub →
-          </a>
-        </p>
+      <div class="about-wrap">
+
+        <div class="about-header">
+          <p class="eyebrow">Project</p>
+          <h1 class="about-h1">About KernelForge</h1>
+          <p class="about-sub">KernelForge trains Qwen2.5-Coder-1.5B-Instruct to generate Triton GPU kernels for LLM-serving operators. Each kernel is verified against its PyTorch reference by an automated harness.</p>
+        </div>
+
+        <div class="about-body">
+
+          <section class="about-section" aria-labelledby="about-scope-h">
+            <h2 id="about-scope-h">Scope</h2>
+            <ul class="about-list">
+              <li>Five operator categories: <code>quantized_matmul</code>, <code>attention</code>, <code>kv_cache</code>, <code>norm</code>, <code>rope</code></li>
+              <li>15 reference templates, 300 generated candidates, 274 verified on a Kaggle T4</li>
+              <li>Fine-tuned results are pending — training is in progress</li>
+              <li>Research project. Narrow scope by design; not a broad benchmark</li>
+            </ul>
+          </section>
+
+          <section class="about-section" aria-labelledby="about-stack-h">
+            <h2 id="about-stack-h">Tech stack</h2>
+            <div class="about-stack">
+              <span class="about-stack-item">Python</span>
+              <span class="about-stack-item">PyTorch</span>
+              <span class="about-stack-item">Triton</span>
+              <span class="about-stack-item">QLoRA (PEFT)</span>
+              <span class="about-stack-item">FastAPI</span>
+              <span class="about-stack-item">Docker</span>
+              <span class="about-stack-item">Kaggle T4</span>
+            </div>
+          </section>
+
+          <section class="about-section" aria-labelledby="about-links-h">
+            <h2 id="about-links-h">Links</h2>
+            <ul class="about-links-list">
+              <li>
+                <a href="https://github.com/Arsalan-05/KernelForge" target="_blank" rel="noopener noreferrer" class="about-link">
+                  <svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+                    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+                  </svg>
+                  GitHub — Arsalan-05/KernelForge
+                </a>
+              </li>
+              <li>
+                <a href="/docs" class="about-link">
+                  <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="1" width="12" height="14" rx="2"/>
+                    <path d="M5 5h6M5 8h6M5 11h4"/>
+                  </svg>
+                  API docs (FastAPI /docs)
+                </a>
+              </li>
+              <li>
+                <a href="#/how-it-works" class="about-link">
+                  <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="8" cy="8" r="6.5"/>
+                    <path d="M8 7v4M8 4.5v.5"/>
+                  </svg>
+                  Architecture — How it works
+                </a>
+              </li>
+            </ul>
+          </section>
+
+          <section class="about-section about-honest" aria-labelledby="about-honest-h">
+            <h2 id="about-honest-h">Honest scope</h2>
+            <p>Fine-tuned results are pending — training is not complete yet. The demo uses a general-purpose hosted model (qwen/qwen3-coder), not the fine-tuned adapter. This is a narrow research project covering five operator categories with a 1.5B-parameter model.</p>
+          </section>
+
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       PAGE: NOT FOUND (#/*)
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <div id="page-not-found" class="page" hidden>
+    <main aria-label="Page not found">
+      <div class="notfound-page">
+        <p class="notfound-code" aria-hidden="true">404</p>
+        <h1 class="notfound-h1">Page not found</h1>
+        <p class="notfound-sub">The URL you requested does not match any page in this app.</p>
+        <a href="#/" class="btn primary notfound-btn">Go home</a>
       </div>
     </main>
   </div>

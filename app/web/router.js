@@ -46,13 +46,14 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e)
 /* ── Route definitions ───────────────────────────────────────────────────── */
 
 const ROUTES = {
-  "home":         { pageId: "page-home",          navHref: "#/" },
-  "studio":       { pageId: "page-studio",        navHref: "#/studio" },
-  "results":      { pageId: "page-results",       navHref: "#/results" },
-  "library":      { pageId: "page-library",       navHref: "#/library" },
-  "how-it-works": { pageId: "page-how-it-works",  navHref: "#/how-it-works" },
-  "dataset":      { pageId: "page-dataset",       navHref: "#/dataset" },
-  "about":        { pageId: "page-about",         navHref: "#/about" },
+  "home":         { pageId: "page-home",          navHref: "#/",             title: "KernelForge — PyTorch → Triton kernel studio" },
+  "studio":       { pageId: "page-studio",        navHref: "#/studio",       title: "Studio — KernelForge" },
+  "results":      { pageId: "page-results",       navHref: "#/results",      title: "Results — KernelForge" },
+  "library":      { pageId: "page-library",       navHref: "#/library",      title: "Template Library — KernelForge" },
+  "how-it-works": { pageId: "page-how-it-works",  navHref: "#/how-it-works", title: "How it works — KernelForge" },
+  "dataset":      { pageId: "page-dataset",       navHref: "#/dataset",      title: "Dataset — KernelForge" },
+  "about":        { pageId: "page-about",         navHref: "#/about",        title: "About — KernelForge" },
+  "not-found":    { pageId: "page-not-found",     navHref: null,             title: "Page not found — KernelForge" },
 };
 
 const DEFAULT_ROUTE = "home";
@@ -61,13 +62,20 @@ function currentRoute() {
   const raw = location.hash.replace(/^#\/?/, "").split("?")[0].trim();
   /* Empty hash or bare "#/" → home */
   if (!raw || raw === "") return "home";
-  return ROUTES[raw] ? raw : DEFAULT_ROUTE;
+  if (ROUTES[raw]) return raw;
+  /* Unknown route → 404 */
+  return "not-found";
 }
 
 let _activeRoute = null;
 
 function navigate(routeKey) {
   const route = ROUTES[routeKey] || ROUTES[DEFAULT_ROUTE];
+
+  /* Update browser tab title */
+  if (route.title) {
+    document.title = route.title;
+  }
 
   /* Show/hide pages */
   Object.entries(ROUTES).forEach(([key, r]) => {
@@ -92,7 +100,8 @@ function navigate(routeKey) {
     const rawHref = a.getAttribute("href").replace(/^#\/?/, "");
     /* For the home link (#/), rawHref will be empty string */
     const hrefKey = rawHref === "" ? "home" : rawHref;
-    const active = hrefKey === routeKey;
+    /* 404 page has no nav link, so nothing gets marked active */
+    const active = routeKey !== "not-found" && hrefKey === routeKey;
     a.classList.toggle("active", active);
     a.setAttribute("aria-current", active ? "page" : "false");
   });
@@ -117,6 +126,11 @@ function navigate(routeKey) {
   /* Library page: load templates on first visit (or when deep-linked) */
   if (routeKey === "library" && typeof window.libraryPageReady === "function") {
     window.libraryPageReady();
+  }
+
+  /* Dataset page: load data on first visit */
+  if (routeKey === "dataset" && typeof window.datasetPageReady === "function") {
+    window.datasetPageReady();
   }
 }
 
